@@ -1,4 +1,4 @@
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,23 +8,28 @@ dist/
 build/
 *.egg
 
-# Virtual environment
+# ── Virtual environments ──────────────────────────────────────────────────────
 .venv/
 venv/
 ENV/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
+# ── Environment / secrets ─────────────────────────────────────────────────────
+# Never commit .env files — copy .env.example and fill in your values
+.env
+.env.local
+.env.*.local
+backend/.env
 
-# OS
-.DS_Store
-Thumbs.db
+# ── Databases ─────────────────────────────────────────────────────────────────
+# SQLite databases contain personal portfolio holdings — keep local only
+*.db
+*.sqlite
+*.sqlite3
 
-# Project data (large scraped files)
+# ── Personal portfolio data ───────────────────────────────────────────────────
+Portfolio_management/
+
+# ── Scraped data files (large, regeneratable) ────────────────────────────────
 data/pe/
 data/ratio/
 data/forecast/
@@ -33,5 +38,33 @@ data/metrics/
 data/statistics/
 data/dcf/
 
-# Generated reports
+# ── Generated reports ─────────────────────────────────────────────────────────
 valuation/*.xlsx
+valuation/~$*.xlsx
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/build/
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+**/.DS_Store
+
+# ── Claude Code agent files ───────────────────────────────────────────────────
+.agent/
+.claude/
+
+# ── Misc temp / cache ─────────────────────────────────────────────────────────
+*.log
+*.tmp
+~$*
+.cache/

@@ -1,25 +1,32 @@
-# PE Valuation Analysis Tool
+# PE Valuation
 
-A Python-based stock valuation analyzer that scrapes financial data from multiple sources and generates comprehensive valuation reports. It evaluates whether stocks are overvalued or undervalued based on PE ratios, growth forecasts, and historical metrics across 150+ stocks in 18 industry sectors.
-
-**Now includes a full-stack web application** with a React frontend and FastAPI backend for interactive valuation browsing.
+A full-stack stock analysis platform that tracks 150+ stocks across 18 sectors. It scrapes financial data from multiple sources, computes PE-based fair values, and presents everything in a React web app with interactive charts, a signal watchlist, and live portfolio tracking via Google Sheets.
 
 ## Features
 
-- **Multi-source Data Scraping**: Collects financial data from StockAnalysis.com, MacroTrends.net, and Yahoo Finance
-- **Comprehensive Metrics**: 60+ financial ratios, 5-year historical PE medians, revenue/EPS growth forecasts
-- **Growth-based Valuation**: Estimates fair value using PE multipliers calibrated to EPS growth rates
-- **Industry-organized Reports**: Excel output with one worksheet per sector, transposed for easy comparison
-- **Parallel Scraping**: Runs ratio, PE, and forecast scrapers concurrently via threading
-- **Web Application**: React + FastAPI web service for searching stocks and viewing valuations
-- **SQLite Database**: Scraped data is automatically stored in SQLite for the web service
+| Category | Details |
+|----------|---------|
+| **Valuation** | PE-based fair price, 5-year PE median, current/next-year EPS estimates, over/undervalued status |
+| **Metrics** | 60+ financial ratios — margins, ROE/ROA/ROIC, debt, dividends, short interest |
+| **Charts** | Candlestick + MA/BB/MACD/RSI/KDJ/Williams %R/OBV with 1m–5y range |
+| **Support & Resistance** | Swing-high/low detection with clustering, drawn as solid price lines |
+| **Signal Watchlist** | Parallel scan of all tracked tickers for RSI/KDJ/MACD/BB signals |
+| **Portfolio** | Google Sheets sync — live P&L, valuation overlay, sector allocation |
+| **Search** | Global search from any page (⌘K), debounced, keyboard-navigable |
+| **Screener** | Sortable/filterable table across all valuation columns |
+| **DCF** | Discounted cash flow calculator with sensitivity matrix |
+| **Scraping** | Parallel scrapers with caching (StockAnalysis.com, MacroTrends, yfinance) |
 
-## Quick Start - Web Application
+## Quick Start
 
-### 1. Install Dependencies
+### 1. Clone & install
 
 ```bash
-# Backend
+git clone <repo-url>
+cd PE_valuation
+
+# Python backend
+uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 uv pip install -r backend/requirements.txt
 
@@ -27,287 +34,244 @@ uv pip install -r backend/requirements.txt
 cd frontend && npm install && cd ..
 ```
 
-### 2. Load Data into Database
+### 2. Configure (optional — for portfolio sync)
+
+```bash
+cp backend/.env.example backend/.env
+# Edit backend/.env and set GSHEET_ID to your Google Sheet ID
+```
+
+Your Google Sheet must be publicly readable (Share → Anyone with the link → Viewer).
+See [Sheet layout](#google-sheet-layout) for the expected column format.
+
+### 3. Load data into SQLite
 
 ```bash
 uv run python -m backend.load_data
 ```
 
-### 3. Run the Application
+### 4. Run the app
 
 ```bash
-# Terminal 1: Backend API (http://localhost:8000)
+# Terminal 1 — API (http://localhost:8000)
 uv run uvicorn backend.app.main:app --reload
 
-# Terminal 2: Frontend (http://localhost:5173)
+# Terminal 2 — Frontend (http://localhost:5173)
 cd frontend && npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) to use the web app.
+Or use the convenience script:
+
+```bash
+bash start.sh
+```
 
 ## Project Structure
 
 ```
 PE_valuation/
-├── main.py                         # Entry point (analysis, scraping, single-stock test)
-├── requirements.txt                # Python dependencies
-├── src/                            # Core application package
-│   ├── __init__.py                 # PROJECT_ROOT, DATA_DIR, OUTPUT_DIR constants
-│   ├── config.py                   # Stock lists, ticker mappings, metric names
-│   ├── utils.py                    # HTTP fetching, HTML parsing, IQR filtering
-│   ├── runner.py                   # Parallel scraper executor (saves to JSON + DB)
-│   ├── db_service.py               # Database save functions for scrapers
-│   ├── scrapers/                   # Data collection modules
-│   │   ├── ratio_scraper.py        # 60+ financial metrics from StockAnalysis.com
-│   │   ├── pe_scraper.py           # 5-year historical PE ratios from MacroTrends.net
-│   │   ├── forecast_scraper.py     # Revenue/EPS growth forecasts from StockAnalysis.com
-│   │   ├── data_scraper.py         # Combined scraper using pre-collected data + yfinance
-│   │   ├── financials_scraper.py   # Balance sheet & income statement data
-│   │   └── metrics_scraper.py      # Additional quarterly/annual metrics
-│   └── analysis/                   # Valuation logic
-│       └── valuation_analyzer.py   # Core valuation engine (no scraping, data-only)
-├── scripts/                        # Utility & standalone scripts
-│   ├── scrape_ratios.py            # Financial ratios scraper (saves to CSV + DB)
-│   ├── scrape_metrics.py           # Metrics breakdown scraper
-│   ├── scrape_statistics.py        # Key statistics scraper
-│   └── ...
-├── data/                           # Scraped data (JSON/CSV, timestamped)
-│   ├── pe/                         # stock_list_PE_YYYY-MM-DD.json
-│   ├── ratio/                      # stock_list_metrics_YYYY-MM-DD.json
-│   ├── forecast/                   # stock_list_forecasts_YYYY-MM-DD.json
-│   ├── financials/                 # Per-ticker CSV: ratios, quarterly/annual financials
-│   └── ...
-├── backend/                        # FastAPI backend serving data to frontend
-│   ├── app/
-│   │   ├── main.py                 # App setup, CORS, router registration
-│   │   ├── database.py             # SQLAlchemy + SQLite configuration
-│   │   ├── models.py               # ORM models (stocks, metrics, valuations, etc.)
-│   │   ├── schemas.py              # Pydantic response schemas
-│   │   └── routers/                # API endpoint modules
-│   │       ├── valuations.py       # /api/valuations - valuation history
-│   │       ├── stocks.py           # /api/stocks - stock listing & detail
-│   │       ├── search.py           # /api/search - live ticker search
-│   │       └── ...
-│   ├── load_data.py                # Import JSON data into SQLite
-│   └── stock_valuation.db          # SQLite database
-├── frontend/                       # React + Vite SPA
+├── backend/                    # FastAPI backend
+│   ├── .env                    # ← gitignored: your personal config (GSHEET_ID, etc.)
+│   ├── .env.example            # Template — copy to .env and fill in values
+│   ├── requirements.txt
+│   ├── load_data.py            # Import JSON snapshots → SQLite
+│   └── app/
+│       ├── config.py           # Settings (reads backend/.env)
+│       ├── database.py         # SQLAlchemy + SQLite
+│       ├── models.py           # ORM models
+│       └── routers/
+│           ├── stocks.py       # /api/stocks
+│           ├── valuations.py   # /api/valuations
+│           ├── search.py       # /api/search
+│           ├── chart.py        # /api/stocks/{ticker}/chart
+│           ├── signals.py      # /api/signals/watchlist
+│           ├── portfolio.py    # /api/portfolio + /api/portfolio/gsheet
+│           ├── screener.py     # /api/screener
+│           ├── dcf.py          # /api/stocks/{ticker}/dcf
+│           ├── pe.py           # /api/stocks/{ticker}/pe
+│           ├── ratios.py       # /api/stocks/{ticker}/ratios
+│           ├── forecast.py     # /api/stocks/{ticker}/forecast
+│           ├── compare.py      # /api/compare
+│           └── scrape.py       # /api/scrape (trigger on-demand)
+│
+├── frontend/                   # React + Vite SPA
 │   └── src/
-│       ├── App.jsx                 # Routing (wouter)
-│       ├── pages/
-│       │   ├── Home.jsx            # Landing page with search
-│       │   ├── ValuationList.jsx   # Screener table with sorting/filtering
-│       │   └── StockDetail.jsx     # Per-stock valuation chart
-│       └── components/
-│           ├── Navbar.jsx
-│           └── SearchBar.jsx
-└── valuation/                      # Generated Excel reports
-    └── stock_data_YYYY-MM-DD.xlsx
+│       ├── App.jsx             # Routing (wouter)
+│       ├── components/
+│       │   ├── Navbar.jsx      # Top nav with global search
+│       │   ├── GlobalSearch.jsx# ⌘K search dropdown
+│       │   └── PriceChartPanel.jsx  # Candlestick + indicator chart
+│       └── pages/
+│           ├── Home.jsx
+│           ├── ValuationList.jsx    # Screener table
+│           ├── StockDetail.jsx      # Per-stock detail + embedded chart
+│           ├── StockMetrics.jsx
+│           ├── StockRatios.jsx
+│           ├── StockForecast.jsx
+│           ├── StockDCF.jsx
+│           ├── StockPE.jsx
+│           ├── StockStatistics.jsx
+│           ├── SignalWatchlist.jsx  # Technical signal scanner
+│           ├── GSheetPortfolio.jsx  # Google Sheets portfolio view
+│           ├── PortfolioList.jsx    # Manual portfolio list
+│           └── PortfolioDetail.jsx  # Manual portfolio detail
+│
+├── src/                        # Core Python package (scrapers + analysis)
+│   ├── config.py               # Stock lists, sector definitions
+│   ├── runner.py               # Parallel scraper executor
+│   ├── scrapers/
+│   │   ├── ratio_scraper.py
+│   │   ├── pe_scraper.py
+│   │   ├── forecast_scraper.py
+│   │   └── statistics_scraper.py
+│   └── analysis/
+│       └── valuation_analyzer.py
+│
+├── scripts/                    # Standalone utility scripts
+├── docs/                       # Technical documentation
+│   ├── DCF_README.md
+│   └── support_resistance.md
+├── data/                       # Scraped JSON snapshots (gitignored)
+│   ├── pe/
+│   ├── ratio/
+│   └── forecast/
+├── valuation/                  # Generated Excel reports (gitignored)
+├── main.py                     # CLI entry point
+└── requirements.txt
 ```
 
-## Installation
+## API Reference
 
-### Prerequisites
+### Stocks & Valuations
 
-- Python 3.8+
-- Node.js 18+ (for frontend)
-- [uv](https://github.com/astral-sh/uv) - Fast Python package and project manager
-  ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  ```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Health check |
+| GET | `/api/search?q=AAPL` | Ticker/name search |
+| GET | `/api/stocks` | All stocks |
+| GET | `/api/valuations` | Valuation list (paginated, filterable) |
+| GET | `/api/stocks/{ticker}` | Stock detail |
+| GET | `/api/stocks/{ticker}/chart` | OHLCV + indicators + S/R levels |
+| GET | `/api/stocks/{ticker}/ratios` | Financial ratios |
+| GET | `/api/stocks/{ticker}/forecast` | EPS/revenue forecasts |
+| GET | `/api/stocks/{ticker}/pe` | Historical PE data |
+| GET | `/api/stocks/{ticker}/dcf` | DCF valuation |
+| GET | `/api/stocks/{ticker}/statistics` | Key statistics |
+| GET | `/api/compare?tickers=AAPL,MSFT` | Side-by-side comparison |
+| GET | `/api/screener` | Screener with filters |
 
-### Setup
+### Signals
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/signals/watchlist` | Scan all tickers for technical signals (cached 5 min) |
+| DELETE | `/api/signals/watchlist/cache` | Bust the signal cache |
+
+### Portfolio
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/portfolio/gsheet` | Read portfolio from Google Sheet + valuation overlay |
+| GET | `/api/portfolio` | List manual portfolios |
+| POST | `/api/portfolio` | Create portfolio |
+| GET | `/api/portfolio/{id}` | Portfolio detail with live prices |
+| PUT | `/api/portfolio/{id}` | Update portfolio |
+| DELETE | `/api/portfolio/{id}` | Delete portfolio |
+| POST | `/api/portfolio/{id}/holdings` | Add holding |
+| PUT | `/api/portfolio/{id}/holdings/{hid}` | Update holding |
+| DELETE | `/api/portfolio/{id}/holdings/{hid}` | Delete holding |
+
+## Scraping
+
+### Refresh all data
 
 ```bash
-git clone <repository-url>
-cd PE_valuation
-
-uv venv
-source .venv/bin/activate    # macOS/Linux
-# .venv\Scripts\activate     # Windows
-
-uv pip install -r requirements.txt
-uv pip install -r backend/requirements.txt
-
-# Frontend
-cd frontend && npm install && cd ..
+uv run python main.py --scrape      # Scrape + analyze + save to DB
+uv run python main.py               # Analyze with existing data only
 ```
 
-## Usage
-
-All commands are run from the **project root** directory using `uv run`.
-
-### Run Valuation Analysis (using existing data)
+### Individual scrapers
 
 ```bash
-uv run python main.py
+uv run python -m src.runner                          # All scrapers in parallel
+uv run python -m src.scrapers.ratio_scraper          # Ratios/metrics only
+uv run python -m src.scrapers.pe_scraper             # PE history only
+uv run python -m src.scrapers.forecast_scraper       # Forecasts only
 ```
 
-Loads the latest data from `data/` and generates an Excel report in `valuation/`.
-
-### Scrape Data + Analyze + Save to Database
+### Load snapshots into SQLite
 
 ```bash
-uv run python main.py --scrape
+uv run python -m backend.load_data           # Latest snapshot only
+uv run python -m backend.load_data --force   # Drop & reload all
 ```
-
-Runs all three scrapers in parallel, saves to JSON files AND SQLite database, then performs the valuation analysis.
-
-### Run Scrapers Only (with Database Save)
-
-```bash
-uv run python -m src.runner                         # All scrapers in parallel + DB save
-uv run python -m src.scrapers.ratio_scraper         # Ratio/metrics only
-uv run python -m src.scrapers.pe_scraper            # PE ratios only
-uv run python -m src.scrapers.forecast_scraper      # Forecasts only
-```
-
-All scrapers now automatically save to both JSON files and the SQLite database.
-
-### Scrape Financial Ratios (per-ticker)
-
-```bash
-# Single stock (saves to CSV + database)
-uv run python scripts/scrape_ratios.py --ticker AAPL
-
-# All stocks
-uv run python scripts/scrape_ratios.py --all --workers 3
-```
-
-### Scrape Statistics (per-ticker)
-
-```bash
-# Single stock (saves to JSON + database)
-uv run python scripts/scrape_statistics.py AAPL
-
-# All stocks
-uv run python scripts/scrape_statistics.py
-```
-
-Scrapes ~104 key statistics across 19 sections (valuation, efficiency, returns, etc.).
-
-### Scrape Metrics Breakdown (per-ticker)
-
-```bash
-# Single stock (saves to CSV + database)
-uv run python scripts/scrape_metrics.py AAPL
-
-# All stocks
-uv run python scripts/scrape_metrics.py
-```
-
-Scrapes revenue by segment, geography, gross profit breakdown, etc.
-
-### Test a Single Stock
-
-```bash
-uv run python main.py --test AAPL
-```
-
-### Web Application
-
-```bash
-# Start backend API
-uv run uvicorn backend.app.main:app --reload
-
-# Start frontend (in separate terminal)
-cd frontend && npm run dev
-```
-
-### Load Historical Data into Database
-
-```bash
-# Load all JSON data from data/ into SQLite
-uv run python -m backend.load_data
-
-# Force reload (drop existing data first)
-uv run python -m backend.load_data --force
-```
-
-## API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/health` | Health check |
-| `GET /api/search?q=AAPL` | Search stocks by ticker/name |
-| `GET /api/valuations` | List all valuations (paginated) |
-| `GET /api/valuations/{ticker}/history` | Valuation history for a stock |
-| `GET /api/stocks` | List all stocks |
-| `GET /api/industries` | List all industries |
-
-## Data Sources
-
-| Source | Data Collected |
-|--------|---------------|
-| **StockAnalysis.com** | Financial ratios (PE, ROE, debt, yields), growth forecasts, EPS estimates |
-| **MacroTrends.net** | 5-year historical PE ratios |
-| **Yahoo Finance** (yfinance) | Current stock prices, beta values |
 
 ## Valuation Methodology
 
-### Growth-based PE Estimation
+Fair price is estimated two ways:
 
-The tool estimates fair PE ratios based on 5-year EPS growth forecasts:
+**1. PE Median Fair Value** — `pe_median_5y × current_eps`
 
-| EPS Growth Rate | PE Multiplier |
-|----------------|---------------|
-| 0-5%           | 0.8x          |
-| 5-10%          | 1.0x          |
-| 10-15%         | 1.1x          |
-| 15-20%         | 1.2x          |
-| 20-30%         | 1.5x          |
-| 30%+           | 2.0x          |
+**2. Growth-based Fair Value** — PE multiplier applied to current/next-year EPS estimates:
 
-### Output Metrics (per stock)
+| 5Y EPS Growth | PE Multiplier |
+|---------------|---------------|
+| < 5% | 0.8× |
+| 5–10% | 1.0× |
+| 10–15% | 1.1× |
+| 15–20% | 1.2× |
+| 20–30% | 1.5× |
+| > 30% | 2.0× |
 
-- Revenue & EPS Growth Forecast (5Y)
-- Estimated PE and fair prices (current + next year)
-- 5-year PE median and median-based fair prices
-- Market cap and current stock price
-- Valuation status (overvalued/undervalued) with percentage difference
+Stocks are classified as **Undervalued**, **Fairly Valued**, or **Overvalued** based on the percentage difference between current price and fair price.
 
-## Industry Sectors
+## Google Sheet Layout
 
-The tool tracks 150+ stocks across 18 sectors:
+The portfolio sync (`/api/portfolio/gsheet`) expects a public Google Sheet with this layout:
 
-Big Tech, Airlines/Cruises, Banks, Healthcare, Payment, Retail, Food/Beverage, Semiconductors, Oil, Travel/Hotels, Industrial, SaaS, Software, Memory/Storage, Cybersecurity, AI Infrastructure, Robotics/Automation, Growth Stocks
+| Col | Content |
+|-----|---------|
+| A (0) | Account section header: `etoro` or `firstrade` |
+| B (1) | Ticker symbol (e.g. `AAPL`) |
+| C (2) | Current price |
+| E (4) | Number of shares |
+| I (8) | Position market value |
+| J (9) | P&L % |
+| K (10) | Portfolio weight % |
 
-Edit `src/config.py` to add/remove stocks or modify industry groupings.
+Section headers (`etoro`, `firstrade`) can appear on the same row as the first ticker in that section.
+Rows where column B does not match `^[A-Z]{1,5}$` are ignored.
+
+Set your Sheet ID in `backend/.env`:
+```
+GSHEET_ID=your_google_sheet_id_here
+```
+
+## Data Sources
+
+| Source | Data |
+|--------|------|
+| StockAnalysis.com | 60+ financial ratios, EPS/revenue forecasts |
+| MacroTrends.net | 5-year historical PE ratios |
+| Yahoo Finance (yfinance) | Live prices, beta, OHLCV for charts |
 
 ## Configuration
 
-- **Stock lists & ticker mappings**: `src/config.py`
-- **Scraper settings** (delays, headers): Individual scraper files in `src/scrapers/`
-- **Valuation multipliers**: `src/analysis/valuation_analyzer.py`
-- **Database settings**: `backend/app/config.py`
-- **CORS origins**: `backend/app/config.py` (defaults to localhost:5173)
+| File | Purpose |
+|------|---------|
+| `src/config.py` | Stock lists, sector definitions, 150+ tickers |
+| `backend/app/config.py` | DB URL, CORS origins, fiscal year, `GSHEET_ID` |
+| `backend/.env` | Personal overrides — **gitignored, never commit** |
+| `src/analysis/valuation_analyzer.py` | PE multiplier table |
+
+## Tech Stack
+
+**Backend:** Python 3.11+, FastAPI, SQLAlchemy, SQLite, yfinance, pandas, BeautifulSoup
+**Frontend:** React 18, Vite, Tailwind CSS, Recharts, lightweight-charts v5, wouter, axios, lucide-react
 
 ## Notes
 
-- Core scrapers (`src/runner.py`) use 10-30 second random delays between requests
-- Per-ticker scrapers (`scripts/`) default to 5-15 second delays, configurable via `--delay-min`/`--delay-max`
-- Keep parallel workers low (2-3 max) to avoid getting rate-limited
-- Data files are timestamped; the analyzer and API always load the most recent file
-- A full scraping run for all 181 stocks takes approximately 30-60 minutes
-- Scrapers automatically save to both JSON and SQLite database
-
-## Dependencies
-
-### Python
-- `fastapi` - Web framework for API
-- `uvicorn` - ASGI server
-- `sqlalchemy` - Database ORM
-- `pydantic` - Data validation
-- `pandas` - Data manipulation and Excel export
-- `beautifulsoup4` - HTML parsing
-- `requests` - HTTP requests
-- `yfinance` - Yahoo Finance API
-- `numpy` - Numerical operations
-
-### Frontend (Node.js)
-- `react` - UI framework
-- `vite` - Build tool
-- `axios` - HTTP client
-- `wouter` - Routing
-- `recharts` - Charts
-- `lucide-react` - Icons
-
+- Signal watchlist scans all ~182 tracked tickers in parallel and caches results for 5 minutes
+- Full scraping run (all 182 stocks) takes 30–60 minutes due to polite rate-limiting delays
+- Chart data is fetched live from yfinance; S/R levels are computed server-side from 5 years of daily OHLCV
+- The SQLite database (`backend/stock_valuation.db`) is gitignored — it contains your personal portfolio data

@@ -8,6 +8,12 @@ import StockStatistics from './pages/StockStatistics';
 import StockRatios from './pages/StockRatios';
 import StockForecast from './pages/StockForecast';
 import StockDCF from './pages/StockDCF';
+import AddStock from './pages/AddStock';
+import StockPE from './pages/StockPE';
+import SignalWatchlist from './pages/SignalWatchlist';
+import PortfolioList from './pages/PortfolioList';
+import PortfolioDetail from './pages/PortfolioDetail';
+import GSheetPortfolio from './pages/GSheetPortfolio';
 
 function App() {
   return (
@@ -22,6 +28,12 @@ function App() {
         <Route path="/stock/:ticker/ratios" component={StockRatios} />
         <Route path="/stock/:ticker/forecast" component={StockForecast} />
         <Route path="/stock/:ticker/dcf" component={StockDCF} />
+        <Route path="/stock/:ticker/pe" component={StockPE} />
+        <Route path="/signals" component={SignalWatchlist} />
+        <Route path="/portfolio/gsheet" component={GSheetPortfolio} />
+        <Route path="/portfolio/:id" component={PortfolioDetail} />
+        <Route path="/portfolio" component={PortfolioList} />
+        <Route path="/add-stock" component={AddStock} />
         <Route>
           <div className="container py-20 text-center text-[var(--text-muted)]">404 - Not Found</div>
         </Route>

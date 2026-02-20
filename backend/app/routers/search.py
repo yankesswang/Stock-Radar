@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, case, func
 
 from ..database import get_db
 from ..models import Stock, Industry
@@ -14,8 +14,11 @@ def search_stocks(
     limit: int = Query(20, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    """Search stocks by ticker or company name."""
-    pattern = f"%{q.upper()}%"
+    """Search stocks by ticker or company name. Case-insensitive with autocomplete."""
+    search_term = q.strip()
+    pattern = f"%{search_term}%"
+
+    # Prioritize exact ticker matches, then ticker starts with, then contains
     stocks = (
         db.query(Stock)
         .join(Industry)
@@ -25,7 +28,20 @@ def search_stocks(
                 Stock.company_name.ilike(pattern),
             )
         )
-        .order_by(Stock.ticker)
+        .order_by(
+            # Exact ticker match first (case-insensitive)
+            case(
+                (func.upper(Stock.ticker) == search_term.upper(), 0),
+                else_=1
+            ),
+            # Ticker starts with search term second
+            case(
+                (Stock.ticker.ilike(f"{search_term}%"), 0),
+                else_=1
+            ),
+            # Then alphabetically
+            Stock.ticker
+        )
         .limit(limit)
         .all()
     )

@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Index
+from datetime import datetime, date as date_type
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -271,3 +272,32 @@ class MetricsBreakdown(Base):
         Index("idx_metrics_breakdown_category", "category"),
     )
 
+
+
+class Portfolio(Base):
+    __tablename__ = "portfolios"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    name        = Column(String, nullable=False)
+    description = Column(String, default="")
+    created_at  = Column(DateTime, default=datetime.utcnow)
+
+    holdings = relationship("Holding", back_populates="portfolio", cascade="all, delete-orphan")
+
+
+class Holding(Base):
+    __tablename__ = "holdings"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_id = Column(Integer, ForeignKey("portfolios.id"), nullable=False)
+    ticker       = Column(String, nullable=False)
+    shares       = Column(Float, nullable=False)
+    avg_cost     = Column(Float, nullable=False)   # cost per share
+    added_date   = Column(Date, default=date_type.today)
+    notes        = Column(String, default="")
+
+    portfolio = relationship("Portfolio", back_populates="holdings")
+
+    __table_args__ = (
+        Index("idx_holdings_portfolio", "portfolio_id"),
+    )

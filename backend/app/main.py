@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import engine, Base
-from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf
+from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio
 
 
 @asynccontextmanager
@@ -36,6 +36,11 @@ app.include_router(statistics.router, prefix="/api/stocks", tags=["statistics"])
 app.include_router(ratios.router, prefix="/api/stocks", tags=["ratios"])
 app.include_router(forecast.router, prefix="/api/stocks", tags=["forecast"])
 app.include_router(dcf.router, prefix="/api/stocks", tags=["dcf"])
+app.include_router(scrape.router, prefix="/api/scrape", tags=["scrape"])
+app.include_router(pe.router, prefix="/api/stocks", tags=["pe"])
+app.include_router(chart.router, prefix="/api/stocks", tags=["chart"])
+app.include_router(signals.router,   prefix="/api/signals",   tags=["signals"])
+app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
 
 
 @app.get("/api/health")

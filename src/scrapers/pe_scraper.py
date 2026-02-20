@@ -15,6 +15,43 @@ from src.config import STOCK_LIST, PE_TICKER_TO_COMPANY
 from src import DATA_DIR
 from src.db_service import save_pe_median
 
+
+def _derive_macrotrends_slug(ticker: str) -> Optional[str]:
+    """
+    Derive a MacroTrends URL slug for a ticker.
+    Checks static mapping first; falls back to yfinance company name.
+    """
+    # 1. Static mapping
+    slug = PE_TICKER_TO_COMPANY.get(ticker.lower())
+    if slug:
+        return slug
+
+    # 2. Derive from yfinance longName
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info
+        name = info.get("longName") or info.get("shortName", "")
+        if not name:
+            return None
+
+        name = name.lower()
+        # Strip common legal suffixes
+        for suffix in [
+            ", inc.", " inc.", ", corp.", " corp.", ", ltd.", " ltd.",
+            " corporation", ", llc", " llc", ", plc", " plc",
+            " co.", ", co.", " holdings", " group", ", n.v.", " n.v.",
+        ]:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+
+        # Remove special characters, collapse whitespace, replace with dashes
+        name = re.sub(r"[^a-z0-9\s-]", " ", name)
+        name = re.sub(r"\s+", "-", name.strip())
+        name = re.sub(r"-+", "-", name)
+        return name
+    except Exception:
+        return None
+
 class PERatioScraper:
     def __init__(self):
         self.current_date = datetime.now().strftime('%Y-%m-%d')
@@ -30,7 +67,10 @@ class PERatioScraper:
         Returns:
             List[float]: List of PE ratios extracted.
         """
-        company = PE_TICKER_TO_COMPANY.get(ticker.lower())
+        company = _derive_macrotrends_slug(ticker)
+        if not company:
+            print(f"No MacroTrends slug found for {ticker} — skipping PE scrape.")
+            return None
         url = f"https://www.macrotrends.net/stocks/charts/{ticker.upper()}/{company}/pe-ratio"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',

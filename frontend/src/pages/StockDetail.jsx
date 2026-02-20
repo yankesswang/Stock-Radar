@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useRoute } from 'wouter';
 import axios from 'axios';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid } from 'recharts';
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity } from 'lucide-react';
+import PriceChartPanel from '../components/PriceChartPanel';
 import { Link } from 'wouter';
 
 export default function StockDetail() {
@@ -107,6 +108,12 @@ export default function StockDetail() {
                             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-danger)] bg-[rgba(248,113,113,0.08)] border border-[rgba(248,113,113,0.15)] hover:bg-[rgba(248,113,113,0.14)] transition-colors"
                         >
                             <DollarSign size={13} /> DCF Valuation
+                        </Link>
+                        <Link
+                            href={`/stock/${ticker}/pe`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-amber)] bg-[rgba(251,191,36,0.08)] border border-[rgba(251,191,36,0.2)] hover:bg-[rgba(251,191,36,0.14)] transition-colors"
+                        >
+                            <Activity size={13} /> PE History
                         </Link>
                     </div>
                 </div>
@@ -256,7 +263,7 @@ export default function StockDetail() {
                 />
             </div>
 
-            {/* Chart */}
+            {/* Valuation History Chart */}
             <div className="card !p-6">
                 <h3 className="text-base font-semibold mb-6 text-[var(--text-secondary)]">Valuation History</h3>
                 <div className="h-[380px]">
@@ -330,6 +337,9 @@ export default function StockDetail() {
                     </ResponsiveContainer>
                 </div>
             </div>
+
+            {/* Price Chart */}
+            <PriceChartPanel ticker={ticker} />
         </div>
     );
 }
