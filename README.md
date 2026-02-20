@@ -1,6 +1,8 @@
-# PE Valuation
+# StockRadar
 
-A full-stack stock analysis platform that tracks 150+ stocks across 18 sectors. It scrapes financial data from multiple sources, computes PE-based fair values, and presents everything in a React web app with interactive charts, a signal watchlist, and live portfolio tracking via Google Sheets.
+**Valuation · Signals · Portfolio — in one place.**
+
+A full-stack stock analysis platform that tracks 150+ stocks across 18 sectors. StockRadar scrapes financial data from multiple sources, computes PE-based fair values, and surfaces everything through an interactive React web app — with candlestick charts, a technical signal watchlist, and live portfolio tracking via Google Sheets.
 
 ## Features
 
@@ -23,7 +25,7 @@ A full-stack stock analysis platform that tracks 150+ stocks across 18 sectors. 
 
 ```bash
 git clone <repo-url>
-cd PE_valuation
+cd stock-radar
 
 # Python backend
 uv venv && source .venv/bin/activate
@@ -69,7 +71,7 @@ bash start.sh
 ## Project Structure
 
 ```
-PE_valuation/
+stock-radar/
 ├── backend/                    # FastAPI backend
 │   ├── .env                    # ← gitignored: your personal config (GSHEET_ID, etc.)
 │   ├── .env.example            # Template — copy to .env and fill in values
