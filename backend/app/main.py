@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -5,12 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import engine, Base
-from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio
+from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio, earnings, scheduler, summary
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    asyncio.create_task(scheduler.scheduler_loop())
     yield
 
 
@@ -41,6 +43,9 @@ app.include_router(pe.router, prefix="/api/stocks", tags=["pe"])
 app.include_router(chart.router, prefix="/api/stocks", tags=["chart"])
 app.include_router(signals.router,   prefix="/api/signals",   tags=["signals"])
 app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
+app.include_router(earnings.router,    prefix="/api/earnings",    tags=["earnings"])
+app.include_router(scheduler.router,   prefix="/api/scheduler",   tags=["scheduler"])
+app.include_router(summary.router,     prefix="/api/stocks",      tags=["summary"])
 
 
 @app.get("/api/health")

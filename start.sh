@@ -7,8 +7,8 @@ set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-BACKEND_PORT=8000
-FRONTEND_PORT=5173
+BACKEND_PORT=6000
+FRONTEND_PORT=5000
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; RESET='\033[0m'
@@ -30,17 +30,15 @@ trap cleanup INT TERM
 log "Starting backend on port $BACKEND_PORT…"
 cd "$PROJECT_ROOT"
 
-# Prefer a virtual-env uvicorn if one exists
-if [ -f ".venv/bin/uvicorn" ]; then
-    UVICORN=".venv/bin/uvicorn"
+# Use uv (preferred), then fall back to system uvicorn
+if command -v uv &>/dev/null; then
+    uv run python -m uvicorn backend.app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload &
 elif command -v uvicorn &>/dev/null; then
-    UVICORN="uvicorn"
+    uvicorn backend.app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload &
 else
-    err "uvicorn not found. Install it: pip install uvicorn"
+    err "Neither uv nor uvicorn found. Install uv: https://docs.astral.sh/uv/"
     exit 1
 fi
-
-$UVICORN backend.app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload &
 BACKEND_PID=$!
 
 # ── Frontend ──────────────────────────────────────────────────────────────────

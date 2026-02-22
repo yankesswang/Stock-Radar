@@ -11,9 +11,10 @@ from datetime import date
 import io
 import re
 import ssl
+import urllib.parse
 import urllib.request
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -30,11 +31,12 @@ router = APIRouter()
 _SKIP = {"CASH", "eToro"}
 
 
-def _gsheet_url() -> str:
-    gid = settings.GSHEET_ID
-    if not gid:
-        raise ValueError("GSHEET_ID is not set. Add it to backend/.env")
-    return f"https://docs.google.com/spreadsheets/d/{gid}/export?format=csv&gid=0"
+def _gsheet_url(gsheet_id: str, sheet_name: str | None = None) -> str:
+    if not gsheet_id:
+        raise ValueError("Sheet ID is not set. Add GSHEET_ID / GSHEET_MOM_ID to backend/.env")
+    if sheet_name:
+        return f"https://docs.google.com/spreadsheets/d/{gsheet_id}/export?format=csv&sheet={urllib.parse.quote(sheet_name)}"
+    return f"https://docs.google.com/spreadsheets/d/{gsheet_id}/export?format=csv&gid=0"
 
 
 # ── Pydantic schemas ─────────────────────────────────────────────────────────
@@ -193,7 +195,7 @@ def _portfolio_summary(enriched: list[dict]) -> dict:
 
 # ── Google Sheet loader ──────────────────────────────────────────────────────
 
-def _load_gsheet() -> list[dict]:
+def _load_gsheet(gsheet_id: str, sheet_name: str | None = None) -> list[dict]:
     """
     Download the public Google Sheet as CSV and parse holdings.
     Actual sheet column layout (row 0 = header, skipped):
@@ -210,7 +212,7 @@ def _load_gsheet() -> list[dict]:
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    response = urllib.request.urlopen(_gsheet_url(), context=ctx, timeout=15)
+    response = urllib.request.urlopen(_gsheet_url(gsheet_id, sheet_name), context=ctx, timeout=15)
     df = pd.read_csv(io.BytesIO(response.read()), header=None)
 
     positions: list[dict] = []
@@ -289,10 +291,21 @@ def _load_gsheet() -> list[dict]:
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/gsheet")
-def get_gsheet_portfolio(db: Session = Depends(get_db)):
-    """Read holdings from Google Sheet and enrich with DB valuation data."""
+def get_gsheet_portfolio(
+    portfolio: str | None = Query(None),
+    gsheet_id: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Read holdings from Google Sheet and enrich with DB valuation data.
+    Optional ?portfolio=mom to read Mom's portfolio sheet.
+    Optional ?gsheet_id=<ID> to read an arbitrary public Google Sheet directly.
+    """
+    if not gsheet_id:
+        gsheet_id = settings.GSHEET_ID
+        if not gsheet_id:
+            raise HTTPException(status_code=502, detail="GSHEET_ID is not set in backend/.env")
     try:
-        positions, total_val, overall_return = _load_gsheet()
+        positions, total_val, overall_return = _load_gsheet(gsheet_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to load Google Sheet: {exc}")
 

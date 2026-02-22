@@ -4,6 +4,7 @@ import axios from 'axios';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid } from 'recharts';
 import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity } from 'lucide-react';
 import PriceChartPanel from '../components/PriceChartPanel';
+import KeyMetricsSummary from '../components/KeyMetricsSummary';
 import { Link } from 'wouter';
 
 export default function StockDetail() {
@@ -134,6 +135,9 @@ export default function StockDetail() {
                     )}
                 </div>
             </div>
+
+            {/* Key Metrics Summary */}
+            <KeyMetricsSummary ticker={ticker} />
 
             {/* PE Valuation Comparison */}
             {(() => {

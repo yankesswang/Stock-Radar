@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'wouter';
 import axios from 'axios';
 import {
@@ -6,7 +6,7 @@ import {
 } from 'recharts';
 import {
   RefreshCw, TrendingUp, TrendingDown, DollarSign,
-  BarChart2, ExternalLink, Layers,
+  BarChart2, ExternalLink, Layers, Plus, X, Trash2,
 } from 'lucide-react';
 
 const PIE_COLORS = [
@@ -16,6 +16,26 @@ const PIE_COLORS = [
 ];
 
 const ACCOUNTS = ['All', 'eToro', 'Firstrade'];
+
+const DEFAULT_PORTFOLIOS = [
+  { key: 'mine', label: 'My Portfolio', param: null, gsheetId: null, custom: false },
+];
+
+const STORAGE_KEY = 'gsheet_custom_groups';
+
+function loadCustomGroups() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function saveCustomGroups(groups) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(groups));
+}
+
+function parseGSheetId(input) {
+  const m = input.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : input.trim();
+}
 
 function fmt(n, dec = 2) {
   if (n == null) return '—';
@@ -39,21 +59,73 @@ function StatusBadge({ status }) {
 }
 
 export default function GSheetPortfolio() {
-  const [data,    setData]    = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [acct,    setAcct]    = useState('All');
-  const [error,   setError]   = useState(null);
+  const [customGroups, setCustomGroups] = useState(() => loadCustomGroups());
+  const [data,         setData]         = useState(null);
+  const [loading,      setLoading]      = useState(true);
+  const [acct,         setAcct]         = useState('All');
+  const [error,        setError]        = useState(null);
+  const [portfolio,    setPortfolio]    = useState(DEFAULT_PORTFOLIOS[0]);
+  const [showModal,    setShowModal]    = useState(false);
+  const [newName,      setNewName]      = useState('');
+  const [newUrl,       setNewUrl]       = useState('');
+  const [urlError,     setUrlError]     = useState('');
+  const nameRef = useRef(null);
 
-  const load = () => {
+  const allPortfolios = [...DEFAULT_PORTFOLIOS, ...customGroups];
+
+  const load = (p) => {
     setLoading(true);
     setError(null);
-    axios.get('/api/portfolio/gsheet')
+    let url = '/api/portfolio/gsheet';
+    if (p.gsheetId) {
+      url += `?gsheet_id=${encodeURIComponent(p.gsheetId)}`;
+    } else if (p.param) {
+      url += `?portfolio=${p.param}`;
+    }
+    axios.get(url)
       .then(r => setData(r.data))
       .catch(e => setError(e?.response?.data?.detail || 'Failed to load sheet'))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(portfolio); }, [portfolio]);
+
+  useEffect(() => {
+    if (showModal) setTimeout(() => nameRef.current?.focus(), 50);
+  }, [showModal]);
+
+  const openModal = () => {
+    setNewName(''); setNewUrl(''); setUrlError(''); setShowModal(true);
+  };
+
+  const addGroup = () => {
+    const name = newName.trim();
+    const raw  = newUrl.trim();
+    if (!name) { setUrlError('請輸入分組名稱'); return; }
+    if (!raw)  { setUrlError('請輸入 Google Sheet 網址或 ID'); return; }
+    const id = parseGSheetId(raw);
+    if (!id)   { setUrlError('無法解析 Google Sheet ID'); return; }
+
+    const key   = `custom_${Date.now()}`;
+    const group = { key, label: name, param: null, gsheetId: id, custom: true };
+    const next  = [...customGroups, group];
+    setCustomGroups(next);
+    saveCustomGroups(next);
+    setShowModal(false);
+    setPortfolio(group);
+    setAcct('All');
+  };
+
+  const removeGroup = (e, key) => {
+    e.stopPropagation();
+    const next = customGroups.filter(g => g.key !== key);
+    setCustomGroups(next);
+    saveCustomGroups(next);
+    if (portfolio.key === key) {
+      setPortfolio(DEFAULT_PORTFOLIOS[0]);
+      setAcct('All');
+    }
+  };
 
   if (loading) {
     return (
@@ -68,42 +140,142 @@ export default function GSheetPortfolio() {
     return (
       <div className="container py-20 text-center space-y-3">
         <p className="text-[var(--accent-danger)]">{error}</p>
-        <button onClick={load} className="px-4 py-2 rounded-xl text-sm font-semibold bg-[var(--accent-purple)] text-white hover:opacity-90">
+        <button onClick={() => load(portfolio)} className="px-4 py-2 rounded-xl text-sm font-semibold bg-[var(--accent-purple)] text-white hover:opacity-90">
           Retry
         </button>
       </div>
     );
   }
 
+  if (!data) return null;
+
   const { total_value, overall_return, sectors, holdings } = data;
 
-  // filter by account
   const filtered = acct === 'All'
     ? holdings
     : holdings.filter(h => h.account === acct);
 
-  // aggregate summary for filtered view
   const filteredValue = filtered.reduce((s, h) => s + (h.value || 0), 0);
 
   return (
     <div className="container py-10 space-y-6 animate-fade-in">
+      {/* Add Group Modal */}
+      {showModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            className="w-full max-w-sm mx-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--glass-border)] shadow-2xl p-6 space-y-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold">新增分組</h3>
+              <button onClick={() => setShowModal(false)} className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.06)] transition-all">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-[var(--text-muted)] mb-1 block">分組名稱 *</label>
+                <input
+                  ref={nameRef}
+                  type="text"
+                  placeholder="例如：弟弟的投資組合"
+                  value={newName}
+                  onChange={e => { setNewName(e.target.value); setUrlError(''); }}
+                  onKeyDown={e => e.key === 'Enter' && addGroup()}
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--glass-border)] text-sm outline-none focus:border-[var(--accent-purple)] transition-colors"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-[var(--text-muted)] mb-1 block">Google Sheet 網址或 ID *</label>
+                <input
+                  type="text"
+                  placeholder="https://docs.google.com/spreadsheets/d/..."
+                  value={newUrl}
+                  onChange={e => { setNewUrl(e.target.value); setUrlError(''); }}
+                  onKeyDown={e => e.key === 'Enter' && addGroup()}
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--glass-border)] text-sm outline-none focus:border-[var(--accent-purple)] transition-colors font-mono text-xs"
+                />
+                {urlError && <p className="mt-1 text-[10px] text-[var(--accent-danger)]">{urlError}</p>}
+                <p className="mt-1 text-[10px] text-[var(--text-muted)]">請確保 Google Sheet 已設為「任何人都可以檢視」</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={addGroup}
+                disabled={!newName.trim() || !newUrl.trim()}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold bg-[var(--accent-purple)] text-white hover:opacity-90 disabled:opacity-40 transition-all"
+              >
+                新增
+              </button>
+              <button
+                onClick={() => setShowModal(false)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.06)] transition-all"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[var(--accent-cyan)] to-[var(--accent-purple)] flex items-center justify-center shadow-lg">
             <Layers size={17} className="text-white" />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight">My Portfolio</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight">{portfolio.label}</h1>
             <p className="text-xs text-[var(--text-muted)]">Synced from Google Sheet · live valuation overlay</p>
           </div>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.05)] transition-all"
-        >
-          <RefreshCw size={14} /> Refresh
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Portfolio switcher */}
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-[rgba(255,255,255,0.04)] border border-[var(--glass-border)]">
+            {allPortfolios.map(p => (
+              <div key={p.key} className="relative group/tab">
+                <button
+                  onClick={() => { setPortfolio(p); setAcct('All'); }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    portfolio.key === p.key
+                      ? 'bg-[rgba(139,92,246,0.2)] text-[var(--accent-purple)]'
+                      : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+                  } ${p.custom ? 'pr-6' : ''}`}
+                >
+                  {p.label}
+                </button>
+                {p.custom && (
+                  <button
+                    onClick={e => removeGroup(e, p.key)}
+                    title="刪除此分組"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--accent-danger)] opacity-0 group-hover/tab:opacity-100 transition-all"
+                  >
+                    <Trash2 size={10} />
+                  </button>
+                )}
+              </div>
+            ))}
+            {/* Add group button */}
+            <button
+              onClick={openModal}
+              title="新增分組"
+              className="px-2 py-1.5 rounded-lg text-xs text-[var(--text-muted)] hover:text-[var(--accent-purple)] hover:bg-[rgba(139,92,246,0.1)] transition-all"
+            >
+              <Plus size={13} />
+            </button>
+          </div>
+          <button
+            onClick={() => load(portfolio)}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.05)] transition-all"
+          >
+            <RefreshCw size={14} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Summary cards */}

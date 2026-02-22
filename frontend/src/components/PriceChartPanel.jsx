@@ -14,6 +14,7 @@ const PERIODS = [
   { label: '1Y', value: '1y' },
   { label: '2Y', value: '2y' },
   { label: '5Y', value: '5y' },
+  { label: '10Y', value: '10y' },
   { label: 'MAX', value: 'max' },
 ];
 
@@ -176,7 +177,7 @@ const SEVERITY_STYLE = {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function PriceChartPanel({ ticker }) {
-  const [period,    setPeriod]    = useState('1y');
+  const [period,    setPeriod]    = useState('max');
   const [bars,      setBars]      = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);

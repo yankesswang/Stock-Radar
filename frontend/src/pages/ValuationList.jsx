@@ -3,7 +3,8 @@ import axios from 'axios';
 import { Link } from 'wouter';
 import {
     ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ChevronsUpDown,
-    SlidersHorizontal, X, ChevronDown, Check, Search, RotateCcw
+    SlidersHorizontal, X, ChevronDown, Check, Search, RotateCcw, CalendarDays,
+    RefreshCw, Clock,
 } from 'lucide-react';
 
 export default function ValuationList() {
@@ -30,6 +31,9 @@ export default function ValuationList() {
     const [filtersOpen, setFiltersOpen] = useState(false);
     const [industryList, setIndustryList] = useState([]);
 
+    const [earningsDates,  setEarningsDates]  = useState({});
+    const [schedStatus,    setSchedStatus]    = useState(null);
+    const [schedRunning,   setSchedRunning]   = useState(false);
     const debounceRef = useRef(null);
 
     useEffect(() => {
@@ -37,6 +41,35 @@ export default function ValuationList() {
             .then(res => setIndustryList(res.data.map(i => i.name).sort()))
             .catch(err => console.error('Failed to fetch industries:', err));
     }, []);
+
+    useEffect(() => {
+        axios.get('/api/earnings/calendar')
+            .then(res => {
+                const map = {};
+                for (const ev of (res.data.events || [])) map[ev.ticker] = ev.date;
+                setEarningsDates(map);
+            })
+            .catch(() => {});
+    }, []);
+
+    // Scheduler status (poll every 5s while running)
+    useEffect(() => {
+        let interval;
+        const fetchStatus = () => {
+            axios.get('/api/scheduler/status')
+                .then(res => { setSchedStatus(res.data); setSchedRunning(res.data.status === 'running'); })
+                .catch(() => {});
+        };
+        fetchStatus();
+        interval = setInterval(fetchStatus, 5000);
+        return () => clearInterval(interval);
+    }, []);
+
+    const triggerRefresh = () => {
+        if (schedRunning) return;
+        setSchedRunning(true);
+        axios.post('/api/scheduler/run').catch(() => setSchedRunning(false));
+    };
 
     const hasActiveFilters = () => {
         return search || industries.length > 0 || status ||
@@ -197,6 +230,41 @@ export default function ValuationList() {
                         {pag.total || '...'} stocks across {pag.total_pages || '...'} pages
                     </p>
                 </div>
+
+                {/* Data freshness widget */}
+                {schedStatus && (
+                    <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl border border-[var(--glass-border)] bg-[rgba(255,255,255,0.03)] shrink-0">
+                        <div className="flex items-center gap-2">
+                            <Clock size={13} className="text-[var(--text-muted)]" />
+                            <div className="text-xs">
+                                {schedStatus.status === 'running' ? (
+                                    <span className="text-[var(--accent-yellow)]">
+                                        Refreshing… {schedStatus.done}/{schedStatus.total}
+                                        {schedStatus.current && <span className="opacity-60 ml-1">({schedStatus.current})</span>}
+                                    </span>
+                                ) : schedStatus.last_run ? (
+                                    <span className="text-[var(--text-muted)]">
+                                        Updated {daysSince(schedStatus.last_run)}
+                                        {schedStatus.next_run && (
+                                            <span className="ml-1 opacity-60">· next {formatNextRun(schedStatus.next_run)}</span>
+                                        )}
+                                    </span>
+                                ) : (
+                                    <span className="text-[var(--text-muted)]">Never refreshed</span>
+                                )}
+                            </div>
+                        </div>
+                        <button
+                            onClick={triggerRefresh}
+                            disabled={schedRunning}
+                            title="Refresh all data now"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-[rgba(139,92,246,0.12)] text-[var(--accent-purple)] hover:bg-[rgba(139,92,246,0.2)] disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                        >
+                            <RefreshCw size={11} className={schedRunning ? 'animate-spin' : ''} />
+                            {schedRunning ? 'Running…' : 'Refresh Now'}
+                        </button>
+                    </div>
+                )}
             </div>
 
             {/* Screener toolbar */}
@@ -378,6 +446,14 @@ export default function ValuationList() {
                                             >
                                                 {v.ticker}
                                             </Link>
+                                            {earningsDates[v.ticker] && (
+                                                <div className="flex items-center gap-1 mt-0.5">
+                                                    <CalendarDays size={9} className="text-[var(--text-muted)]" />
+                                                    <span className="text-[10px] text-[var(--text-muted)]">
+                                                        {new Date(earningsDates[v.ticker] + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                                    </span>
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 text-[var(--text-secondary)] text-[14px] truncate max-w-[240px]">
                                             {v.company_name}
@@ -457,6 +533,19 @@ export default function ValuationList() {
             </div>
         </div>
     );
+}
+
+/* ─── Date helpers ─── */
+function daysSince(iso) {
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    if (diff === 0) return 'today';
+    if (diff === 1) return '1 day ago';
+    return `${diff} days ago`;
+}
+
+function formatNextRun(iso) {
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 /* ─── Filter Tag (shown when panel is collapsed) ─── */

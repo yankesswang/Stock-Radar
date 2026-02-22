@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { TrendingUp, PlusCircle, Radar, Briefcase } from 'lucide-react';
+import { TrendingUp, PlusCircle, Radar, Briefcase, CalendarDays } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 
 export default function Navbar() {
@@ -15,7 +15,7 @@ export default function Navbar() {
             <TrendingUp size={16} className="text-white" />
           </div>
           <span className="text-lg font-bold tracking-tight">
-            PE<span className="text-gradient">Valuation</span>
+            Stock<span className="text-gradient">Radar</span>
           </span>
         </Link>
 
@@ -28,6 +28,12 @@ export default function Navbar() {
         <div className="flex items-center gap-1 shrink-0">
           <NavLink href="/" active={isActive('/')}>Home</NavLink>
           <NavLink href="/valuations" active={isActive('/valuations')}>Valuations</NavLink>
+          <NavLink href="/earnings" active={isActive('/earnings')}>
+            <span className="flex items-center gap-1.5">
+              <CalendarDays size={13} />
+              Earnings
+            </span>
+          </NavLink>
           <NavLink href="/signals" active={isActive('/signals')}>
             <span className="flex items-center gap-1.5">
               <Radar size={13} />
