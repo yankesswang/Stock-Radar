@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { TrendingUp, PlusCircle, Radar, Briefcase, CalendarDays } from 'lucide-react';
+import { TrendingUp, PlusCircle, Radar, Briefcase, CalendarDays, BarChart3 } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
 
 export default function Navbar() {
@@ -28,6 +28,12 @@ export default function Navbar() {
         <div className="flex items-center gap-1 shrink-0">
           <NavLink href="/" active={isActive('/')}>Home</NavLink>
           <NavLink href="/valuations" active={isActive('/valuations')}>Valuations</NavLink>
+          <NavLink href="/compare" active={location.startsWith('/compare')}>
+            <span className="flex items-center gap-1.5">
+              <BarChart3 size={13} />
+              Compare
+            </span>
+          </NavLink>
           <NavLink href="/earnings" active={isActive('/earnings')}>
             <span className="flex items-center gap-1.5">
               <CalendarDays size={13} />
