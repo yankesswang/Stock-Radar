@@ -5,9 +5,11 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: true,
+    allowedHosts: ['lesson-kansas-prescription-meter.trycloudflare.com'],
     proxy: {
       '/api': {
-        target: 'http://localhost:6000',
+        target: 'http://localhost:2000',
         changeOrigin: true,
       },
     },

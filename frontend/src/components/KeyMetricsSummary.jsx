@@ -57,6 +57,11 @@ function Tile({ metric }) {
             <div className={`text-[15px] font-bold font-mono tabular-nums mt-1 ${col}`}>
                 {fmt2(metric.display)}
             </div>
+            {metric.sub && (
+                <div className="text-[11px] text-[var(--text-muted)] font-mono tabular-nums mt-0.5">
+                    {metric.sub}
+                </div>
+            )}
         </div>
     );
 }

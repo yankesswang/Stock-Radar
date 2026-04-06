@@ -89,12 +89,13 @@ def _run_scrape(job_id: str, ticker: str, group: str) -> None:
 
         # ── Step 3: Forecast ────────────────────────────────────────────────
         step(f"Scraping analyst forecasts for {ticker}…")
-        from scripts.scrape_forecast import scrape_forecast, save_to_db  # noqa: PLC0415
+        from scripts.scrape_forecast import scrape_forecast, save_to_db, save_ticker_json  # noqa: PLC0415
 
         forecast_data = scrape_forecast(ticker)
         if forecast_data:
             save_to_db(ticker, forecast_data)
-            step("Saved forecast data to database.")
+            save_ticker_json(ticker, forecast_data)
+            step("Saved forecast data to database and JSON file.")
         else:
             step("No forecast data available — skipped.")
 

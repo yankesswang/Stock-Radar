@@ -17,10 +17,11 @@ class Settings(BaseSettings):
     DATA_DIR: Path = _PROJECT_ROOT / "data"
     PROJECT_ROOT: Path = _PROJECT_ROOT
     CURRENT_FISCAL_YEAR: int = 2025
-    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ORIGINS: list[str] = ["http://localhost:1000", "http://localhost:5173", "http://localhost:3000"]
 
-    # Google Sheet ID for portfolio sync (set in backend/.env)
+    # Google Sheet IDs for portfolio sync (set in backend/.env)
     GSHEET_ID: str = ""
+    GSHEET_MOM_ID: str = ""
 
 
 settings = Settings()

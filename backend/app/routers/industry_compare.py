@@ -99,7 +99,7 @@ def _ticker_metrics(ticker: str, db: Session) -> dict[str, Any]:
             .first()
         )
         if val and val.current_price is not None:
-            current_price = float(val.current_price)
+            current_price = val.current_price  # type: ignore[assignment]
 
     # Recalculate upside % with the latest stored price
     avg_target = price_target.get("average")

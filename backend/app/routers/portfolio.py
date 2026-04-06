@@ -64,6 +64,24 @@ class HoldingUpdate(BaseModel):
     notes: str | None = None
 
 
+class CsvHoldingCreate(BaseModel):
+    portfolio: str
+    account: str
+    ticker: str
+    shares: float
+    avg_cost: float
+    notes: str = ""
+
+
+class CsvHoldingUpdate(BaseModel):
+    portfolio: str
+    account: str
+    ticker: str
+    shares: float | None = None
+    avg_cost: float | None = None
+    notes: str | None = None
+
+
 # ── Live price helpers ────────────────────────────────────────────────────────
 
 def _fetch_price(ticker: str) -> float | None:
@@ -86,6 +104,37 @@ def _fetch_prices(tickers: list[str]) -> dict[str, float]:
             if p is not None:
                 prices[t.upper()] = p
     return prices
+
+
+def _fetch_price_info(ticker: str) -> dict | None:
+    """Return price + daily change by comparing last two closes."""
+    try:
+        hist = yf.Ticker(ticker.upper()).history(period="5d", auto_adjust=True)
+        closes = hist["Close"].dropna()
+        if closes.empty:
+            return None
+        price = float(closes.iloc[-1])
+        if len(closes) >= 2:
+            prev  = float(closes.iloc[-2])
+            change     = round(price - prev, 4)
+            change_pct = round(change / prev * 100, 2)
+        else:
+            prev = change = change_pct = None
+        return {"price": price, "prev_close": prev, "day_change": change, "day_change_pct": change_pct}
+    except Exception:
+        return None
+
+
+def _fetch_prices_info(tickers: list[str]) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_fetch_price_info, t): t for t in tickers}
+        for fut in as_completed(futures):
+            t = futures[fut]
+            info = fut.result()
+            if info is not None:
+                result[t.upper()] = info
+    return result
 
 
 # ── Valuation lookup ──────────────────────────────────────────────────────────
@@ -193,6 +242,187 @@ def _portfolio_summary(enriched: list[dict]) -> dict:
     }
 
 
+# ── Portfolio CSV loader (Google Sheets → local cache fallback) ───────────────
+
+def _fetch_raw(url: str) -> bytes:
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return urllib.request.urlopen(url, context=ctx, timeout=15).read()
+
+
+def _parse_main_sheet(raw: bytes) -> list[dict]:
+    """Main sheet is already in clean CSV format: portfolio,account,ticker,shares,avg_cost,leverage,notes"""
+    import math
+    df = pd.read_csv(io.BytesIO(raw))
+    df.columns = df.columns.str.lower().str.strip()
+    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df = df[df["ticker"].str.match(r"^[A-Z]{1,6}(-[A-Z])?$")]
+    # CASH rows have no shares — treat as 1 share at the cash balance value
+    df.loc[df["ticker"] == "CASH", "shares"] = 1.0
+    df = df.dropna(subset=["shares", "avg_cost"])
+    df["portfolio"] = df["portfolio"].astype(str).str.strip()
+    df["account"]   = df["account"].astype(str).str.strip()
+    df["notes"]     = df.get("notes", pd.Series([""] * len(df))).fillna("").astype(str).str.strip()
+    if "leverage" not in df.columns:
+        df["leverage"] = 1.0
+    df["leverage"] = pd.to_numeric(df["leverage"], errors="coerce").fillna(1.0)
+    return df[["portfolio", "account", "ticker", "shares", "avg_cost", "leverage", "notes"]].to_dict("records")
+
+
+def _parse_mom_sheet(raw: bytes) -> list[dict]:
+    """Mom sheet: positional format — ticker=col0, buy_price=col2, shares=col3"""
+    import math
+
+    def _f(val):
+        try:
+            s = str(val).replace(",", "").strip()
+            if s.lower() in ("nan", "inf", "-inf", ""):
+                return None
+            r = float(s)
+            return None if (math.isnan(r) or math.isinf(r)) else r
+        except Exception:
+            return None
+
+    df = pd.read_csv(io.BytesIO(raw), header=None)
+    rows = []
+    for i in range(1, len(df)):
+        row = df.iloc[i]
+        c0 = str(row[0] if pd.notna(row[0]) else "").strip()
+        if not c0 or "CASH" in c0.upper() or "台幣" in c0 or "NaN" in c0:
+            continue
+        shares   = _f(row[3])
+        avg_cost = _f(row[2])
+        if not shares or not avg_cost:
+            continue
+        if re.match(r"^[A-Z]{1,5}$", c0):
+            rows.append({"portfolio": "Mom", "account": "eToro", "ticker": c0,
+                         "shares": shares, "avg_cost": avg_cost, "notes": ""})
+        elif re.match(r"^\d{2,4}$", c0):
+            rows.append({"portfolio": "Mom", "account": "eToro",
+                         "ticker": c0.zfill(4) + ".TW",
+                         "shares": shares, "avg_cost": avg_cost,
+                         "notes": "TW stock (TWD price)"})
+    return rows
+
+
+_CSV_PATH  = settings.DATA_DIR / "portfolio.csv"
+_META_PATH = settings.DATA_DIR / "portfolio_meta.json"
+
+
+def _read_meta() -> dict:
+    """Return {portfolio_name: {starting_capital: float, ...}}"""
+    import json
+    if _META_PATH.exists():
+        try:
+            return json.loads(_META_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _write_meta(meta: dict) -> None:
+    import json
+    _META_PATH.write_text(json.dumps(meta, indent=2))
+
+
+# ── Deposits (for MWR / XIRR) ─────────────────────────────────────────────────
+
+_DEPOSITS_PATH = settings.DATA_DIR / "portfolio_deposits.json"
+
+
+def _read_deposits() -> dict:
+    """Return {portfolio_name: [{"date": "YYYY-MM-DD", "amount": float}, ...]}"""
+    import json
+    if _DEPOSITS_PATH.exists():
+        try:
+            return json.loads(_DEPOSITS_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _write_deposits(data: dict) -> None:
+    import json
+    _DEPOSITS_PATH.write_text(json.dumps(data, indent=2))
+
+
+def _calc_mwr(deposits: list[dict], current_value: float) -> float | None:
+    """
+    Annualised Money-Weighted Return (XIRR).
+    deposits: [{"date": "YYYY-MM-DD", "amount": float}, ...]
+    Returns MWR as a percentage (e.g. 15.3), or None if not computable.
+    Requires the earliest deposit to be at least 30 days ago for a meaningful result.
+    """
+    from datetime import date as _date
+    import numpy as np
+
+    if not deposits or current_value <= 0:
+        return None
+
+    today = _date.today()
+    # Build (cash_flow, date) pairs — deposits are outflows (negative)
+    cf_dates = [(_date.fromisoformat(d["date"]), -float(d["amount"])) for d in deposits]
+    cf_dates.append((today, current_value))
+    cf_dates.sort(key=lambda x: x[0])
+
+    d0 = cf_dates[0][0]
+    times = np.array([(d - d0).days / 365.25 for d, _ in cf_dates])
+    cfs   = np.array([cf for _, cf in cf_dates])
+
+    def npv(r):
+        return np.sum(cfs / (1.0 + r) ** times)
+
+    def dnpv(r):
+        return np.sum(-times * cfs / (1.0 + r) ** (times + 1))
+
+    # Newton-Raphson with fallback bracket search
+    r = 0.1
+    for _ in range(200):
+        f  = npv(r)
+        df = dnpv(r)
+        if abs(df) < 1e-14:
+            break
+        step = f / df
+        r -= step
+        r = max(r, -0.9999)
+        if abs(step) < 1e-9:
+            break
+
+    # Guard against non-convergence or absurd values (> ±10000%)
+    if not np.isfinite(r) or r <= -1 or abs(r) > 100:
+        return None
+    return round(float(r) * 100, 2)
+
+
+def _read_csv() -> pd.DataFrame:
+    """Read the local portfolio.csv (source of truth for edits)."""
+    if not _CSV_PATH.exists():
+        raise FileNotFoundError("portfolio.csv not found — click 'Sync from Sheet' first")
+    return pd.read_csv(_CSV_PATH)
+
+
+def _write_csv(df: pd.DataFrame) -> None:
+    df.to_csv(_CSV_PATH, index=False)
+
+
+def _sync_from_sheets() -> pd.DataFrame:
+    """Fetch fresh data from Google Sheets and overwrite local portfolio.csv."""
+    if not settings.GSHEET_ID:
+        raise ValueError("GSHEET_ID is not set in backend/.env")
+    main_url = f"https://docs.google.com/spreadsheets/d/{settings.GSHEET_ID}/export?format=csv&gid=0"
+    rows = _parse_main_sheet(_fetch_raw(main_url))
+    if settings.GSHEET_MOM_ID:
+        mom_url = f"https://docs.google.com/spreadsheets/d/{settings.GSHEET_MOM_ID}/export?format=csv&gid=0"
+        mom_rows = _parse_main_sheet(_fetch_raw(mom_url))
+        for r in mom_rows:
+            r["portfolio"] = "Mom"
+        rows += mom_rows
+    df = pd.DataFrame(rows)
+    _write_csv(df)
+    return df
+
+
 # ── Google Sheet loader ──────────────────────────────────────────────────────
 
 def _load_gsheet(gsheet_id: str, sheet_name: str | None = None) -> list[dict]:
@@ -288,7 +518,377 @@ def _load_gsheet(gsheet_id: str, sheet_name: str | None = None) -> list[dict]:
     return positions, round(total_val, 2), overall_return
 
 
+# ── Beta calculation ──────────────────────────────────────────────────────────
+
+def _calc_beta(ticker: str, market_returns: "pd.Series") -> float | None:
+    """Compute beta of a single ticker against pre-fetched market returns."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
+        if len(hist) < 30:
+            return None
+        r = hist["Close"].pct_change().dropna()
+        aligned = r.align(market_returns, join="inner")[0]
+        mkt     = market_returns.loc[aligned.index]
+        if len(aligned) < 30:
+            return None
+        cov = float(aligned.cov(mkt))
+        var = float(mkt.var())
+        return round(cov / var, 3) if var else None
+    except Exception:
+        return None
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
+
+@router.get("/csv/beta")
+def get_portfolio_beta(
+    name: str | None = Query(None, description="Portfolio name; omit for all"),
+):
+    """
+    Calculate weighted portfolio beta vs S&P 500 (SPY, 1-year daily returns).
+    Returns per-holding betas and the value-weighted portfolio beta.
+    """
+    try:
+        df = _read_csv()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    df.columns = df.columns.str.lower().str.strip()
+    df["ticker"]    = df["ticker"].astype(str).str.upper().str.strip()
+    df["portfolio"] = df["portfolio"].astype(str).str.strip()
+    df["shares"]    = pd.to_numeric(df["shares"],   errors="coerce")
+    df["avg_cost"]  = pd.to_numeric(df["avg_cost"], errors="coerce")
+    df = df.dropna(subset=["shares", "avg_cost"])
+
+    if name:
+        df = df[df["portfolio"].str.lower() == name.strip().lower()]
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"Portfolio '{name}' not found")
+
+    # Exclude CASH and leveraged ETFs that aren't real equities if desired
+    df = df[df["ticker"] != "CASH"]
+    tickers = df["ticker"].unique().tolist()
+
+    # Fetch market (SPY) returns once
+    try:
+        spy_hist = yf.Ticker("SPY").history(period="1y", auto_adjust=True)
+        market_returns = spy_hist["Close"].pct_change().dropna()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch SPY data: {exc}")
+
+    # Fetch current prices for weighting
+    prices = _fetch_prices(tickers)
+
+    # Calculate beta for each ticker in parallel
+    betas: dict[str, float | None] = {}
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_calc_beta, t, market_returns): t for t in tickers}
+        for fut in as_completed(futures):
+            t = futures[fut]
+            betas[t] = fut.result()
+
+    # Build per-portfolio weighted beta
+    results: dict[str, dict] = {}
+    for pname, group in df.groupby("portfolio", sort=False):
+        holdings_out = []
+        total_val = 0.0
+        weighted_sum = 0.0
+
+        for _, row in group.iterrows():
+            t       = row["ticker"]
+            price   = prices.get(t) or float(row["avg_cost"])
+            mkt_val = float(row["shares"]) * price
+            beta    = betas.get(t)
+            total_val    += mkt_val
+            if beta is not None:
+                weighted_sum += beta * mkt_val
+            holdings_out.append({"ticker": t, "beta": beta, "market_value": round(mkt_val, 2)})
+
+        portfolio_beta = round(weighted_sum / total_val, 3) if total_val else None
+        results[pname] = {
+            "portfolio_beta": portfolio_beta,
+            "benchmark":      "SPY",
+            "period":         "1y",
+            "holdings":       holdings_out,
+        }
+
+    return {"portfolios": results}
+
+
+@router.get("/csv")
+def get_csv_portfolio(
+    name: str | None = Query(None, description="Filter to one portfolio by name"),
+    db: Session = Depends(get_db),
+):
+    """
+    Read holdings from data/portfolio.csv and enrich with live prices + DB valuations.
+
+    CSV must have columns: portfolio, account, ticker, shares, avg_cost, notes (notes optional)
+    Optional ?name=Main to return only one portfolio.
+
+    Response:
+      {
+        "portfolio_names": [...],
+        "portfolios": {
+          "Main": { "summary": {...}, "holdings": [...] },
+          ...
+        }
+      }
+    """
+    try:
+        df = _read_csv()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load portfolio data: {exc}")
+
+    df.columns = df.columns.str.lower().str.strip()
+    required = {"portfolio", "account", "ticker", "shares", "avg_cost"}
+    missing = required - set(df.columns)
+    if missing:
+        raise HTTPException(status_code=422, detail=f"portfolio.csv is missing columns: {sorted(missing)}")
+
+    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df["portfolio"] = df["portfolio"].astype(str).str.strip()
+    df["account"] = df["account"].astype(str).str.strip()
+    df["notes"] = df.get("notes", pd.Series([""] * len(df))).fillna("").astype(str).str.strip()
+    if "leverage" not in df.columns:
+        df["leverage"] = 1.0
+    df["leverage"] = pd.to_numeric(df["leverage"], errors="coerce").fillna(1.0)
+
+    portfolio_names = df["portfolio"].unique().tolist()
+
+    if name:
+        df = df[df["portfolio"].str.lower() == name.strip().lower()]
+        if df.empty:
+            raise HTTPException(status_code=404, detail=f"Portfolio '{name}' not found in portfolio.csv")
+
+    # Fetch live prices + valuations once across all portfolios
+    all_tickers = df["ticker"].unique().tolist()
+    price_infos = _fetch_prices_info(all_tickers)
+    prices = {t: info["price"] for t, info in price_infos.items()}
+    vals = _get_valuations(all_tickers, db)
+
+    # USD → TWD exchange rate (TWD=X gives units of TWD per 1 USD)
+    usd_twd_rate = _fetch_price("TWD=X")
+
+    meta     = _read_meta()
+    deposits = _read_deposits()
+    portfolios: dict[str, dict] = {}
+    for pname, group in df.groupby("portfolio", sort=False):
+        holdings = []
+        for _, row in group.iterrows():
+            t = row["ticker"]
+            pinfo = price_infos.get(t, {})
+            price = pinfo.get("price")
+            val = vals.get(t, {})
+            shares = float(row["shares"])
+            avg_cost = float(row["avg_cost"])
+            leverage = float(row.get("leverage") or 1)
+            cost_basis = round(shares * avg_cost, 2)
+            market_value = round(shares * price, 2) if price else None
+            raw_pnl = round(market_value - cost_basis, 2) if market_value is not None else None
+            pnl = round(raw_pnl * leverage, 2) if raw_pnl is not None else None
+            pnl_pct = round(raw_pnl / cost_basis * 100 * leverage, 2) if (raw_pnl is not None and cost_basis) else None
+
+            # Cash positions: value = cost_basis, no price/P&L
+            if t == "CASH":
+                market_value = cost_basis
+                pnl          = 0.0
+                pnl_pct      = 0.0
+                price        = None
+
+            fair_pe = val.get("pe_median_price")
+            to_fair = round((fair_pe - price) / price * 100, 1) if (fair_pe and price) else None
+
+            holdings.append({
+                "account":                 row["account"] or "Unknown",
+                "ticker":                  t,
+                "shares":                  shares,
+                "avg_cost":                avg_cost,
+                "leverage":                leverage,
+                "notes":                   row["notes"],
+                "current_price":           price,
+                "day_change":              pinfo.get("day_change"),
+                "day_change_pct":          pinfo.get("day_change_pct"),
+                "cost_basis":              cost_basis,
+                "market_value":            market_value,
+                "unrealized_pnl":          pnl,
+                "return_pct":              pnl_pct,
+                "company_name":            val.get("company_name", t),
+                "industry":                val.get("industry"),
+                "pe_median_price":         fair_pe,
+                "current_year_fair_price": val.get("current_year_fair_price"),
+                "next_year_fair_price":    val.get("next_year_fair_price"),
+                "valuation_status":        val.get("valuation_status"),
+                "valuation_diff_pct":      val.get("valuation_diff_pct"),
+                "pe_median_5y":            val.get("pe_median_5y"),
+                "pct_to_fair_pe":          to_fair,
+            })
+
+        total_cost  = sum(h["cost_basis"] for h in holdings)
+        total_value = sum(h["market_value"] or h["cost_basis"] for h in holdings)
+
+        # Use starting_capital as the baseline for gain/return if configured
+        pmeta            = meta.get(str(pname), {})
+        starting_capital = pmeta.get("starting_capital")
+        base             = starting_capital if starting_capital else total_cost
+        total_pnl        = round(total_value - base, 2)
+        return_pct       = round(total_pnl / base * 100, 2) if base else 0
+
+        total_cash = sum(h["cost_basis"] for h in holdings if h["ticker"] == "CASH")
+        cash_pct   = round(total_cash / total_value * 100, 1) if total_value else 0
+
+        sectors: dict[str, float] = {}
+        for h in holdings:
+            if h["ticker"] == "CASH":
+                ind = "Cash"
+            else:
+                ind = h.get("industry") or "Unknown"
+            sectors[ind] = sectors.get(ind, 0) + (h["market_value"] or h["cost_basis"])
+
+        pdeposits = deposits.get(str(pname), [])
+        total_deposited = sum(float(d["amount"]) for d in pdeposits)
+        # Warn when deposits cover < 50% of portfolio value — likely missing entries
+        deposits_incomplete = bool(pdeposits) and total_value > 0 and (total_deposited / total_value) < 0.5
+        mwr = _calc_mwr(pdeposits, total_value)
+
+        portfolios[pname] = {
+            "summary": {
+                "total_value":      round(total_value, 2),
+                "total_cost":       round(total_cost, 2),
+                "starting_capital": starting_capital,
+                "total_pnl":        total_pnl,
+                "return_pct":       return_pct,
+                "mwr":              mwr,
+                "deposits_incomplete": deposits_incomplete,
+                "total_cash":       round(total_cash, 2),
+                "cash_pct":         cash_pct,
+                "usd_twd_rate":     round(usd_twd_rate, 2) if usd_twd_rate else None,
+                "total_value_twd":  round(total_value * usd_twd_rate, 0) if usd_twd_rate else None,
+                "sectors":          sorted(
+                    [{"name": k, "value": round(v, 2)} for k, v in sectors.items()],
+                    key=lambda x: -x["value"],
+                ),
+            },
+            "holdings": holdings,
+            "deposits": pdeposits,
+        }
+
+    return {"portfolio_names": portfolio_names, "portfolios": portfolios}
+
+
+@router.put("/csv/meta")
+def update_csv_meta(portfolio: str = Query(...), starting_capital: float = Query(...)):
+    """Set the starting capital for a portfolio (used for gain/return calculation)."""
+    meta = _read_meta()
+    meta.setdefault(portfolio, {})["starting_capital"] = starting_capital
+    _write_meta(meta)
+    return {"portfolio": portfolio, "starting_capital": starting_capital}
+
+
+# ── Deposit endpoints ─────────────────────────────────────────────────────────
+
+class DepositCreate(BaseModel):
+    portfolio: str
+    date: str        # "YYYY-MM-DD"
+    amount: float
+
+
+@router.get("/csv/deposits")
+def get_deposits(portfolio: str = Query(...)):
+    """Return deposit history for a portfolio, sorted by date."""
+    data = _read_deposits()
+    entries = sorted(data.get(portfolio, []), key=lambda d: d["date"])
+    return {"portfolio": portfolio, "deposits": entries}
+
+
+@router.post("/csv/deposits", status_code=201)
+def add_deposit(body: DepositCreate):
+    """Add a deposit entry for a portfolio."""
+    from datetime import date as _date
+    try:
+        _date.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+    if body.amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be positive")
+    data = _read_deposits()
+    data.setdefault(body.portfolio, []).append({"date": body.date, "amount": body.amount})
+    data[body.portfolio].sort(key=lambda d: d["date"])
+    _write_deposits(data)
+    return {"portfolio": body.portfolio, "deposits": data[body.portfolio]}
+
+
+@router.delete("/csv/deposits")
+def delete_deposit(portfolio: str = Query(...), date: str = Query(...), amount: float = Query(...)):
+    """Remove a deposit entry by (portfolio, date, amount)."""
+    data = _read_deposits()
+    entries = data.get(portfolio, [])
+    new_entries = [e for e in entries if not (e["date"] == date and e["amount"] == amount)]
+    if len(new_entries) == len(entries):
+        raise HTTPException(status_code=404, detail="Deposit not found")
+    data[portfolio] = new_entries
+    _write_deposits(data)
+    return {"portfolio": portfolio, "deposits": data[portfolio]}
+
+
+@router.post("/csv/sync")
+def sync_csv_portfolio():
+    """Re-fetch portfolio data from Google Sheets and overwrite local portfolio.csv."""
+    try:
+        df = _sync_from_sheets()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Sync failed: {exc}")
+    return {"synced_rows": len(df), "portfolio_names": df["portfolio"].unique().tolist()}
+
+
+@router.post("/csv/holding", status_code=201)
+def add_csv_holding(body: CsvHoldingCreate):
+    """Add a new row to portfolio.csv."""
+    df = _read_csv()
+    ticker = body.ticker.upper().strip()
+    mask = (df["portfolio"] == body.portfolio) & (df["ticker"] == ticker)
+    if mask.any():
+        raise HTTPException(status_code=409, detail=f"{ticker} already exists in {body.portfolio}")
+    new_row = pd.DataFrame([{
+        "portfolio": body.portfolio,
+        "account":   body.account,
+        "ticker":    ticker,
+        "shares":    body.shares,
+        "avg_cost":  body.avg_cost,
+        "leverage":  1,
+        "notes":     body.notes,
+    }])
+    df = pd.concat([df, new_row], ignore_index=True)
+    _write_csv(df)
+    return {"ok": True, "ticker": ticker}
+
+
+@router.put("/csv/holding")
+def update_csv_holding(body: CsvHoldingUpdate):
+    """Update shares / avg_cost / notes for an existing row in portfolio.csv."""
+    df = _read_csv()
+    ticker = body.ticker.upper().strip()
+    mask = (df["portfolio"] == body.portfolio) & (df["account"] == body.account) & (df["ticker"] == ticker)
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"{ticker} not found in {body.portfolio}/{body.account}")
+    if body.shares   is not None: df.loc[mask, "shares"]   = body.shares
+    if body.avg_cost is not None: df.loc[mask, "avg_cost"] = body.avg_cost
+    if body.notes    is not None: df.loc[mask, "notes"]    = body.notes
+    _write_csv(df)
+    return {"ok": True, "ticker": ticker}
+
+
+@router.delete("/csv/holding", status_code=204)
+def delete_csv_holding(portfolio: str = Query(...), account: str = Query(...), ticker: str = Query(...)):
+    """Remove a row from portfolio.csv by (portfolio, account, ticker)."""
+    df = _read_csv()
+    ticker = ticker.upper().strip()
+    mask = (df["portfolio"] == portfolio) & (df["account"] == account) & (df["ticker"] == ticker)
+    if not mask.any():
+        raise HTTPException(status_code=404, detail=f"{ticker} not found in {portfolio}/{account}")
+    df = df[~mask]
+    _write_csv(df)
+
 
 @router.get("/gsheet")
 def get_gsheet_portfolio(
@@ -301,9 +901,14 @@ def get_gsheet_portfolio(
     Optional ?gsheet_id=<ID> to read an arbitrary public Google Sheet directly.
     """
     if not gsheet_id:
-        gsheet_id = settings.GSHEET_ID
-        if not gsheet_id:
-            raise HTTPException(status_code=502, detail="GSHEET_ID is not set in backend/.env")
+        if portfolio == "mom":
+            gsheet_id = settings.GSHEET_MOM_ID
+            if not gsheet_id:
+                raise HTTPException(status_code=502, detail="GSHEET_MOM_ID is not set in backend/.env")
+        else:
+            gsheet_id = settings.GSHEET_ID
+            if not gsheet_id:
+                raise HTTPException(status_code=502, detail="GSHEET_ID is not set in backend/.env")
     try:
         positions, total_val, overall_return = _load_gsheet(gsheet_id)
     except Exception as exc:

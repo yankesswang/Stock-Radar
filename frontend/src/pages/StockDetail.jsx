@@ -143,15 +143,12 @@ export default function StockDetail() {
             {(() => {
                 const currentPrice = livePrice?.price ?? latest.current_price;
                 const peFairValue = latest.pe_median_price;
-                const growthFairValue = latest.current_year_fair_price;
                 const nextYearFairValue = latest.next_year_fair_price;
 
                 const peDiff = peFairValue ? ((currentPrice - peFairValue) / peFairValue * 100).toFixed(1) : null;
-                const growthDiff = growthFairValue ? ((currentPrice - growthFairValue) / growthFairValue * 100).toFixed(1) : null;
                 const nextYearDiff = nextYearFairValue ? ((currentPrice - nextYearFairValue) / nextYearFairValue * 100).toFixed(1) : null;
 
                 const isPeUndervalued = peDiff && parseFloat(peDiff) < 0;
-                const isGrowthUndervalued = growthDiff && parseFloat(growthDiff) < 0;
                 const isNextYearUndervalued = nextYearDiff && parseFloat(nextYearDiff) < 0;
 
                 return (
@@ -159,7 +156,7 @@ export default function StockDetail() {
                         <h3 className="text-base font-semibold mb-4 text-[var(--text-secondary)]">
                             {livePrice ? 'Live Valuation Analysis' : 'Valuation Analysis'}
                         </h3>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {/* PE Fair Value Comparison */}
                             <div className="p-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--glass-border)]">
                                 <div className="flex justify-between items-start mb-3">
@@ -182,31 +179,6 @@ export default function StockDetail() {
                                 </div>
                                 <div className="text-xs text-[var(--text-muted)] mt-1">
                                     Based on 5Y Median PE: {latest.pe_median_5y}
-                                </div>
-                            </div>
-
-                            {/* Growth Fair Value Comparison */}
-                            <div className="p-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--glass-border)]">
-                                <div className="flex justify-between items-start mb-3">
-                                    <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider">vs Growth Fair Value</div>
-                                    <div className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                                        isGrowthUndervalued
-                                            ? 'bg-[rgba(52,211,153,0.15)] text-[var(--accent-success)]'
-                                            : 'bg-[rgba(248,113,113,0.15)] text-[var(--accent-danger)]'
-                                    }`}>
-                                        {isGrowthUndervalued ? 'Undervalued' : 'Overvalued'}
-                                    </div>
-                                </div>
-                                <div className="flex items-baseline gap-2">
-                                    <span className="text-2xl font-bold font-mono">${growthFairValue}</span>
-                                    <span className={`text-sm font-semibold ${
-                                        isGrowthUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                                    }`}>
-                                        {isGrowthUndervalued ? '' : '+'}{growthDiff}%
-                                    </span>
-                                </div>
-                                <div className="text-xs text-[var(--text-muted)] mt-1">
-                                    Based on Est PE: {latest.estimated_pe} × EPS: ${latest.current_year_eps}
                                 </div>
                             </div>
 
@@ -248,12 +220,6 @@ export default function StockDetail() {
                     accent="var(--accent-success)"
                 />
                 <StatCard
-                    label="Fair Value (Growth)"
-                    value={`$${latest.current_year_fair_price}`}
-                    sub={`Est PE: ${latest.estimated_pe}`}
-                    accent="var(--accent-purple)"
-                />
-                <StatCard
                     label="EPS (Current)"
                     value={`$${latest.current_year_eps}`}
                     sub={`Growth: ${latest.eps_growth_past}%`}
@@ -262,7 +228,9 @@ export default function StockDetail() {
                 <StatCard
                     label="EPS (Next Year)"
                     value={`$${latest.next_year_eps}`}
-                    sub={`5Y Growth: ${latest.eps_growth_5y}%`}
+                    sub={latest.next_year_eps && latest.current_year_eps
+                        ? `YoY Growth: ${((latest.next_year_eps - latest.current_year_eps) / latest.current_year_eps * 100).toFixed(1)}%`
+                        : null}
                     accent="var(--accent-amber)"
                 />
             </div>

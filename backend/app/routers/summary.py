@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+import yfinance as yf
 
 from ..config import settings
 from ..database import get_db
@@ -106,6 +107,40 @@ def get_summary(ticker: str, db: Session = Depends(get_db)):
             .first()
         )
 
+    # ── Live PE from yfinance (always current, overrides stale stats file) ────
+    yf_ticker = yf.Ticker(t)
+    yf_info: dict = {}
+    fwd_pe_live: float | None = None
+    trail_pe_live: float | None = None
+    try:
+        yf_info = yf_ticker.info or {}
+        price = yf_info.get("currentPrice") or yf_info.get("regularMarketPrice")
+        # Forward PE = current price / current fiscal year EPS estimate ("0y")
+        # yfinance's forwardPE uses next-FY EPS (+1y) which overstates future growth
+        est = yf_ticker.earnings_estimate
+        if est is not None and not est.empty and price:
+            row = est[est.index == "0y"]
+            if not row.empty:
+                eps_0y = row["avg"].iloc[0]
+                if eps_0y and eps_0y > 0:
+                    fwd_pe_live = round(price / eps_0y, 2)
+        # Fallback to yfinance forwardPE if estimate unavailable
+        if fwd_pe_live is None:
+            v = yf_info.get("forwardPE")
+            if v:
+                fwd_pe_live = round(v, 2)
+        # Trailing PE always from info
+        v = yf_info.get("trailingPE")
+        if v:
+            trail_pe_live = round(v, 2)
+    except Exception:
+        pass
+
+    def _live_pe(live_val: float | None, label: str, fallback_label: str, hint: str) -> dict:
+        if live_val is not None:
+            return {"label": label, "value": live_val, "display": f"{live_val:.2f}", "hint": hint}
+        return {**_metric(stats_flat, fallback_label), "label": label, "hint": hint}
+
     def s(label: str) -> dict:
         return _metric(stats_flat, label)
 
@@ -115,8 +150,8 @@ def get_summary(ticker: str, db: Session = Depends(get_db)):
             "name": "Valuation",
             "color": "cyan",
             "metrics": [
-                {**s("Forward PE"), "hint": "Forward price-to-earnings (analyst estimate)"},
-                {**s("PE Ratio"), "label": "PE (TTM)", "hint": "Trailing-twelve-months P/E"},
+                _live_pe(fwd_pe_live,   "Forward PE", "Forward PE", "Forward price-to-earnings — price ÷ current-FY EPS estimate"),
+                _live_pe(trail_pe_live, "PE (TTM)",  "PE Ratio",   "Trailing-twelve-months P/E"),
                 {
                     "label": "PE Median (5Y)",
                     "value": val.pe_median_5y if val else None,
@@ -146,10 +181,11 @@ def get_summary(ticker: str, db: Session = Depends(get_db)):
                     "hint": "Current fiscal year EPS growth estimate",
                 },
                 {
-                    "label": "EPS Growth (Next FY)",
-                    "value": annual.get("next_year_growth"),
-                    "display": _pct(annual.get("next_year_growth")),
-                    "hint": "Next fiscal year EPS growth estimate",
+                    "label": "EPS Next Year",
+                    "value": annual.get("next_year_eps"),
+                    "display": _dollar(annual.get("next_year_eps")),
+                    "sub": _pct(annual.get("next_year_growth")) if annual.get("next_year_growth") is not None else None,
+                    "hint": "Next fiscal year EPS estimate · sub-line shows YoY growth %",
                 },
                 {
                     "label": "Rev Growth (FY est)",

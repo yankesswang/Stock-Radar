@@ -16,6 +16,8 @@ import PortfolioDetail from './pages/PortfolioDetail';
 import GSheetPortfolio from './pages/GSheetPortfolio';
 import EarningsCalendar from './pages/EarningsCalendar';
 import Compare from './pages/Compare';
+import PriceAlerts from './pages/PriceAlerts';
+import Watchlists from './pages/Watchlists';
 
 function App() {
   return (
@@ -33,6 +35,8 @@ function App() {
         <Route path="/stock/:ticker/pe" component={StockPE} />
         <Route path="/earnings" component={EarningsCalendar} />
         <Route path="/compare" component={Compare} />
+        <Route path="/alerts" component={PriceAlerts} />
+        <Route path="/watchlists" component={Watchlists} />
         <Route path="/signals" component={SignalWatchlist} />
         <Route path="/portfolio/gsheet" component={GSheetPortfolio} />
         <Route path="/portfolio/:id" component={PortfolioDetail} />
