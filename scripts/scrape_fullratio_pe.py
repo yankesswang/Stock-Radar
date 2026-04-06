@@ -13,6 +13,7 @@ Usage:
 """
 import argparse
 import json
+import math
 import random
 import sys
 import time
@@ -39,6 +40,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config import STOCK_LIST
 from src import DATA_DIR
 from src.db_service import save_pe_median
+from backend.app.database import SessionLocal
+from backend.app.models import Metric, Stock
 from src.utils import compute_iqr_statistics, filter_outliers
 
 OUTPUT_DIR = DATA_DIR / "pe" / "fullratio"
@@ -71,6 +74,50 @@ def get_exchange(ticker: str) -> str | None:
         return _YF_TO_FULLRATIO.get(code.upper()) or _YF_TO_FULLRATIO.get(code)
     except Exception:
         return None
+
+
+def get_pe_fallback(ticker: str) -> tuple[float | None, str | None]:
+    """
+    Fallback PE from yfinance when fullratio has no usable data.
+    Priority: trailingPE -> forwardPE.
+    """
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info or {}
+        trailing = info.get("trailingPE")
+        forward = info.get("forwardPE")
+
+        if isinstance(trailing, (int, float)) and trailing > 0:
+            return round(float(trailing), 1), "yfinance.trailingPE"
+        if isinstance(forward, (int, float)) and forward > 0:
+            return round(float(forward), 1), "yfinance.forwardPE"
+    except Exception as exc:
+        print(f"  [WARN] yfinance fallback failed for {ticker}: {exc}")
+
+    # Second fallback: latest ratios snapshot in local DB
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(Metric)
+            .join(Stock, Stock.id == Metric.stock_id)
+            .filter(Stock.ticker == ticker.upper())
+            .order_by(Metric.snapshot_date.desc())
+            .first()
+        )
+        if row:
+            pe_forward = row.pe_forward
+            pe = row.pe
+
+            if isinstance(pe_forward, (int, float)) and not math.isnan(pe_forward) and pe_forward > 0:
+                return round(float(pe_forward), 1), "db.metrics.pe_forward"
+            if isinstance(pe, (int, float)) and not math.isnan(pe) and pe > 0:
+                return round(float(pe), 1), "db.metrics.pe"
+    except Exception as exc:
+        print(f"  [WARN] DB fallback failed for {ticker}: {exc}")
+    finally:
+        db.close()
+
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +277,22 @@ def scrape_ticker(ticker: str, exchange: str | None = None) -> dict | None:
         time.sleep(1)
 
     if html is None:
-        print(f"  [FAIL] Could not fetch data for {ticker}")
-        return None
+        print(f"  [WARN] Could not fetch fullratio page for {ticker}; trying yfinance fallback")
+        pe_fallback, fallback_source = get_pe_fallback(ticker)
+        if pe_fallback is None:
+            print(f"  [FAIL] Could not fetch data for {ticker}")
+            return None
+        print(f"  {ticker} → fallback PE = {pe_fallback} ({fallback_source})")
+        return {
+            "ticker":    ticker,
+            "exchange":  None,
+            "url":       None,
+            "date":      DATE_STR,
+            "pe_median": pe_fallback,
+            "summary":   {"fallback_source": fallback_source},
+            "records":   [],
+            "source":    fallback_source,
+        }
 
     summary = parse_summary_stats(html)
     records = parse_pe_table(html)
@@ -240,6 +301,22 @@ def scrape_ticker(ticker: str, exchange: str | None = None) -> dict | None:
         return None
 
     pe_median = compute_median(records)
+    source = "fullratio.iqr_median"
+
+    # If table parsing fails but summary exists, use the fullratio summary median.
+    if pe_median is None:
+        median_from_summary = summary.get("Median")
+        if isinstance(median_from_summary, (int, float)) and median_from_summary > 0:
+            pe_median = round(float(median_from_summary), 1)
+            source = "fullratio.summary_median"
+
+    # Final fallback: yfinance trailing/forward PE.
+    if pe_median is None:
+        pe_fallback, fallback_source = get_pe_fallback(ticker)
+        if pe_fallback is not None:
+            pe_median = pe_fallback
+            source = fallback_source or "yfinance"
+            print(f"  {ticker} → fallback PE = {pe_median} ({source})")
     print(f"  {ticker} → {len(records)} PE rows, median = {pe_median}")
     if summary:
         print(f"  Summary: {summary}")
@@ -252,6 +329,7 @@ def scrape_ticker(ticker: str, exchange: str | None = None) -> dict | None:
         "pe_median": pe_median,
         "summary":   summary,
         "records":   records,
+        "source":    source,
     }
 
 

@@ -178,6 +178,7 @@ const SEVERITY_STYLE = {
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function PriceChartPanel({ ticker }) {
   const [period,    setPeriod]    = useState('max');
+  const [interval,  setInterval]  = useState('day');
   const [bars,      setBars]      = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
@@ -212,22 +213,57 @@ export default function PriceChartPanel({ ticker }) {
   const activeRef  = useRef(activeIndicators);
   activeRef.current = activeIndicators;
 
-  // ── Fetch ──────────────────────────────────────────────────────────────
+  // ── Cache: keyed by `${ticker}__${period}__${interval}` ───────────────
+  const cacheRef = useRef({});
+
+  function cacheKey(t, p, iv) { return `${t}__${p}__${iv}`; }
+
+  function applyData(data) {
+    setBars(data.bars ?? []);
+    const sr = data.sr ?? { resistance: [], support: [] };
+    setSrData(sr);
+    srDataRef.current = sr;
+  }
+
+  // ── Fetch (with cache + background prefetch) ───────────────────────────
   useEffect(() => {
     if (!ticker) return;
-    setLoading(true);
     setError(null);
     setHoverBar(null);
-    axios.get(`/api/stocks/${ticker}/chart`, { params: { period } })
-      .then(res => {
-        setBars(res.data.bars ?? []);
-        const sr = res.data.sr ?? { resistance: [], support: [] };
-        setSrData(sr);
-        srDataRef.current = sr;
-        setLoading(false);
-      })
-      .catch(err => { setError(err.response?.data?.detail ?? 'Failed to load data'); setLoading(false); });
-  }, [ticker, period]);
+
+    // Evict cache entries for other tickers to avoid unbounded growth
+    Object.keys(cacheRef.current).forEach(k => {
+      if (!k.startsWith(`${ticker}__`)) delete cacheRef.current[k];
+    });
+
+    const key = cacheKey(ticker, period, interval);
+
+    // Serve from cache instantly if available
+    if (cacheRef.current[key]) {
+      applyData(cacheRef.current[key]);
+      setLoading(false);
+    } else {
+      setLoading(true);
+      axios.get(`/api/stocks/${ticker}/chart`, { params: { period, interval } })
+        .then(res => {
+          cacheRef.current[key] = res.data;
+          applyData(res.data);
+          setLoading(false);
+        })
+        .catch(err => { setError(err.response?.data?.detail ?? 'Failed to load data'); setLoading(false); });
+    }
+
+    // Background prefetch the other two intervals
+    const others = ['day', 'week', 'month'].filter(iv => iv !== interval);
+    others.forEach(iv => {
+      const bgKey = cacheKey(ticker, period, iv);
+      if (!cacheRef.current[bgKey]) {
+        axios.get(`/api/stocks/${ticker}/chart`, { params: { period, interval: iv } })
+          .then(res => { cacheRef.current[bgKey] = res.data; })
+          .catch(() => {});
+      }
+    });
+  }, [ticker, period, interval]);
 
   // ── Build charts ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -465,6 +501,28 @@ export default function PriceChartPanel({ ticker }) {
   const alerts     = useMemo(() => computeAlerts(bars), [bars]);
   const bearishCount = alerts.filter(a => a.severity === 'bearish').length;
   const bullishCount = alerts.filter(a => a.severity === 'bullish').length;
+  const fmtSR = (v, digits = 1) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : null);
+  const levelTier = (lvl) => {
+    const score = typeof lvl?.score === 'number' ? lvl.score : 0;
+    const strength = typeof lvl?.strength === 'number' ? lvl.strength : 0;
+    const touches = typeof lvl?.touches === 'number' ? lvl.touches : 0;
+    const vol = typeof lvl?.volume_score === 'number' ? lvl.volume_score : 1;
+    const gaps = typeof lvl?.gap_hits === 'number' ? lvl.gap_hits : 0;
+
+    if ((strength >= 4 && score >= 3.5) || (touches >= 3 && vol >= 1.2) || (score >= 5 && gaps >= 1)) return 'strong';
+    if (strength <= 2 && score < 2.5 && touches <= 1) return 'weak';
+    return 'medium';
+  };
+  const levelTone = (tier, side) => {
+    if (side === 'resistance') {
+      if (tier === 'strong') return { bg: 'rgba(248,113,113,0.26)', border: 'rgba(248,113,113,0.75)', text: '#fecaca' };
+      if (tier === 'weak') return { bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.26)', text: '#fca5a5' };
+      return { bg: 'rgba(248,113,113,0.16)', border: 'rgba(248,113,113,0.45)', text: '#fda4af' };
+    }
+    if (tier === 'strong') return { bg: 'rgba(52,211,153,0.26)', border: 'rgba(52,211,153,0.75)', text: '#bbf7d0' };
+    if (tier === 'weak') return { bg: 'rgba(52,211,153,0.08)', border: 'rgba(52,211,153,0.26)', text: '#86efac' };
+    return { bg: 'rgba(52,211,153,0.16)', border: 'rgba(52,211,153,0.45)', text: '#6ee7b7' };
+  };
 
   // Inline panel label helper
   const PanelLabel = ({ children, extra }) => (
@@ -480,15 +538,29 @@ export default function PriceChartPanel({ ticker }) {
       <div className="card p-3">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3 pb-3 border-b border-[var(--glass-border)]">
           <span className="text-sm font-semibold text-[var(--text-secondary)]">Price Chart</span>
-          <div className="flex gap-1 bg-[var(--bg-tertiary)] border border-[var(--glass-border)] rounded-xl p-1">
-            {PERIODS.map(p => (
-              <button key={p.value} onClick={() => setPeriod(p.value)}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
-                  period === p.value ? 'bg-[var(--accent-cyan)] text-black' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-                }`}>
-                {p.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            {/* Interval toggle */}
+            <div className="flex gap-1 bg-[var(--bg-tertiary)] border border-[var(--glass-border)] rounded-xl p-1">
+              {[{label:'D', value:'day'}, {label:'W', value:'week'}, {label:'M', value:'month'}].map(iv => (
+                <button key={iv.value} onClick={() => setInterval(iv.value)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${
+                    interval === iv.value ? 'bg-[#0052ff] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(0,82,255,0.07)]'
+                  }`}>
+                  {iv.label}
+                </button>
+              ))}
+            </div>
+            {/* Period toggle */}
+            <div className="flex gap-1 bg-[var(--bg-tertiary)] border border-[var(--glass-border)] rounded-xl p-1">
+              {PERIODS.map(p => (
+                <button key={p.value} onClick={() => setPeriod(p.value)}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                    period === p.value ? 'bg-[#0052ff] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(0,82,255,0.07)]'
+                  }`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -524,7 +596,7 @@ export default function PriceChartPanel({ ticker }) {
           <div className="flex items-center gap-2">
             <Layers size={15} className="text-[#e879f9]" />
             <span className="text-sm font-bold">Support &amp; Resistance Levels</span>
-            <span className="text-xs text-[var(--text-muted)]">swing high/low · {period} data</span>
+            <span className="text-xs text-[var(--text-muted)]">swing + gap + volume · {period} data</span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Resistance */}
@@ -536,24 +608,53 @@ export default function PriceChartPanel({ ticker }) {
                 ? <p className="text-xs text-[var(--text-muted)]">No resistance levels detected</p>
                 : srData.resistance.slice().reverse().map((lvl, idx) => {
                     const dist = display ? ((lvl.price - display.close) / display.close * 100) : null;
-                    const opacity = 0.4 + lvl.strength * 0.12;
+                    const score = fmtSR(lvl.score, 2);
+                    const vol = fmtSR(lvl.volume_score, 2);
+                    const gaps = typeof lvl.gap_hits === 'number' ? lvl.gap_hits : null;
+                    const tier = levelTier(lvl);
+                    const tone = levelTone(tier, 'resistance');
                     return (
-                      <div key={idx} className="flex items-center gap-3 px-3 py-2 rounded-lg border"
-                        style={{ background: `rgba(248,113,113,${opacity * 0.15})`, borderColor: `rgba(248,113,113,${opacity})` }}>
-                        <span className="text-[11px] font-bold text-[#f87171] w-5 shrink-0">
-                          R{srData.resistance.length - idx}
-                        </span>
-                        <span className="font-mono font-bold text-sm text-[var(--text-primary)] flex-1">${lvl.price}</span>
-                        {dist !== null && (
-                          <span className="text-xs text-[#f87171] font-semibold">+{dist.toFixed(1)}%</span>
-                        )}
-                        <div className="flex items-center gap-1 shrink-0">
-                          {Array.from({ length: 5 }).map((_, i) => (
-                            <span key={i} className="w-1.5 h-1.5 rounded-full"
-                              style={{ background: i < lvl.strength ? '#f87171' : 'rgba(248,113,113,0.15)' }} />
-                          ))}
-                          <span className="text-[10px] text-[var(--text-muted)] ml-1">{lvl.touches}x</span>
+                      <div key={idx} className="px-3 py-2 rounded-lg border"
+                        style={{ background: tone.bg, borderColor: tone.border }}>
+                        <div className="flex items-center gap-3">
+                          <span className="text-[11px] font-bold text-[#f87171] w-5 shrink-0">
+                            R{srData.resistance.length - idx}
+                          </span>
+                          <span className="font-mono font-bold text-sm text-[var(--text-primary)] flex-1">${lvl.price}</span>
+                          {dist !== null && (
+                            <span className="text-xs text-[#f87171] font-semibold">+{dist.toFixed(1)}%</span>
+                          )}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border"
+                            style={{ color: tone.text, borderColor: tone.border, background: tone.bg }}>
+                            {tier === 'strong' ? '強壓力' : tier === 'weak' ? '弱壓力' : '中壓力'}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <span key={i} className="w-1.5 h-1.5 rounded-full"
+                                style={{ background: i < lvl.strength ? '#f87171' : 'rgba(248,113,113,0.15)' }} />
+                            ))}
+                            <span className="text-[10px] text-[var(--text-muted)] ml-1">{lvl.touches}x</span>
+                          </div>
                         </div>
+                        {(score !== null || vol !== null || gaps !== null) && (
+                          <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+                            {score !== null && (
+                              <span className="px-1.5 py-0.5 rounded border border-[rgba(248,113,113,0.35)] text-[#fca5a5]">
+                                score {score}
+                              </span>
+                            )}
+                            {gaps !== null && (
+                              <span className="px-1.5 py-0.5 rounded border border-[rgba(248,113,113,0.28)] text-[#fda4af]">
+                                gap {gaps}
+                              </span>
+                            )}
+                            {vol !== null && (
+                              <span className="px-1.5 py-0.5 rounded border border-[rgba(248,113,113,0.25)] text-[#fecaca]">
+                                vol {vol}x
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })
@@ -568,22 +669,51 @@ export default function PriceChartPanel({ ticker }) {
                 ? <p className="text-xs text-[var(--text-muted)]">No support levels detected</p>
                 : srData.support.map((lvl, idx) => {
                     const dist = display ? ((lvl.price - display.close) / display.close * 100) : null;
-                    const opacity = 0.4 + lvl.strength * 0.12;
+                    const score = fmtSR(lvl.score, 2);
+                    const vol = fmtSR(lvl.volume_score, 2);
+                    const gaps = typeof lvl.gap_hits === 'number' ? lvl.gap_hits : null;
+                    const tier = levelTier(lvl);
+                    const tone = levelTone(tier, 'support');
                     return (
-                      <div key={idx} className="flex items-center gap-3 px-3 py-2 rounded-lg border"
-                        style={{ background: `rgba(52,211,153,${opacity * 0.15})`, borderColor: `rgba(52,211,153,${opacity})` }}>
-                        <span className="text-[11px] font-bold text-[#34d399] w-5 shrink-0">S{idx + 1}</span>
-                        <span className="font-mono font-bold text-sm text-[var(--text-primary)] flex-1">${lvl.price}</span>
-                        {dist !== null && (
-                          <span className="text-xs text-[#34d399] font-semibold">{dist.toFixed(1)}%</span>
-                        )}
-                        <div className="flex items-center gap-1 shrink-0">
-                          {Array.from({ length: 5 }).map((_, i) => (
-                            <span key={i} className="w-1.5 h-1.5 rounded-full"
-                              style={{ background: i < lvl.strength ? '#34d399' : 'rgba(52,211,153,0.15)' }} />
-                          ))}
-                          <span className="text-[10px] text-[var(--text-muted)] ml-1">{lvl.touches}x</span>
+                      <div key={idx} className="px-3 py-2 rounded-lg border"
+                        style={{ background: tone.bg, borderColor: tone.border }}>
+                        <div className="flex items-center gap-3">
+                          <span className="text-[11px] font-bold text-[#34d399] w-5 shrink-0">S{idx + 1}</span>
+                          <span className="font-mono font-bold text-sm text-[var(--text-primary)] flex-1">${lvl.price}</span>
+                          {dist !== null && (
+                            <span className="text-xs text-[#34d399] font-semibold">{dist.toFixed(1)}%</span>
+                          )}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border"
+                            style={{ color: tone.text, borderColor: tone.border, background: tone.bg }}>
+                            {tier === 'strong' ? '強支撐' : tier === 'weak' ? '弱支撐' : '中支撐'}
+                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <span key={i} className="w-1.5 h-1.5 rounded-full"
+                                style={{ background: i < lvl.strength ? '#34d399' : 'rgba(52,211,153,0.15)' }} />
+                            ))}
+                            <span className="text-[10px] text-[var(--text-muted)] ml-1">{lvl.touches}x</span>
+                          </div>
                         </div>
+                        {(score !== null || vol !== null || gaps !== null) && (
+                          <div className="mt-1.5 flex items-center gap-1.5 text-[10px]">
+                            {score !== null && (
+                              <span className="px-1.5 py-0.5 rounded border border-[rgba(52,211,153,0.35)] text-[#86efac]">
+                                score {score}
+                              </span>
+                            )}
+                            {gaps !== null && (
+                              <span className="px-1.5 py-0.5 rounded border border-[rgba(52,211,153,0.28)] text-[#6ee7b7]">
+                                gap {gaps}
+                              </span>
+                            )}
+                            {vol !== null && (
+                              <span className="px-1.5 py-0.5 rounded border border-[rgba(52,211,153,0.25)] text-[#a7f3d0]">
+                                vol {vol}x
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })
