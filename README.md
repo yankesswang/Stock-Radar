@@ -55,11 +55,11 @@ uv run python -m backend.load_data
 ### 4. Run the app
 
 ```bash
-# Terminal 1 — API (http://localhost:8000)
-uv run uvicorn backend.app.main:app --reload
+# Terminal 1 — API (http://localhost:2000)
+uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 2000 --reload
 
-# Terminal 2 — Frontend (http://localhost:5173)
-cd frontend && npm run dev
+# Terminal 2 — Frontend (http://localhost:5000)
+cd frontend && npm run dev -- --port 5000
 ```
 
 Or use the convenience script:

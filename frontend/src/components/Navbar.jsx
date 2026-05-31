@@ -1,81 +1,120 @@
 import { Link, useLocation } from 'wouter';
-import { TrendingUp, PlusCircle, Radar, Briefcase, CalendarDays, BarChart3, Bell, BookMarked } from 'lucide-react';
+import {
+  TrendingUp,
+  PlusCircle,
+  Radar,
+  Briefcase,
+  CalendarDays,
+  BarChart3,
+  Bell,
+  BookMarked,
+  BookOpen,
+} from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
+
+const LINKS = [
+  { href: '/', label: 'Home' },
+  { href: '/portfolio/gsheet', label: 'Portfolio', icon: Briefcase, matchPrefix: '/portfolio' },
+  { href: '/valuations', label: 'Valuations' },
+  { href: '/compare', label: 'Compare', icon: BarChart3 },
+  { href: '/earnings', label: 'Earnings', icon: CalendarDays },
+  { href: '/watchlists', label: 'Watchlists', icon: BookMarked },
+  { href: '/alerts', label: 'Alerts', icon: Bell },
+  { href: '/signals', label: 'Signals', icon: Radar },
+  { href: '/mimi', label: 'Mimi', icon: BookOpen },
+];
 
 export default function Navbar() {
   const [location] = useLocation();
-  const isActive = (path) => location === path;
+
+  const isActive = (href, matchPrefix) => {
+    if (matchPrefix) return location.startsWith(matchPrefix);
+    return location === href || (href !== '/' && location.startsWith(href));
+  };
 
   return (
-    <nav className="glass sticky top-0 z-50 border-b border-[rgba(91,97,110,0.18)] shadow-sm">
-      <div className="container mx-auto h-14 flex items-center gap-4">
+    <header className="fixed top-4 left-0 right-0 z-50 px-3 lg:px-6">
+      <nav className="glass mx-auto w-full max-w-[1400px] rounded-2xl shadow-[0_16px_32px_rgba(10,11,13,0.08)]">
+        <div className="px-3 py-3 lg:px-5">
+          <div className="flex items-center gap-3 lg:gap-5">
+            <Link href="/" className="flex items-center gap-2.5 cursor-pointer shrink-0 group">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#0052ff] to-[#578bfa] flex items-center justify-center shadow-lg shadow-[rgba(0,82,255,0.35)]">
+                <TrendingUp size={16} className="text-white" />
+              </div>
+              <span className="hidden sm:block text-[15px] font-bold tracking-tight">
+                Stock<span className="text-gradient">Radar</span>
+              </span>
+            </Link>
 
-        {/* Logo */}
-        <Link href="/" className="flex items-center gap-2.5 cursor-pointer shrink-0 group">
-          <div className="w-8 h-8 rounded-lg bg-[#0052ff] flex items-center justify-center shadow-lg shadow-[rgba(0,82,255,0.35)]">
-            <TrendingUp size={15} className="text-white" />
+            <div className="min-w-0 flex-1">
+              <GlobalSearch />
+            </div>
+
+            <div className="hidden 2xl:flex items-center gap-1 shrink-0">
+              {LINKS.map((item) => (
+                <NavLink
+                  key={item.href}
+                  href={item.href}
+                  active={isActive(item.href, item.matchPrefix)}
+                  icon={item.icon}
+                >
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+
+            <Link
+              href="/add-stock"
+              className={`hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm font-semibold cursor-pointer transition-all duration-200 ${
+                isActive('/add-stock')
+                  ? 'bg-[#578bfa] text-white shadow-[0_8px_20px_rgba(0,82,255,0.28)]'
+                  : 'bg-[#0052ff] text-white hover:bg-[#578bfa] shadow-[0_8px_18px_rgba(0,82,255,0.2)] hover:shadow-[0_10px_22px_rgba(0,82,255,0.3)]'
+              }`}
+            >
+              <PlusCircle size={14} />
+              Add
+            </Link>
           </div>
-          <span className="text-[15px] font-bold tracking-tight">
-            Stock<span className="text-gradient">Radar</span>
-          </span>
-        </Link>
 
-        {/* Search */}
-        <div className="flex-1 flex justify-center">
-          <GlobalSearch />
+          <div className="2xl:hidden mt-3 flex items-center gap-1 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {LINKS.map((item) => (
+              <NavLink
+                key={`mobile-${item.href}`}
+                href={item.href}
+                active={isActive(item.href, item.matchPrefix)}
+                icon={item.icon}
+                compact
+              >
+                {item.label}
+              </NavLink>
+            ))}
+            <Link
+              href="/add-stock"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-[rgba(0,82,255,0.2)] text-[var(--accent-cyan)] bg-white/85 whitespace-nowrap cursor-pointer transition-colors duration-200 hover:bg-white"
+            >
+              <PlusCircle size={12} />
+              Add
+            </Link>
+          </div>
         </div>
-
-        {/* Nav links */}
-        <div className="flex items-center gap-0.5 shrink-0">
-          <NavLink href="/"              active={isActive('/')}>Home</NavLink>
-          <NavLink href="/valuations"    active={isActive('/valuations')}>Valuations</NavLink>
-          <NavLink href="/compare"       active={location.startsWith('/compare')}>
-            <BarChart3 size={13} />Compare
-          </NavLink>
-          <NavLink href="/earnings"      active={isActive('/earnings')}>
-            <CalendarDays size={13} />Earnings
-          </NavLink>
-          <NavLink href="/watchlists"    active={location.startsWith('/watchlists')}>
-            <BookMarked size={13} />Watchlists
-          </NavLink>
-          <NavLink href="/alerts"        active={isActive('/alerts')}>
-            <Bell size={13} />Alerts
-          </NavLink>
-          <NavLink href="/signals"       active={isActive('/signals')}>
-            <Radar size={13} />Signals
-          </NavLink>
-          <NavLink href="/portfolio/gsheet" active={location.startsWith('/portfolio')}>
-            <Briefcase size={13} />Portfolio
-          </NavLink>
-
-          {/* Add Stock — pill CTA */}
-          <Link
-            href="/add-stock"
-            className={`ml-2 flex items-center gap-1.5 px-3.5 py-1.5 rounded-[56px] text-sm font-semibold transition-all duration-200 ${
-              isActive('/add-stock')
-                ? 'bg-[#578bfa] text-white shadow-[0_2px_12px_rgba(0,82,255,0.4)]'
-                : 'bg-[#0052ff] text-white hover:bg-[#578bfa] shadow-[0_2px_8px_rgba(0,82,255,0.25)] hover:shadow-[0_4px_16px_rgba(0,82,255,0.4)]'
-            }`}
-          >
-            <PlusCircle size={13} />
-            Add
-          </Link>
-        </div>
-      </div>
-    </nav>
+      </nav>
+    </header>
   );
 }
 
-function NavLink({ href, active, children }) {
+function NavLink({ href, active, children, icon: Icon, compact = false }) {
   return (
     <Link
       href={href}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition-all duration-150 ${
+      className={`inline-flex items-center gap-1.5 rounded-xl font-medium cursor-pointer transition-all duration-200 whitespace-nowrap ${
+        compact ? 'px-3 py-1.5 text-xs' : 'px-3 py-2 text-sm'
+      } ${
         active
-          ? 'bg-[rgba(0,82,255,0.1)] text-[#578bfa]'
-          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(91,97,110,0.08)]'
+          ? 'bg-[rgba(0,82,255,0.11)] text-[var(--accent-cyan)] border border-[rgba(0,82,255,0.2)]'
+          : 'text-[var(--text-secondary)] border border-transparent hover:text-[var(--text-primary)] hover:bg-[rgba(0,82,255,0.06)]'
       }`}
     >
+      {Icon && <Icon size={compact ? 12 : 13} />}
       {children}
     </Link>
   );

@@ -52,12 +52,13 @@ export default function AddStock() {
         setJobId(null);
 
         const t = ticker.trim().toUpperCase();
+        const selectedGroup = group.trim();
         if (!t) { setError('Ticker is required.'); return; }
-        if (!group) { setError('Please select a group.'); return; }
+        if (!selectedGroup) { setError('Please enter a group.'); return; }
 
         setSubmitting(true);
         try {
-            const res = await axios.post('/api/scrape', { ticker: t, group });
+            const res = await axios.post('/api/scrape', { ticker: t, group: selectedGroup });
             setJobId(res.data.job_id);
             setJob(res.data);
         } catch (err) {
@@ -80,7 +81,7 @@ export default function AddStock() {
                     Add Stock
                 </h1>
                 <p className="text-[var(--text-muted)] text-sm mt-1">
-                    Enter a ticker and select a group — the system will scrape its data and store it in the database.
+                    Enter a ticker and choose an existing group or type a new one — the system will scrape its data and store it in the database.
                 </p>
             </div>
 
@@ -109,17 +110,24 @@ export default function AddStock() {
                     <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
                         Industry Group
                     </label>
-                    <select
+                    <input
+                        list="industry-groups"
                         value={group}
                         onChange={e => setGroup(e.target.value)}
                         disabled={isRunning || submitting}
-                        className="w-full bg-[var(--bg-primary)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-[var(--text-primary)] text-sm focus:outline-none focus:border-[rgba(139,92,246,0.5)] transition-colors disabled:opacity-50 appearance-none cursor-pointer"
-                    >
-                        <option value="" disabled>Select a group…</option>
+                        placeholder="e.g. 半導體, AI Infrastructure, Banks"
+                        maxLength={50}
+                        className="w-full bg-[var(--bg-primary)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-[var(--text-primary)] text-sm focus:outline-none focus:border-[rgba(139,92,246,0.5)] transition-colors disabled:opacity-50 placeholder-[var(--text-muted)]"
+                        autoComplete="off"
+                    />
+                    <datalist id="industry-groups">
                         {groups.map(g => (
                             <option key={g} value={g}>{g}</option>
                         ))}
-                    </select>
+                    </datalist>
+                    <p className="text-xs text-[var(--text-muted)] mt-1.5">
+                        Existing groups autocomplete. A new name creates that group when the scrape saves.
+                    </p>
                 </div>
 
                 {/* Error */}

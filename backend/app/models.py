@@ -301,3 +301,73 @@ class Holding(Base):
     __table_args__ = (
         Index("idx_holdings_portfolio", "portfolio_id"),
     )
+
+
+class PortfolioMeta(Base):
+    """Starting capital and other per-portfolio config."""
+    __tablename__ = "portfolio_meta"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_name   = Column(String, nullable=False, unique=True, index=True)
+    starting_capital = Column(Float)
+
+
+class PortfolioDeposit(Base):
+    """Individual deposit records used for MWR / XIRR calculation."""
+    __tablename__ = "portfolio_deposits"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_name = Column(String, nullable=False, index=True)
+    deposit_date   = Column(Date, nullable=False)
+    amount         = Column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("idx_deposit_name_date", "portfolio_name", "deposit_date"),
+    )
+
+
+class PortfolioSnapshot(Base):
+    """One row per (portfolio_name, date) — daily portfolio-level summary."""
+    __tablename__ = "portfolio_snapshots"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    portfolio_name = Column(String, nullable=False, index=True)
+    snapshot_date  = Column(Date, nullable=False)
+    total_value    = Column(Float)
+    total_cash     = Column(Float)
+    cash_pct       = Column(Float)
+    net_gain       = Column(Float)
+    net_return_pct = Column(Float)
+    mwr            = Column(Float)
+    position_count = Column(Integer)
+
+    holdings = relationship(
+        "HoldingSnapshot", back_populates="snapshot", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_name", "snapshot_date"),
+        Index("idx_ps_name_date", "portfolio_name", "snapshot_date"),
+    )
+
+
+class HoldingSnapshot(Base):
+    """One row per holding within a PortfolioSnapshot."""
+    __tablename__ = "holding_snapshots"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id  = Column(Integer, ForeignKey("portfolio_snapshots.id"), nullable=False)
+    ticker       = Column(String, nullable=False)
+    account      = Column(String, default="")
+    shares       = Column(Float)
+    avg_cost     = Column(Float)
+    market_value = Column(Float)
+    weight_pct   = Column(Float)
+    return_pct   = Column(Float)
+
+    snapshot = relationship("PortfolioSnapshot", back_populates="holdings")
+
+    __table_args__ = (
+        Index("idx_hs_snapshot", "snapshot_id"),
+        Index("idx_hs_ticker", "ticker"),
+    )

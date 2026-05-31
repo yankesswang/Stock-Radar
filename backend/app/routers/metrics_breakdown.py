@@ -101,6 +101,11 @@ def get_metrics_breakdown(ticker: str):
     if not csv_path:
         raise HTTPException(
             status_code=404,
-            detail=f"No metrics data found for {ticker.upper()}. Run the metrics scraper first.",
+            detail=(
+                f"No metrics breakdown data found for {ticker.upper()}. "
+                f"This data comes from stockanalysis.com/stocks/{ticker.lower()}/metrics/; "
+                "some tickers do not have that page even when ratios, statistics, "
+                "forecasts, and valuations are available."
+            ),
         )
     return _parse_csv(csv_path)

@@ -9,3 +9,5 @@ numpy
 json5
 xlsxwriter
 lxml
+gspread
+google-auth

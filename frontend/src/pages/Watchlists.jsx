@@ -51,10 +51,11 @@ function ScrapeInline({ ticker, scrapeGroups, onDone }) {
   }, [jobId]);
 
   const start = async () => {
-    if (!group) return;
+    const selectedGroup = group.trim();
+    if (!selectedGroup) return;
     setStarting(true);
     try {
-      const r = await axios.post('/api/scrape', { ticker, group });
+      const r = await axios.post('/api/scrape', { ticker, group: selectedGroup });
       setJobId(r.data.job_id);
       setJob(r.data);
     } catch (e) {
@@ -100,15 +101,18 @@ function ScrapeInline({ ticker, scrapeGroups, onDone }) {
 
   return (
     <div className="flex items-center gap-1.5">
-      <select
+      <input
         autoFocus
+        list={`scrape-groups-${ticker}`}
         value={group}
         onChange={e => setGroup(e.target.value)}
+        placeholder="Group"
+        maxLength={50}
         className="px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--accent-purple)] text-[10px] outline-none text-[var(--text-primary)] max-w-[110px]"
-      >
-        <option value="" disabled>Pick group…</option>
+      />
+      <datalist id={`scrape-groups-${ticker}`}>
         {scrapeGroups.map(g => <option key={g} value={g}>{g}</option>)}
-      </select>
+      </datalist>
       <button
         onClick={start}
         disabled={!group || starting}

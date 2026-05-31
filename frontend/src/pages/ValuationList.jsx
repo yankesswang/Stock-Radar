@@ -133,6 +133,7 @@ export default function ValuationList() {
                     filters: buildScreenerFilters(),
                     industries: industries.length > 0 ? industries : undefined,
                     valuation_status: status || undefined,
+                    search: search || undefined,
                     sort_by: sortBy,
                     sort_dir: sortDir,
                     page,
@@ -143,18 +144,10 @@ export default function ValuationList() {
                 resPag = res.data.pagination;
             } else {
                 const res = await axios.get('/api/valuations', {
-                    params: { page, per_page: 20, sort_by: sortBy, sort_dir: sortDir }
+                    params: { page, per_page: 20, sort_by: sortBy, sort_dir: sortDir, search: search || undefined }
                 });
                 resData = res.data.data;
                 resPag = res.data.pagination;
-            }
-
-            if (search) {
-                const q = search.toLowerCase();
-                resData = resData.filter(v =>
-                    v.ticker.toLowerCase().includes(q) ||
-                    (v.company_name && v.company_name.toLowerCase().includes(q))
-                );
             }
 
             setData(resData);

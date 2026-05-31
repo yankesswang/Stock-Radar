@@ -177,12 +177,17 @@ const SEVERITY_STYLE = {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function PriceChartPanel({ ticker }) {
-  const [period,    setPeriod]    = useState('max');
+  const [period,    setPeriod]    = useState('5y');
   const [interval,  setInterval]  = useState('day');
   const [bars,      setBars]      = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState(null);
   const [hoverBar,  setHoverBar]  = useState(null);
+  const barMap = useMemo(() => {
+    const m = new Map();
+    bars.forEach(b => m.set(b.time, b));
+    return m;
+  }, [bars]);
 
   // MA toggles
   const [showMA, setShowMA] = useState(
@@ -225,6 +230,13 @@ export default function PriceChartPanel({ ticker }) {
     srDataRef.current = sr;
   }
 
+  // Long lookback + daily interval is heavy; auto-switch to weekly.
+  useEffect(() => {
+    if ((period === '10y' || period === 'max') && interval === 'day') {
+      setInterval('week');
+    }
+  }, [period, interval]);
+
   // ── Fetch (with cache + background prefetch) ───────────────────────────
   useEffect(() => {
     if (!ticker) return;
@@ -244,7 +256,7 @@ export default function PriceChartPanel({ ticker }) {
       setLoading(false);
     } else {
       setLoading(true);
-      axios.get(`/api/stocks/${ticker}/chart`, { params: { period, interval } })
+      axios.get(`/api/stocks/${encodeURIComponent(ticker)}/chart`, { params: { period, interval } })
         .then(res => {
           cacheRef.current[key] = res.data;
           applyData(res.data);
@@ -258,7 +270,7 @@ export default function PriceChartPanel({ ticker }) {
     others.forEach(iv => {
       const bgKey = cacheKey(ticker, period, iv);
       if (!cacheRef.current[bgKey]) {
-        axios.get(`/api/stocks/${ticker}/chart`, { params: { period, interval: iv } })
+        axios.get(`/api/stocks/${encodeURIComponent(ticker)}/chart`, { params: { period, interval: iv } })
           .then(res => { cacheRef.current[bgKey] = res.data; })
           .catch(() => {});
       }
@@ -360,8 +372,8 @@ export default function PriceChartPanel({ ticker }) {
       // Crosshair hover
       pc.subscribeCrosshairMove(param => {
         if (!param?.time) { setHoverBar(null); return; }
-        const idx = bars.findIndex(b => b.time === param.time);
-        if (idx >= 0) setHoverBar(bars[idx]);
+        const hit = barMap.get(param.time);
+        if (hit) setHoverBar(hit);
       });
     }
 
@@ -477,7 +489,7 @@ export default function PriceChartPanel({ ticker }) {
       seriesRef.current = {};
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bars, loading, error, activeIndicators]);
+  }, [bars, loading, error, activeIndicators, barMap]);
 
   // ── Toggle MA visibility ──────────────────────────────────────────────
   const toggleMA = useCallback((key) => {
@@ -488,9 +500,17 @@ export default function PriceChartPanel({ ticker }) {
     });
   }, []);
 
-  // Indicator toggle: rebuilds panels (via activeIndicators dep in useEffect)
   const toggleIndicator = useCallback((key) => {
-    setActiveIndicators(prev => ({ ...prev, [key]: !prev[key] }));
+    setActiveIndicators(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      // For price-panel overlays (bb, sr), toggle series visibility without full rebuild
+      if (key === 'bb') {
+        seriesRef.current.bb_upper?.applyOptions({ visible: next.bb });
+        seriesRef.current.bb_mid?.applyOptions({ visible: next.bb });
+        seriesRef.current.bb_lower?.applyOptions({ visible: next.bb });
+      }
+      return next;
+    });
   }, []);
 
   const display    = hoverBar ?? bars[bars.length - 1];

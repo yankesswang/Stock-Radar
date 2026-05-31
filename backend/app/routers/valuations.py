@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, asc
+from sqlalchemy import desc, asc, or_, func
 
 from ..database import get_db
 from ..models import Stock, Industry, Valuation
@@ -15,14 +15,13 @@ def list_valuations(
     per_page: int = Query(50, ge=1, le=500),
     industry: str | None = None,
     status: str | None = None,
+    search: str | None = Query(None),
     sort_by: str = "industry",
     sort_dir: str = "asc",
     db: Session = Depends(get_db),
 ):
     """Main valuation table endpoint. Returns latest valuations for all stocks."""
     # Subquery: latest snapshot_date per stock
-    from sqlalchemy import func
-
     latest_sub = (
         db.query(
             Valuation.stock_id,
@@ -47,6 +46,14 @@ def list_valuations(
         q = q.filter(Industry.name == industry)
     if status:
         q = q.filter(Valuation.valuation_status == status)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                Stock.ticker.ilike(pattern),
+                Stock.company_name.ilike(pattern),
+            )
+        )
 
     # Sorting
     sort_map = {

@@ -12,7 +12,7 @@ Endpoints:
 import asyncio
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +29,9 @@ STATE_FILE = PROJECT_ROOT / "data" / "scheduler_state.json"
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 REFRESH_INTERVAL_DAYS = 7
-CHECK_INTERVAL_SECONDS = 3600          # check every hour
+CHECK_INTERVAL_SECONDS = 60            # check every minute
 TICKER_DELAY_SECONDS   = 2             # throttle between tickers
+REPORT_DAILY_HOUR = 8                  # local server time
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 _state: dict[str, Any] = {
@@ -42,6 +43,13 @@ _state: dict[str, Any] = {
     "current":   None,         # ticker being scraped right now
     "errors":    [],
     "log":       [],
+    "report_status":        "idle",     # idle | running
+    "report_last_run":      None,       # ISO datetime string
+    "report_last_run_date": None,       # YYYY-MM-DD
+    "report_next_run":      None,       # ISO datetime string
+    "report_done":          0,
+    "report_total":         0,
+    "report_errors":        [],
 }
 
 _refresh_task: asyncio.Task | None = None
@@ -55,6 +63,9 @@ def _load_state() -> None:
         saved = json.loads(STATE_FILE.read_text())
         _state["last_run"] = saved.get("last_run")
         _state["next_run"] = saved.get("next_run")
+        _state["report_last_run"] = saved.get("report_last_run")
+        _state["report_last_run_date"] = saved.get("report_last_run_date")
+        _state["report_next_run"] = saved.get("report_next_run")
     except Exception:
         pass
 
@@ -64,9 +75,55 @@ def _save_state() -> None:
         STATE_FILE.write_text(json.dumps({
             "last_run": _state["last_run"],
             "next_run": _state["next_run"],
+            "report_last_run": _state["report_last_run"],
+            "report_last_run_date": _state["report_last_run_date"],
+            "report_next_run": _state["report_next_run"],
         }))
     except Exception:
         pass
+
+
+def _calc_next_report_run(now: datetime | None = None) -> datetime:
+    now = now or datetime.now()
+    target = now.replace(hour=REPORT_DAILY_HOUR, minute=0, second=0, microsecond=0)
+    if now >= target:
+        target = target + timedelta(days=1)
+    return target
+
+
+def _should_run_daily_report(now: datetime) -> tuple[bool, str]:
+    """
+    Decide whether daily report should run now.
+    Rules:
+    - normal schedule: run once per day at/after REPORT_DAILY_HOUR
+    - catch-up mode: if reports are missing for >=2 days, run immediately
+    """
+    if _state.get("report_status") == "running":
+        return False, "already-running"
+
+    today = now.date().isoformat()
+    last_run_date = _state.get("report_last_run_date")
+    if last_run_date == today:
+        return False, "already-ran-today"
+
+    # First run ever
+    if not last_run_date:
+        if now.hour >= REPORT_DAILY_HOUR:
+            return True, "first-run"
+        return False, "before-scheduled-hour"
+
+    # Parse last run date; if invalid treat as stale and run now
+    try:
+        last_d = date.fromisoformat(last_run_date)
+    except Exception:
+        return True, "invalid-last-run-date"
+
+    gap_days = (now.date() - last_d).days
+    if now.hour >= REPORT_DAILY_HOUR:
+        return True, "scheduled-hour"
+    if gap_days >= 2:
+        return True, f"catch-up-gap-{gap_days}d"
+    return False, "before-scheduled-hour"
 
 
 def _log(msg: str) -> None:
@@ -187,11 +244,74 @@ async def _do_refresh() -> None:
     _log(f"Refresh complete. {len(_state['errors'])} error(s). Next: {next_run.strftime('%Y-%m-%d %H:%M')}")
 
 
+def _run_daily_reports_sync() -> dict[str, Any]:
+    """Generate daily portfolio diagnosis snapshots for all CSV portfolios."""
+    from ..database import SessionLocal
+    from .portfolio import get_csv_portfolio, _generate_csv_portfolio_report
+
+    db = SessionLocal()
+    try:
+        payload = get_csv_portfolio(name=None, db=db)
+        names = payload.get("portfolio_names", [])
+        ok: list[str] = []
+        errors: list[str] = []
+        for name in names:
+            try:
+                _generate_csv_portfolio_report(portfolio=name, period="daily", db=db)
+                ok.append(name)
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+        return {"ok": ok, "errors": errors}
+    finally:
+        db.close()
+
+
+async def _do_daily_report_refresh() -> None:
+    if _state["report_status"] == "running":
+        return
+
+    _state.update({
+        "report_status": "running",
+        "report_done": 0,
+        "report_total": 0,
+        "report_errors": [],
+    })
+    _log("Starting daily portfolio report generation.")
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _run_daily_reports_sync)
+        ok = result.get("ok", [])
+        errors = result.get("errors", [])
+    except Exception as exc:
+        ok = []
+        errors = [str(exc)]
+    now = datetime.now()
+
+    _state.update({
+        "report_status": "idle",
+        "report_last_run": now.isoformat(timespec="seconds"),
+        "report_last_run_date": now.date().isoformat(),
+        "report_next_run": _calc_next_report_run(now).isoformat(timespec="seconds"),
+        "report_done": len(ok),
+        "report_total": len(ok) + len(errors),
+        "report_errors": errors,
+    })
+    _save_state()
+    _log(
+        f"Daily portfolio reports complete. generated={len(ok)} "
+        f"errors={len(errors)} next={_state['report_next_run']}"
+    )
+
+
 # ── Background scheduler loop ─────────────────────────────────────────────────
 
 async def scheduler_loop() -> None:
     """Started once in FastAPI lifespan. Checks every hour."""
     _load_state()
+    if not _state.get("report_next_run"):
+        _state["report_next_run"] = _calc_next_report_run().isoformat(timespec="seconds")
+        _save_state()
     _log("Scheduler started.")
 
     while True:
@@ -210,6 +330,12 @@ async def scheduler_loop() -> None:
             _log("7 days elapsed — starting scheduled refresh.")
             asyncio.create_task(_do_refresh())
 
+        now = datetime.now()
+        should_run, reason = _should_run_daily_report(now)
+        if should_run:
+            _log(f"Daily report trigger ({reason}) — starting report generation.")
+            asyncio.create_task(_do_daily_report_refresh())
+
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
@@ -225,6 +351,15 @@ def get_status():
         "current":  _state["current"],
         "errors":   _state["errors"][-10:],   # last 10 errors only
         "log":      _state["log"][-30:],       # last 30 log lines
+        "report": {
+            "status": _state["report_status"],
+            "last_run": _state["report_last_run"],
+            "last_run_date": _state["report_last_run_date"],
+            "next_run": _state["report_next_run"],
+            "done": _state["report_done"],
+            "total": _state["report_total"],
+            "errors": _state["report_errors"][-10:],
+        },
     }
 
 
@@ -235,3 +370,12 @@ async def trigger_run():
         raise HTTPException(status_code=409, detail="Refresh already in progress.")
     asyncio.create_task(_do_refresh())
     return {"ok": True, "message": "Refresh started in background."}
+
+
+@router.post("/report/run")
+async def trigger_report_run():
+    """Manually trigger daily portfolio report generation (non-blocking)."""
+    if _state["report_status"] == "running":
+        raise HTTPException(status_code=409, detail="Report generation already in progress.")
+    asyncio.create_task(_do_daily_report_refresh())
+    return {"ok": True, "message": "Daily report generation started in background."}

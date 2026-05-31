@@ -88,12 +88,12 @@ export default function GlobalSearch() {
   const showDropdown = open && (loading || results.length > 0 || (debouncedQ && !loading));
 
   return (
-    <div ref={containerRef} className="relative w-64 lg:w-80">
+    <div ref={containerRef} className="relative w-full sm:w-72 lg:w-80">
       {/* Input */}
       <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all duration-200 ${
         open
-          ? 'border-[var(--accent-purple)] bg-[var(--bg-secondary)] shadow-lg shadow-purple-500/10'
-          : 'border-[var(--glass-border)] bg-[rgba(255,255,255,0.04)] hover:border-[rgba(255,255,255,0.15)]'
+          ? 'border-[var(--accent-cyan)] bg-[var(--bg-secondary)] shadow-lg shadow-[rgba(0,82,255,0.12)]'
+          : 'border-[var(--glass-border)] bg-[rgba(255,255,255,0.6)] hover:border-[rgba(91,97,110,0.35)]'
       }`}>
         {loading
           ? <Loader2 size={14} className="text-[var(--text-muted)] shrink-0 animate-spin" />
@@ -103,6 +103,7 @@ export default function GlobalSearch() {
           ref={inputRef}
           type="text"
           value={query}
+          aria-label="Global stock search"
           placeholder="Search ticker or company…"
           className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none min-w-0"
           onFocus={() => setOpen(true)}
@@ -125,7 +126,7 @@ export default function GlobalSearch() {
 
       {/* Dropdown */}
       {showDropdown && (
-        <div className="absolute top-full mt-2 left-0 right-0 z-[200] rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] shadow-2xl shadow-black/40 overflow-hidden animate-fade-in">
+        <div className="absolute top-full mt-2 left-0 right-0 z-[200] rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] shadow-2xl shadow-[rgba(10,11,13,0.22)] overflow-hidden animate-fade-in">
           {loading && (
             <div className="flex items-center justify-center py-6 text-xs text-[var(--text-muted)] gap-2">
               <Loader2 size={14} className="animate-spin" /> Searching…
@@ -147,24 +148,24 @@ export default function GlobalSearch() {
                     onMouseDown={(e) => { e.preventDefault(); goTo(r.ticker); }}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${
                       idx === activeIdx
-                        ? 'bg-[rgba(139,92,246,0.1)]'
-                        : 'hover:bg-[rgba(255,255,255,0.04)]'
+                        ? 'bg-[rgba(0,82,255,0.1)]'
+                        : 'hover:bg-[rgba(91,97,110,0.08)]'
                     }`}
                   >
                     {/* Ticker badge */}
-                    <div className="shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[var(--accent-purple)] to-[var(--accent-cyan)] flex items-center justify-center">
+                    <div className="shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#0052ff] to-[#578bfa] flex items-center justify-center">
                       <TrendingUp size={14} className="text-white" />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-sm font-mono text-[var(--text-primary)]">{r.ticker}</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(255,255,255,0.06)] text-[var(--text-muted)] font-medium truncate max-w-[120px]">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(0,82,255,0.08)] text-[var(--text-muted)] font-medium truncate max-w-[120px]">
                           {r.industry}
                         </span>
                       </div>
                       <p className="text-xs text-[var(--text-muted)] truncate mt-0.5">{r.company_name}</p>
                     </div>
-                    <Building2 size={13} className={`shrink-0 transition-opacity ${idx === activeIdx ? 'opacity-60 text-[var(--accent-purple)]' : 'opacity-0'}`} />
+                    <Building2 size={13} className={`shrink-0 transition-opacity ${idx === activeIdx ? 'opacity-60 text-[var(--accent-cyan)]' : 'opacity-0'}`} />
                   </button>
                 </li>
               ))}

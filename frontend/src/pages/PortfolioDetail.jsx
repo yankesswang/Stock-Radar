@@ -48,6 +48,7 @@ export default function PortfolioDetail() {
   const [loading, setLoading] = useState(true);
   const [adding,  setAdding]  = useState(false);
   const [editId,  setEditId]  = useState(null);
+  const [selectedSector, setSelectedSector] = useState(null);
 
   // add-holding form
   const [form, setForm] = useState({ ticker: '', shares: '', avg_cost: '', notes: '' });
@@ -114,6 +115,13 @@ export default function PortfolioDetail() {
   }
 
   const { summary, holdings } = data;
+  const selectedSectorHoldings = selectedSector
+    ? holdings
+        .filter(h => (h.industry || 'Unknown') === selectedSector)
+        .slice()
+        .sort((a, b) => (b.market_value ?? b.cost_basis ?? 0) - (a.market_value ?? a.cost_basis ?? 0))
+    : [];
+  const selectedSectorValue = selectedSectorHoldings.reduce((s, h) => s + (h.market_value ?? h.cost_basis ?? 0), 0);
 
   return (
     <div className="container py-10 space-y-6 animate-fade-in">
@@ -194,9 +202,17 @@ export default function PortfolioDetail() {
                   innerRadius={55}
                   outerRadius={85}
                   paddingAngle={2}
+                  cursor="pointer"
+                  onClick={(entry) => setSelectedSector(prev => prev === entry.name ? null : entry.name)}
                 >
-                  {summary.sectors.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  {summary.sectors.map((sector, i) => (
+                    <Cell
+                      key={sector.name}
+                      fill={PIE_COLORS[i % PIE_COLORS.length]}
+                      opacity={!selectedSector || selectedSector === sector.name ? 1 : 0.35}
+                      stroke={selectedSector === sector.name ? 'var(--text-primary)' : 'transparent'}
+                      strokeWidth={selectedSector === sector.name ? 2 : 0}
+                    />
                   ))}
                 </Pie>
                 <Tooltip
@@ -204,11 +220,58 @@ export default function PortfolioDetail() {
                   contentStyle={{ background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)', borderRadius: 8, fontSize: 12 }}
                 />
                 <Legend
-                  formatter={(v) => <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{v}</span>}
+                  onClick={(entry) => setSelectedSector(prev => prev === entry.value ? null : entry.value)}
+                  formatter={(v) => (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: selectedSector === v ? 'var(--text-primary)' : 'var(--text-secondary)',
+                        fontWeight: selectedSector === v ? 700 : 500,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {v}
+                    </span>
+                  )}
                 />
               </PieChart>
             </ResponsiveContainer>
           </div>
+          {selectedSector && (
+            <div className="mt-4 rounded-lg border border-[var(--glass-border)] bg-[rgba(255,255,255,0.03)] overflow-hidden">
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--glass-border)]">
+                <div>
+                  <p className="text-sm font-semibold text-[var(--text-primary)]">{selectedSector}</p>
+                  <p className="text-xs text-[var(--text-muted)]">
+                    {selectedSectorHoldings.length} holdings · ${fmt(selectedSectorValue)} · {summary.total_value > 0 ? (selectedSectorValue / summary.total_value * 100).toFixed(1) : '0.0'}% of portfolio
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSector(null)}
+                  className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.06)]"
+                  title="Clear sector selection"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="divide-y divide-[var(--glass-border)]">
+                {selectedSectorHoldings.map(h => {
+                  const value = h.market_value ?? h.cost_basis ?? 0;
+                  const pct = selectedSectorValue > 0 ? value / selectedSectorValue * 100 : 0;
+                  return (
+                    <div key={h.id} className="grid grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(90px,1fr)] gap-3 px-4 py-2.5 text-xs items-center">
+                      <Link href={`/stock/${h.ticker}`} className="font-mono font-semibold text-[var(--accent-cyan)] hover:underline">
+                        {h.ticker}
+                      </Link>
+                      <span className="text-[var(--text-secondary)] truncate">{h.company_name || h.ticker}</span>
+                      <span className="text-right text-[var(--text-primary)]">${fmt(value)} <span className="text-[var(--text-muted)]">({pct.toFixed(1)}%)</span></span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

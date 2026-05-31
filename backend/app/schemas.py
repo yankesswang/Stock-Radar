@@ -157,6 +157,7 @@ class ScreenRequest(BaseModel):
     filters: list[FilterCondition] = []
     industries: list[str] = []
     valuation_status: Optional[str] = None  # overvalued, undervalued
+    search: Optional[str] = None
     sort_by: str = "ticker"
     sort_dir: str = "asc"
     page: int = 1

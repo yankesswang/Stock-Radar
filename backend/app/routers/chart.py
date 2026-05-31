@@ -2,23 +2,36 @@
 OHLCV + technical indicators endpoint for stock price charts.
 """
 import math
+import time
+from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 
 router = APIRouter()
 
+# In-memory cache: key -> {"data": ..., "ts": float}
+_CACHE: dict = {}
+_CACHE_TTL = 600  # seconds (10 min)
 
-def _safe(val):
-    if val is None:
-        return None
-    try:
-        if math.isnan(val) or math.isinf(val):
-            return None
-        return round(float(val), 4)
-    except (TypeError, ValueError):
-        return None
+
+def _cache_get(key: str):
+    entry = _CACHE.get(key)
+    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+        return entry["data"]
+    return None
+
+
+def _cache_set(key: str, data):
+    # Evict stale entries to prevent unbounded growth
+    now = time.time()
+    stale = [k for k, v in _CACHE.items() if now - v["ts"] >= _CACHE_TTL]
+    for k in stale:
+        del _CACHE[k]
+    _CACHE[key] = {"data": data, "ts": now}
+
 
 
 def _compute_indicators(df: pd.DataFrame) -> list[dict]:
@@ -73,41 +86,32 @@ def _compute_indicators(df: pd.DataFrame) -> list[dict]:
     sign[close < close.shift(1)]  = -1.0
     obv = (sign * vol).cumsum()
 
+    out = pd.DataFrame({
+        "time":     df.index.astype("int64") // 10**9,
+        "open":     df["Open"],
+        "high":     df["High"],
+        "low":      df["Low"],
+        "close":    df["Close"],
+        "volume":   df["Volume"].fillna(0).astype("int64"),
+        "ma5":      ma5,   "ma10": ma10, "ma20": ma20, "ma50": ma50, "ma200": ma200,
+        "bb_upper": bb_upper, "bb_mid": bb_mid, "bb_lower": bb_lower,
+        "macd":     macd_line, "signal": signal_line, "hist": macd_hist,
+        "rsi":      rsi,
+        "k":        k_kdj, "d": d_kdj, "j": j_kdj,
+        "willr":    willr,
+        "obv":      obv,
+    })
+
+    def _clean(v):
+        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+            return None
+        return round(float(v), 4)
+
     rows = []
-    for i, (_, row) in enumerate(df.iterrows()):
-        ts = int(df.index[i].timestamp())
-        rows.append({
-            "time":     ts,
-            "open":     _safe(row["Open"]),
-            "high":     _safe(row["High"]),
-            "low":      _safe(row["Low"]),
-            "close":    _safe(row["Close"]),
-            "volume":   int(row["Volume"]) if not math.isnan(row["Volume"]) else 0,
-            # MA
-            "ma5":      _safe(ma5.iloc[i]),
-            "ma10":     _safe(ma10.iloc[i]),
-            "ma20":     _safe(ma20.iloc[i]),
-            "ma50":     _safe(ma50.iloc[i]),
-            "ma200":    _safe(ma200.iloc[i]),
-            # Bollinger Bands
-            "bb_upper": _safe(bb_upper.iloc[i]),
-            "bb_mid":   _safe(bb_mid.iloc[i]),
-            "bb_lower": _safe(bb_lower.iloc[i]),
-            # MACD
-            "macd":     _safe(macd_line.iloc[i]),
-            "signal":   _safe(signal_line.iloc[i]),
-            "hist":     _safe(macd_hist.iloc[i]),
-            # RSI
-            "rsi":      _safe(rsi.iloc[i]),
-            # KDJ
-            "k":        _safe(k_kdj.iloc[i]),
-            "d":        _safe(d_kdj.iloc[i]),
-            "j":        _safe(j_kdj.iloc[i]),
-            # Williams %R
-            "willr":    _safe(willr.iloc[i]),
-            # OBV
-            "obv":      _safe(obv.iloc[i]),
-        })
+    for rec in out.to_dict("records"):
+        rows.append({k: (_clean(v) if k != "time" and k != "volume" else
+                         int(v) if k == "volume" else int(v))
+                     for k, v in rec.items()})
     return rows
 
 
@@ -284,6 +288,51 @@ _PERIOD_MAP = {
 
 
 _INTERVAL_MAP = {"day": "1d", "week": "1wk", "month": "1mo"}
+_MAX_BARS_BY_INTERVAL = {
+    "1d": 2500,
+    "1wk": 1200,
+    "1mo": 600,
+}
+_YAHOO_RANGE_BY_PERIOD = {
+    "1m": "1mo",
+    "3m": "3mo",
+    "6m": "6mo",
+    "1y": "1y",
+    "2y": "2y",
+    "5y": "5y",
+    "10y": "10y",
+    "max": "max",
+}
+
+
+def _fetch_yahoo_chart_df(ticker: str, period: str, interval: str) -> pd.DataFrame:
+    response = requests.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker.upper(), safe='')}",
+        params={
+            "range": _YAHOO_RANGE_BY_PERIOD.get(period, "5y"),
+            "interval": interval,
+        },
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=12,
+    )
+    response.raise_for_status()
+    result = ((response.json().get("chart") or {}).get("result") or [None])[0]
+    if not result:
+        return pd.DataFrame()
+
+    timestamps = result.get("timestamp") or []
+    quote_data = (((result.get("indicators") or {}).get("quote") or [{}])[0])
+    if not timestamps or not quote_data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame({
+        "Open": quote_data.get("open") or [],
+        "High": quote_data.get("high") or [],
+        "Low": quote_data.get("low") or [],
+        "Close": quote_data.get("close") or [],
+        "Volume": quote_data.get("volume") or [],
+    }, index=pd.to_datetime(timestamps, unit="s", utc=True))
+    return df.dropna(subset=["Open", "High", "Low", "Close"])
 
 
 @router.get("/{ticker}/chart")
@@ -294,16 +343,45 @@ def get_chart(
 ):
     yf_period, default_interval = _PERIOD_MAP.get(period, ("5y", "1d"))
     yf_interval = _INTERVAL_MAP.get(interval, default_interval)
+
+    # Guardrail: long lookback + daily bars is heavy and slow to render.
+    if yf_period in {"10y", "max"} and yf_interval == "1d":
+        yf_interval = "1wk"
+
+    cache_key = f"{ticker.upper()}_{period}_{yf_interval}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
         tk = yf.Ticker(ticker.upper())
         df = tk.history(period=yf_period, interval=yf_interval, auto_adjust=True)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"yfinance error: {e}")
+        try:
+            df = _fetch_yahoo_chart_df(ticker, period, yf_interval)
+        except Exception as fallback_exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"price chart fetch failed: yfinance={e}; yahoo_chart={fallback_exc}",
+            )
 
+    if df.empty:
+        try:
+            df = _fetch_yahoo_chart_df(ticker, period, yf_interval)
+        except Exception:
+            pass
     if df.empty:
         raise HTTPException(status_code=404, detail=f"No price data for {ticker.upper()}")
 
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
+
+    # Limit payload and chart rendering cost.
+    max_bars = _MAX_BARS_BY_INTERVAL.get(yf_interval, 2000)
+    if len(df) > max_bars:
+        df = df.iloc[-max_bars:]
+
     bars = _compute_indicators(df)
     sr   = _find_sr_levels(df)
-    return {"ticker": ticker.upper(), "period": period, "interval": yf_interval, "bars": bars, "sr": sr}
+    result = {"ticker": ticker.upper(), "period": period, "interval": yf_interval, "bars": bars, "sr": sr}
+    _cache_set(cache_key, result)
+    return result

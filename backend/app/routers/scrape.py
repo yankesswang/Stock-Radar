@@ -11,8 +11,12 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from backend.app.database import get_db
+from backend.app.models import Industry
 
 # Ensure project root is on sys.path so scraper imports work
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -26,7 +30,7 @@ router = APIRouter()
 # In-memory job store (keyed by job_id)
 _jobs: Dict[str, Dict[str, Any]] = {}
 
-KNOWN_GROUPS: list[str] = list(STOCK_LIST.keys())
+STATIC_GROUPS: list[str] = list(STOCK_LIST.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +47,7 @@ class ScrapeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _run_scrape(job_id: str, ticker: str, group: str) -> None:
-    """Execute ratio + forecast scrapers then compute valuations."""
+    """Execute ratios, statistics, PE, forecast scrapers then compute valuations."""
     job = _jobs[job_id]
 
     def step(msg: str) -> None:
@@ -63,7 +67,36 @@ def _run_scrape(job_id: str, ticker: str, group: str) -> None:
         save_ratios(ticker, df, industry=group)
         step(f"Saved {len(df)} ratio metrics to database.")
 
-        # ── Step 2: PE Median (via fullratio.com) ───────────────────────────
+        # ── Step 2: Statistics ──────────────────────────────────────────────
+        step(f"Scraping key statistics for {ticker}…")
+        from src.scrapers.statistics_scraper import StatisticsScraper  # noqa: PLC0415
+
+        statistics_scraper = StatisticsScraper()
+        statistics_data = statistics_scraper.scrape_statistics(ticker)
+        if statistics_data is None:
+            raise RuntimeError(
+                f"Could not scrape statistics for {ticker}. "
+                "The stock page may be unavailable or blocked by the data source."
+            )
+        statistics_scraper.save(ticker, statistics_data)
+        sections = len(statistics_data.get("sections", []))
+        items = sum(len(section.get("items", [])) for section in statistics_data.get("sections", []))
+        step(f"Saved {items} statistics across {sections} sections.")
+
+        # ── Step 3: Metrics Breakdown ───────────────────────────────────────
+        step(f"Scraping metrics breakdown for {ticker}…")
+        from src.scrapers.metrics_scraper import MetricsScraper  # noqa: PLC0415
+
+        metrics_scraper = MetricsScraper()
+        metrics_df = metrics_scraper.scrape_metrics(ticker)
+        if metrics_df is not None:
+            metrics_scraper.save(ticker, metrics_df)
+            metric_sections = metrics_df["Category"].nunique() if "Category" in metrics_df.columns else 0
+            step(f"Saved {len(metrics_df)} metrics breakdown rows across {metric_sections} sections.")
+        else:
+            step("No metrics breakdown data available — skipped.")
+
+        # ── Step 4: PE Median (via fullratio.com) ───────────────────────────
         step(f"Scraping PE median for {ticker} from fullratio.com…")
         from scripts.scrape_fullratio_pe import scrape_ticker as fr_scrape  # noqa: PLC0415
         from src.db_service import save_pe_median  # noqa: PLC0415
@@ -87,7 +120,7 @@ def _run_scrape(job_id: str, ticker: str, group: str) -> None:
         else:
             step("No PE data found on fullratio.com — skipped.")
 
-        # ── Step 3: Forecast ────────────────────────────────────────────────
+        # ── Step 5: Forecast ────────────────────────────────────────────────
         step(f"Scraping analyst forecasts for {ticker}…")
         from scripts.scrape_forecast import scrape_forecast, save_to_db, save_ticker_json  # noqa: PLC0415
 
@@ -99,7 +132,7 @@ def _run_scrape(job_id: str, ticker: str, group: str) -> None:
         else:
             step("No forecast data available — skipped.")
 
-        # ── Step 4: Valuations ──────────────────────────────────────────────
+        # ── Step 6: Valuations ──────────────────────────────────────────────
         step("Computing valuations…")
         from src.db_service import compute_valuations_for_date  # noqa: PLC0415
 
@@ -118,10 +151,17 @@ def _run_scrape(job_id: str, ticker: str, group: str) -> None:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+def _is_valid_group_name(group: str) -> bool:
+    """Allow user-defined group names while rejecting empty/control-heavy input."""
+    return bool(group) and len(group) <= 50 and not any(c in group for c in "\r\n\t")
+
+
 @router.get("")
-def list_groups():
+def list_groups(db: Session = Depends(get_db)):
     """Return available industry groups."""
-    return {"groups": KNOWN_GROUPS}
+    db_groups = [name for (name,) in db.query(Industry.name).order_by(Industry.name).all()]
+    groups = sorted(set(STATIC_GROUPS) | set(db_groups))
+    return {"groups": groups}
 
 
 @router.post("")
@@ -137,11 +177,8 @@ async def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks
     if not ticker or not all(c.isalnum() or c == "." for c in ticker) or len(ticker) > 10:
         raise HTTPException(status_code=400, detail="Invalid ticker symbol.")
 
-    if group not in KNOWN_GROUPS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown group '{group}'. Available: {', '.join(KNOWN_GROUPS)}",
-        )
+    if not _is_valid_group_name(group):
+        raise HTTPException(status_code=400, detail="Group must be 1-50 characters.")
 
     job_id = str(uuid.uuid4())[:8]
     _jobs[job_id] = {

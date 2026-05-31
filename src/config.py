@@ -72,13 +72,13 @@ STOCK_LIST = {
         "支付": {"MA", "V", "PYPL", "AXP"},
         "零售": {"LULU", "COST", "PG", "KR", "JWN", "NKE", "DG", "FL", "EL", "PVH", "TPR"},
         "食品": {"HIMS", "CELH","TSN", "MNST", "MCD", "SBUX", "KO", "PEP", "CMG", "YUM", 'DPZ', 'CAKE', 'JACK', 'PLAY', 'FIZZ', 'BLMN', 'DENN', 'DIN'},
-        "半導體": {'NVDA', "TSM", "AMD", "QCOM", "MU", "INTC", "ASML", "SWKS", "QRVO", "AVGO", "AMAT", 'MRVL', 'ARM', 'CLS', 'DELL',"ORCL"},
+        "半導體": {'NVDA', "TSM", "AMD", "QCOM", "MU", "INTC", "ASML", "SWKS", "QRVO", "AVGO", "AMAT", 'MRVL', 'ARM', 'CLS', 'DELL', "ORCL", "NXPI", "MTSI", "ENTG", "WOLF", "DIOD", "POWI"},
         "原油": {"CVX", "VLO", "COP", "XOM", "OXY",},
         "旅遊": {"BKNG", "EXPE", "MAR", "HLT", "ABNB", "H", "WYNN", "IHG", "LVS", "MGM"},
-        "工業": {'NEE', "DE", "HD", "APD", "CAT", "ETN", "HON", "WM", "GE", "MMM", "SUM", "X", 'ENPH', 'SEDG', "FSLR", "OKLO", "ETN", "BE"},
+        "工業": {'NEE', "DE", "HD", "APD", "CAT", "ETN", "HON", "WM", "GE", "MMM", "SUM", "X", 'ENPH', 'SEDG', "FSLR", "OKLO", "ETN", "BE", "VRT", "FLEX", "LYB", "VIAV"},
         'SaaS': {'SAP', 'CFLT', 'ACN', 'BSX', 'SHOP', 'CRM', 'DDOG', 'NOW', 'INTU', 'SQ','SNOW', 'MDB', 'OKTA', 'ADSK', 'TTD', 'INOD', "FISV"},
         '軟體':   {
-            "U", "RBLX",   "SNAP",   "PINS", "Z",   "TTD",    "APP",   "ETSY", "RDDT","DASH",      "MTCH",   "EXPE", "SPLK",
+            "U", "RBLX",   "SNAP",   "PINS", "Z",   "TTD",    "APP",   "ETSY", "RDDT","DASH",      "MTCH",   "EXPE", "SPLK", "SE", "BKSY",
              "OKTA",   "PATH","IBM","CSCO"
         },
 
@@ -93,7 +93,10 @@ STOCK_LIST = {
             "SYM", "ROK", "TER", "ADI", "PTC", "OUST", "AEVA", "LSCC", "SERV","AUR","RR"
         },
         "成長股": {
-            "UBER", "HIMS", "OSCR","MELI","NU","TMDX","SPOT"
+            "UBER", "HIMS", "OSCR","MELI","NU","TMDX","SPOT", "NBIS"
+        },
+        "ETF": {
+            "GLD", "SMH", "VT", "TSLL", "NVDL"
         }
 
 }
@@ -192,6 +195,7 @@ PE_TICKER_TO_COMPANY = {
     "cls": "celestica",
     "dell": "dell-technologies",
     "hpe": "hewlett-packard-enterprise",
+    "nxpi": "nxp-semiconductors",
 
     # 原油
     "cvx": "chevron",

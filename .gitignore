@@ -37,6 +37,7 @@ data/financials/
 data/metrics/
 data/statistics/
 data/dcf/
+data/telegram_notifications_seen.json
 
 # ── Generated reports ─────────────────────────────────────────────────────────
 valuation/*.xlsx
@@ -62,6 +63,14 @@ Thumbs.db
 # ── Claude Code agent files ───────────────────────────────────────────────────
 .agent/
 .claude/
+
+# ── Runtime data (backed by DB, no need to track) ────────────────────────────
+data/portfolio_report_snapshots.json
+data/scheduler_state.json
+
+# ── Build/tool caches ─────────────────────────────────────────────────────────
+.codex/
+.vite/
 
 # ── Misc temp / cache ─────────────────────────────────────────────────────────
 *.log

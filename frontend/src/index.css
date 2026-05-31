@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -12,44 +14,44 @@
 ───────────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Surfaces */
-  --bg-primary:   #dde1e7;
-  --bg-secondary: #eef0f3;
-  --bg-tertiary:  #e2e6eb;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f8fa;
+  --bg-tertiary: #eef0f3;
 
-  /* Text */
-  --text-primary:   #0a0b0d;
+  --text-primary: #0a0b0d;
   --text-secondary: #5b616e;
-  --text-muted:     #8a919e;
+  --text-muted: #8a919e;
 
-  /* Brand — Coinbase Blue */
-  --accent-cyan:    #0052ff;
-  --accent-purple:  #578bfa;
+  --accent-cyan: #0052ff;
+  --accent-purple: #578bfa;
 
-  /* Functional */
   --accent-success: #059669;
-  --accent-green:   #059669;
-  --accent-danger:  #dc2626;
-  --accent-amber:   #d97706;
-  --accent-yellow:  #d97706;
+  --accent-green: #059669;
+  --accent-danger: #dc2626;
+  --accent-amber: #d97706;
+  --accent-yellow: #d97706;
 
-  /* Borders & surfaces */
-  --glass-bg:           rgba(255, 255, 255, 0.7);
-  --glass-border:       rgba(91, 97, 110, 0.28);
+  --glass-bg: rgba(247, 247, 247, 0.88);
+  --glass-border: rgba(148, 163, 184, 0.35);
   --glass-border-hover: rgba(91, 97, 110, 0.52);
 
-  --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-family: 'Coinbase Sans', 'CoinbaseSans', 'Coinbase Text', 'Fira Sans', 'Segoe UI', sans-serif;
+  --font-mono-family: 'Fira Code', 'SFMono-Regular', monospace;
 }
 
 @layer base {
   body {
     margin: 0;
     font-family: var(--font-family);
+    min-height: 100vh;
     background-color: var(--bg-primary);
+    background-image:
+      radial-gradient(circle at 18% 12%, rgba(0, 82, 255, 0.07), transparent 34%),
+      linear-gradient(180deg, #ffffff 0%, #f7f8fa 100%);
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.005em;
   }
 
   a {
@@ -76,29 +78,35 @@
 
 @layer components {
   .container {
-    max-width: 1280px;
+    max-width: 1360px;
     margin: 0 auto;
-    padding: 0 1.5rem;
+    padding: 0 1rem;
+  }
+  @media (min-width: 1024px) {
+    .container {
+      padding: 0 1.5rem;
+    }
   }
 
   /* ── Card ── */
   .card {
-    background: var(--bg-secondary);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 248, 250, 0.94));
     border: 1px solid var(--glass-border);
     border-radius: 16px;
     padding: 1.5rem;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    transition: border-color 0.22s ease, box-shadow 0.22s ease, transform 0.22s ease;
   }
   .card:hover {
     border-color: var(--glass-border-hover);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 16px 34px rgba(10, 11, 13, 0.08);
+    transform: translateY(-2px);
   }
 
   /* ── Glass (navbar) ── */
   .glass {
-    background: rgba(238, 240, 243, 0.92);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
+    background: var(--glass-bg);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
     border: 1px solid var(--glass-border);
   }
 
@@ -121,11 +129,11 @@
   .btn-primary {
     background: #0052ff;
     color: #ffffff;
-    box-shadow: 0 2px 12px rgba(0, 82, 255, 0.25);
+    box-shadow: 0 10px 26px rgba(0, 82, 255, 0.2);
   }
   .btn-primary:hover {
     background: #578bfa;
-    box-shadow: 0 4px 20px rgba(0, 82, 255, 0.35);
+    box-shadow: 0 12px 30px rgba(0, 82, 255, 0.28);
     transform: translateY(-1px);
   }
 
@@ -164,6 +172,11 @@
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+  }
+
+  kbd,
+  .font-mono {
+    font-family: var(--font-mono-family);
   }
 
   /* ── Badges ── */
@@ -625,4 +638,13 @@
 
   .stat-val-positive { color: var(--accent-success); }
   .stat-val-negative { color: var(--accent-danger); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

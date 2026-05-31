@@ -113,8 +113,8 @@ def get_or_create_industry(db, industry_name: str) -> Industry:
 def get_or_create_stock(db, ticker: str, industry_name: str) -> Stock:
     """Get existing stock or create new one."""
     stock = db.query(Stock).filter_by(ticker=ticker).first()
+    industry = get_or_create_industry(db, industry_name)
     if not stock:
-        industry = get_or_create_industry(db, industry_name)
         # Get company name from mapping
         ticker_lower = ticker.lower()
         company_name = None
@@ -128,6 +128,9 @@ def get_or_create_stock(db, ticker: str, industry_name: str) -> Stock:
             industry_id=industry.id,
         )
         db.add(stock)
+        db.flush()
+    elif industry_name and industry_name != "Unknown" and stock.industry_id != industry.id:
+        stock.industry_id = industry.id
         db.flush()
     return stock
 
@@ -549,4 +552,3 @@ def save_metrics_breakdown(ticker: str, df, snapshot_date: date):
         print(f"  [DB] Error saving metrics breakdown for {ticker}: {e}")
     finally:
         db.close()
-

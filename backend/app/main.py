@@ -6,13 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import engine, Base
-from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio, earnings, scheduler, summary, industry_compare, alerts, watchlists
+from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio, earnings, scheduler, summary, industry_compare, alerts, watchlists, notifications, market, mimi_playbook
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     asyncio.create_task(scheduler.scheduler_loop())
+    asyncio.create_task(notifications.telegram_notification_loop())
     yield
 
 
@@ -49,6 +50,9 @@ app.include_router(summary.router,          prefix="/api/stocks",           tags
 app.include_router(industry_compare.router, prefix="/api/industry-compare",  tags=["industry-compare"])
 app.include_router(alerts.router,           prefix="/api/alerts",            tags=["alerts"])
 app.include_router(watchlists.router,       prefix="/api/watchlists",        tags=["watchlists"])
+app.include_router(notifications.router,    prefix="/api/notifications",     tags=["notifications"])
+app.include_router(market.router,           prefix="/api/market",            tags=["market"])
+app.include_router(mimi_playbook.router,    prefix="/api/mimi",              tags=["mimi"])
 
 
 @app.get("/api/health")

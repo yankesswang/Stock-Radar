@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import get_db
-from ..models import Stock, Valuation
+from ..models import Industry, Stock, Valuation
 
 # Ensure project root is on sys.path so src.config can be imported
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -157,20 +157,41 @@ def industry_compare(
     group: Optional[str] = Query(None),
     db:    Session        = Depends(get_db),
 ):
+    def db_tickers_for_group(group_name: str) -> list[str]:
+        rows = (
+            db.query(Stock.ticker)
+            .join(Industry, Stock.industry_id == Industry.id)
+            .filter(Industry.name == group_name)
+            .order_by(Stock.ticker)
+            .all()
+        )
+        return [ticker for (ticker,) in rows]
+
     if group is None:
+        group_map: dict[str, set[str]] = {
+            name: {t.upper() for t in tickers}
+            for name, tickers in STOCK_LIST.items()
+        }
+        rows = (
+            db.query(Industry.name, Stock.ticker)
+            .join(Stock, Stock.industry_id == Industry.id)
+            .order_by(Industry.name, Stock.ticker)
+            .all()
+        )
+        for name, ticker in rows:
+            group_map.setdefault(name, set()).add(ticker.upper())
+
         groups = [
             {"name": name, "tickers": sorted(tickers)}
-            for name, tickers in STOCK_LIST.items()
+            for name, tickers in sorted(group_map.items(), key=lambda item: item[0])
         ]
         return {"groups": groups}
 
-    group_tickers: Optional[list[str]] = None
-    for name, tickers in STOCK_LIST.items():
-        if name == group:
-            group_tickers = sorted(tickers)
-            break
+    configured_tickers = {t.upper() for t in STOCK_LIST.get(group, set())}
+    db_tickers = set(db_tickers_for_group(group))
+    group_tickers = sorted(configured_tickers | db_tickers)
 
-    if group_tickers is None:
+    if not group_tickers:
         raise HTTPException(status_code=404, detail=f"Group '{group}' not found")
 
     result = [_ticker_metrics(ticker, db) for ticker in group_tickers]

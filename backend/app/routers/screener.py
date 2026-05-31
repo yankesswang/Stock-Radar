@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
 from ..database import get_db
 from ..models import Stock, Industry, Valuation, Metric
@@ -97,6 +97,16 @@ def screen_stocks(req: ScreenRequest, db: Session = Depends(get_db)):
     # Filter by valuation status
     if req.valuation_status:
         q = q.filter(Valuation.valuation_status == req.valuation_status)
+
+    # Search by ticker/company name
+    if req.search and req.search.strip():
+        pattern = f"%{req.search.strip()}%"
+        q = q.filter(
+            or_(
+                Stock.ticker.ilike(pattern),
+                Stock.company_name.ilike(pattern),
+            )
+        )
 
     # Apply custom filters
     for f in req.filters:

@@ -6,7 +6,7 @@
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 BACKEND_PORT=2000
-FRONTEND_PORT=1000
+FRONTEND_PORT=5000
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[0;33m'; RESET='\033[0m'

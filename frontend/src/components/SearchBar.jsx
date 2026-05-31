@@ -97,10 +97,12 @@ export default function SearchBar() {
     return (
         <div className="relative w-full max-w-xl mx-auto" ref={wrapperRef}>
             <div className="relative group">
+                <label htmlFor="home-stock-search" className="sr-only">Search stock ticker</label>
                 <div className="absolute -inset-0.5 bg-gradient-to-r from-[var(--accent-purple)] to-[var(--accent-cyan)] rounded-2xl opacity-0 group-focus-within:opacity-20 blur transition-opacity duration-300" />
                 <div className="relative">
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-[var(--text-muted)] w-5 h-5" />
                     <input
+                        id="home-stock-search"
                         ref={inputRef}
                         type="text"
                         value={query}
@@ -108,12 +110,12 @@ export default function SearchBar() {
                         onKeyDown={handleKeyDown}
                         onFocus={() => results.length > 0 && setIsOpen(true)}
                         placeholder="Search stocks... (nvda, Apple, msft)"
-                        className="w-full bg-[var(--bg-secondary)] border border-[var(--glass-border)] rounded-xl py-3.5 pl-12 pr-4 text-[var(--text-primary)] text-sm focus:outline-none focus:border-[rgba(139,92,246,0.4)] transition-colors duration-200 placeholder-[var(--text-muted)]"
+                        className="w-full bg-[var(--bg-secondary)] border border-[var(--glass-border)] rounded-xl py-3.5 pl-12 pr-4 text-[var(--text-primary)] text-sm focus:outline-none focus:border-[rgba(0,82,255,0.4)] transition-colors duration-200 placeholder-[var(--text-muted)]"
                         autoComplete="off"
                         spellCheck="false"
                     />
                     {loading && (
-                        <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 text-[var(--accent-purple)] w-4 h-4 animate-spin" />
+                        <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 text-[var(--accent-cyan)] w-4 h-4 animate-spin" />
                     )}
                 </div>
             </div>

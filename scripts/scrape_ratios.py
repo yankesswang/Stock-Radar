@@ -70,6 +70,7 @@ def parse_value(value_str):
 
 SECTION_MAP = {
     'Market Capitalization': 'Valuation',
+    'Market Cap':            'Valuation',
     'Market Cap Growth':     'Valuation',
     'Enterprise Value':      'Valuation',
     'Last Close Price':      'Valuation',
@@ -81,6 +82,10 @@ SECTION_MAP = {
     'P/FCF Ratio':           'Valuation',
     'P/OCF Ratio':           'Valuation',
     'PEG Ratio':             'Valuation',
+    'EV / Sales':            'Enterprise Value',
+    'EV / EBITDA':           'Enterprise Value',
+    'EV / EBIT':             'Enterprise Value',
+    'EV / FCF':              'Enterprise Value',
     'EV/Sales Ratio':        'Enterprise Value',
     'EV/EBITDA Ratio':       'Enterprise Value',
     'EV/EBIT Ratio':         'Enterprise Value',
@@ -197,6 +202,7 @@ def scrape_ratios(ticker):
 
 CSV_METRIC_TO_JSON_KEY = {
     'Market Capitalization': 'marketcap',
+    'Market Cap': 'marketcap',
     'Enterprise Value': 'enterpriseValue',
     'Last Close Price': 'currentPrice',
     'PE Ratio': 'pe',
@@ -204,6 +210,10 @@ CSV_METRIC_TO_JSON_KEY = {
     'PS Ratio': 'ps',
     'PB Ratio': 'pb',
     'PEG Ratio': 'pegRatio',
+    'EV / Sales': 'evSales',
+    'EV / EBITDA': 'evEbitda',
+    'EV / EBIT': 'evEbit',
+    'EV / FCF': 'evFcf',
     'EV/Sales Ratio': 'evSales',
     'EV/EBITDA Ratio': 'evEbitda',
     'EV/EBIT Ratio': 'evEbit',
