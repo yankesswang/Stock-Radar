@@ -179,6 +179,18 @@ def send_telegram_notification(payload: TelegramNotification):
     return {"ok": True}
 
 
+@router.post("/claude-analysis")
+def trigger_claude_analysis(db: Session = Depends(get_db)):
+    """Manually trigger a Claude post-market analysis and send via Telegram."""
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not configured")
+    # Pass an empty seen dict so it always runs regardless of schedule
+    event_id = _generate_claude_daily_analysis(db, seen={})
+    if event_id is None:
+        raise HTTPException(status_code=500, detail="Claude analysis failed — check server logs")
+    return {"ok": True, "event_id": event_id}
+
+
 def _collect_due_earnings(db: Session, seen: dict[str, float], portfolio_tickers: set[str]) -> list[dict]:
     payload = get_earnings_calendar(db)
     events = payload.get("events", []) if isinstance(payload, dict) else []
@@ -1051,6 +1063,231 @@ def _mark_digest_seen(
             _mark_seen(seen, event_id)
 
 
+# ── Claude post-market analysis ───────────────────────────────────────────────
+
+CLAUDE_ANALYSIS_EVENT_PREFIX = "telegram:claude-analysis:"
+
+
+def _should_send_claude_analysis(now: datetime, seen: dict) -> bool:
+    """Run once on weekdays at/after DAILY_PORTFOLIO_REPORT_TIME (same window as daily report)."""
+    if now.weekday() not in DAILY_PORTFOLIO_REPORT_WEEKDAYS:
+        return False
+    if now.time() < DAILY_PORTFOLIO_REPORT_TIME:
+        return False
+    event_id = f"{CLAUDE_ANALYSIS_EVENT_PREFIX}{now.date().isoformat()}"
+    return not _seen_recently(seen, event_id, TELEGRAM_NOTIFICATION_COOLDOWN_SECONDS)
+
+
+def _extract_mimi_sections(tickers: list[str]) -> str:
+    """
+    Parse mimi操作建議總表.md and return only the sections whose
+    level-4 header starts with a ticker that is in the portfolio.
+    """
+    doc_path = Path(settings.MIMI_DOC_PATH).expanduser()
+    if not doc_path.exists():
+        return ""
+    text = doc_path.read_text(encoding="utf-8")
+
+    ticker_set = {t.upper() for t in tickers}
+    sections: list[str] = []
+    # Split on level-4 headers; keep the header with its content
+    parts = text.split("\n#### ")
+    for part in parts[1:]:  # skip preamble before first ####
+        first_line = part.split("\n")[0]
+        # Header format: "TICKER（...）— description"
+        token = first_line.split("（")[0].split("—")[0].strip().upper()
+        if token in ticker_set:
+            sections.append("#### " + part.rstrip())
+    return "\n\n---\n\n".join(sections)
+
+
+def _format_holdings_for_claude(portfolios: dict) -> str:
+    """Format all portfolio holdings into a compact text table for the Claude prompt."""
+    lines: list[str] = []
+    for pname, pdata in portfolios.items():
+        lines.append(f"【{pname}】總值 {pdata.get('summary', {}).get('total_value', 'N/A'):,.0f}")
+        for h in pdata.get("holdings", []):
+            t = h.get("ticker", "")
+            if t == "CASH":
+                lines.append(f"  CASH  ${h.get('cost_basis', 0):,.0f}")
+                continue
+            price = h.get("current_price")
+            chg = h.get("day_change_pct")
+            ret = h.get("return_pct")
+            wt = h.get("weight_pct")
+            val = h.get("market_value")
+            lines.append(
+                f"  {t:<6}  "
+                f"${price:>8.2f}  " if price else f"  {t:<6}  N/A        "
+            )
+            # rebuild as single cleaner line
+            price_str = f"${price:.2f}" if price else "N/A"
+            chg_str = f"{chg:+.1f}%" if chg is not None else "—"
+            ret_str = f"{ret:+.1f}%" if ret is not None else "—"
+            wt_str = f"{wt:.1f}%" if wt is not None else "—"
+            val_str = f"${val:,.0f}" if val else "—"
+            lines[-1] = f"  {t:<6}  {price_str:<10} 今日{chg_str:<8} 總報酬{ret_str:<8} 權重{wt_str:<6} 市值{val_str}"
+    return "\n".join(lines)
+
+
+def _send_long_telegram_message(text: str) -> None:
+    """Split text at paragraph boundaries to stay under Telegram's 4096-char limit."""
+    LIMIT = 3900
+    if len(text) <= LIMIT:
+        _send_telegram_message(text)
+        return
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for para in text.split("\n\n"):
+        para_len = len(para) + 2
+        if current_len + para_len > LIMIT and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_len = para_len
+        else:
+            current.append(para)
+            current_len += para_len
+    if current:
+        chunks.append("\n\n".join(current))
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(1)
+        _send_telegram_message(chunk)
+
+
+def _generate_claude_daily_analysis(db: Session, seen: dict) -> str | None:
+    """
+    Build a Claude-powered post-market analysis and return the event_id if sent.
+    Returns None if conditions not met or on error.
+    """
+    now = _taipei_now()
+    if not _should_send_claude_analysis(now, seen):
+        return None
+
+    if not settings.ANTHROPIC_API_KEY:
+        print("[claude] ANTHROPIC_API_KEY not set — skipping analysis")
+        return None
+
+    try:
+        import anthropic
+    except ImportError:
+        print("[claude] anthropic package not installed")
+        return None
+
+    event_id = f"{CLAUDE_ANALYSIS_EVENT_PREFIX}{now.date().isoformat()}"
+    date_str = now.date().isoformat()
+
+    # ── Gather data ────────────────────────────────────────────────────────────
+    try:
+        from .portfolio import get_csv_portfolio, _generate_csv_portfolio_report
+        payload = get_csv_portfolio(name=None, db=db)
+        portfolios: dict = payload.get("portfolios", {}) if isinstance(payload, dict) else {}
+        names: list = payload.get("portfolio_names", []) if isinstance(payload, dict) else []
+    except Exception as exc:
+        print(f"[claude] Failed to load portfolio: {exc}")
+        return None
+
+    all_tickers = list({
+        h.get("ticker", "")
+        for pdata in portfolios.values()
+        for h in pdata.get("holdings", [])
+        if h.get("ticker") not in ("", "CASH")
+    })
+
+    # Daily report data (technical signals + risk flags)
+    report_sections: list[str] = []
+    for name in names:
+        try:
+            report = _generate_csv_portfolio_report(portfolio=name, period="daily", db=db)
+            flags = report.get("risk_flags", [])[:6]
+            if flags:
+                report_sections.append(
+                    f"【{name}】風險提示\n"
+                    + "\n".join(f"• {f['message']}" for f in flags)
+                )
+        except Exception:
+            pass
+
+    # Market snapshot
+    market_lines = _fetch_market_snapshot_lines() + _fetch_market_technical_lines()
+    market_text = "\n".join(market_lines) if market_lines else "（市場資料暫時無法取得）"
+
+    holdings_text = _format_holdings_for_claude(portfolios)
+    mimi_sections = _extract_mimi_sections(all_tickers)
+    risk_text = "\n\n".join(report_sections) if report_sections else "（無特殊訊號）"
+
+    # ── Build prompt ───────────────────────────────────────────────────────────
+    system_prompt = (
+        "你是 Arthur 的專屬投資分析助理。"
+        "以下是 Mimi 的操作策略總表，作為分析的策略基準，"
+        "包含各標的的建議進場區間、停損、目標倉位與操作邏輯：\n\n"
+        + (mimi_sections if mimi_sections else "（與持倉相關的 Mimi 策略暫無資料）")
+    )
+
+    user_prompt = f"""今天是 {date_str}（台北時間），美股剛剛收盤。
+
+## 大盤收盤快照
+{market_text}
+
+## 我的持倉
+{holdings_text}
+
+## 今日技術訊號與風險提示
+{risk_text}
+
+---
+請依以下格式回應（繁體中文，每段簡潔，總長不超過 800 字）：
+
+**📊 大盤判讀**
+（2-3句：今日趨勢、情緒、關鍵訊號）
+
+**🎯 持倉重點關注**
+（最多3個持倉標的，各1-2句：今日表現 ＋ 對照 Mimi 策略建議）
+
+**📋 明日操作計劃**
+（具體動作：加倉 / 減倉 / 觀察 / 設停損，每條1句，說明觸發條件）
+
+**⚡ 一句話總結**
+（整體策略基調）"""
+
+    # ── Call Claude with prompt caching on the mimi doc ───────────────────────
+    try:
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1200,
+            system=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        analysis = next(
+            (block.text.strip() for block in response.content if hasattr(block, "text")),
+            None,
+        )
+        if not analysis:
+            print("[claude] Empty response from API")
+            return None
+    except Exception as exc:
+        print(f"[claude] API call failed: {exc}")
+        return None
+
+    # ── Send via Telegram ──────────────────────────────────────────────────────
+    header = f"🤖 Claude 收盤分析 {date_str}\n"
+    try:
+        _send_long_telegram_message(header + analysis)
+    except Exception as exc:
+        print(f"[claude] Telegram send failed: {exc}")
+        return None
+
+    return event_id
+
+
 async def telegram_notification_loop() -> None:
     while True:
         db = SessionLocal()
@@ -1077,6 +1314,12 @@ async def telegram_notification_loop() -> None:
                 _send_telegram_message(f"StockRadar 週末復盤 {_iso_week_key(_taipei_now().date())}\n\n{report['text']}")
                 _mark_seen(seen, report["event_id"])
                 _save_seen(seen)
+
+            claude_event_id = _generate_claude_daily_analysis(db, seen)
+            if claude_event_id:
+                _mark_seen(seen, claude_event_id)
+                _save_seen(seen)
+
         except Exception as exc:
             print(f"[notifications] Telegram notification loop error: {exc}")
         finally:

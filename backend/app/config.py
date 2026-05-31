@@ -36,5 +36,9 @@ class Settings(BaseSettings):
     TELEGRAM_ADMIN_ID: str = ""
     TELEGRAM_ENV_FILE: str = "~/.hn-daily-digest/.env"
 
+    # Claude API — daily post-market analysis
+    ANTHROPIC_API_KEY: str = ""
+    MIMI_DOC_PATH: str = "/Users/yankesswang/Documents/arthurwang_DB/投資/mimi操作建議總表.md"
+
 
 settings = Settings()

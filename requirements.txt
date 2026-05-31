@@ -11,3 +11,4 @@ xlsxwriter
 lxml
 gspread
 google-auth
+anthropic>=0.40.0
