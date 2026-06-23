@@ -158,9 +158,10 @@ def _find_sr_levels(df: pd.DataFrame, window: int = 20, n_levels: int = 6, tol: 
         return float(np.clip(volumes[i] / base, 0.5, 2.5))
 
     def _recency_boost(i: int) -> float:
-        # 1.0 ~ 1.3, newer levels get modestly higher weight
+        # Newest bar ≈1.0, oldest ≈0.29 — exponential decay so multi-year-old
+        # levels can't out-accumulate recent ones purely by age/touch count.
         age_ratio = (n_bars - 1 - i) / max(n_bars - 1, 1)
-        return 1.0 + 0.3 * (1.0 - age_ratio)
+        return 0.25 + 0.75 * math.exp(-3.0 * age_ratio)
 
     # 1) Swing pivots
     for i in range(pivot_window, n_bars - pivot_window):
@@ -251,6 +252,12 @@ def _find_sr_levels(df: pd.DataFrame, window: int = 20, n_levels: int = 6, tol: 
             touches = len(g)
             gap_hits = sum(1 for x in g if x["kind"] == "gap")
             vol_score = float(np.mean([x["vol_ratio"] for x in g])) if g else 1.0
+            # Proximity decay: a level 30%+ away from the current price is rarely
+            # actionable. Without this, a near-ATH stock surfaces multi-year-old
+            # lows 40-60% below price as its "top" support (see ADI).
+            dist = abs(price - current) / max(current, 1e-9)
+            proximity = float(np.clip(1.0 - dist / 0.30, 0.15, 1.0))
+            rank_score = wsum * proximity
             # Log scaling avoids huge outliers dominating strength
             strength_raw = math.log1p(max(wsum, 0.0)) * 2.2
             strength = int(np.clip(round(strength_raw), 1, 5))
@@ -259,13 +266,26 @@ def _find_sr_levels(df: pd.DataFrame, window: int = 20, n_levels: int = 6, tol: 
                 "touches": touches,
                 "strength": strength,
                 "score": round(wsum, 2),
+                "rank_score": rank_score,
                 "gap_hits": gap_hits,
                 "volume_score": round(vol_score, 2),
             })
 
-        # Pick strongest first, then sort for display order
-        levels.sort(key=lambda x: (-x["score"], -x["touches"], -x["gap_hits"]))
+        # Rank by proximity-adjusted score so nearby levels win the limited slots.
+        levels.sort(key=lambda x: (-x["rank_score"], -x["touches"], -x["gap_hits"]))
+
+        # Drop far-away noise (>35% from price) once we have enough nearby levels,
+        # so a near-ATH stock doesn't draw support lines 46-62% below price. If too
+        # few are nearby (parabolic move with a big gap), keep only the nearest 3
+        # rather than dumping every multi-year-old low.
+        near = [lv for lv in levels if abs(lv["price"] - current) / max(current, 1e-9) <= 0.35]
+        levels = near if len(near) >= 2 else sorted(
+            levels, key=lambda x: abs(x["price"] - current)
+        )[:3]
+
         levels = levels[:n_levels]
+        for lv in levels:
+            lv.pop("rank_score", None)
         if side == "resistance":
             levels.sort(key=lambda x: x["price"])
         else:

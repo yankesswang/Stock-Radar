@@ -270,7 +270,10 @@ def save_ratios(ticker, df, industry=None):
                             value = value * 1e6  # CSV stores in millions
                         metrics_dict[json_key] = value
 
-        snapshot_date = date.fromisoformat(DATE_STR)
+        # Compute at call time, not from the module-level DATE_STR frozen at
+        # import — a long-running backend that crosses midnight would otherwise
+        # save under the stale date and break the valuation join.
+        snapshot_date = date.today()
         save_metrics(ticker, industry or 'Unknown', metrics_dict, snapshot_date)
     except Exception as e:
         print(f"  [DB] Error saving {ticker} to database: {e}")

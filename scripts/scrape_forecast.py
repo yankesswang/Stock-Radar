@@ -373,7 +373,9 @@ def save_ticker_json(ticker, forecast_data):
 def save_to_db(ticker, forecast_data):
     """Save the legacy annual portion to the database for valuation computation."""
     try:
-        snapshot_date = date.fromisoformat(DATE_STR)
+        # Call-time date (not the import-frozen DATE_STR) so a backend running
+        # across midnight saves under today's date, matching compute_valuations.
+        snapshot_date = date.today()
         save_forecast(ticker, forecast_data, snapshot_date)
     except Exception as e:
         print(f"  [DB] Error saving {ticker}: {e}")

@@ -38,16 +38,20 @@ def clean_soup_value(soup):
     data_string = data_string.replace("'", '"')
     return data_string
 
-def fetch_url(url, headers, max_retries=3, timeout=10, sleep_between_retries=2):
+def fetch_url(url, headers, max_retries=5, timeout=10, sleep_between_retries=2):
     """
     Fetches the content of a URL with retries.
+
+    On HTTP 429 (Too Many Requests) it backs off with exponential delay +
+    jitter, honouring the server's ``Retry-After`` header when present. Other
+    errors use the plain ``sleep_between_retries`` delay.
 
     Args:
         url (str): The URL to fetch.
         headers (dict): HTTP headers to include in the request.
         max_retries (int): Maximum number of retry attempts.
         timeout (int): Timeout for the HTTP request.
-        sleep_between_retries (int): Seconds to wait between retries.
+        sleep_between_retries (int): Base seconds to wait between retries.
 
     Returns:
         requests.Response or None: The HTTP response if successful, else None.
@@ -59,11 +63,31 @@ def fetch_url(url, headers, max_retries=3, timeout=10, sleep_between_retries=2):
             return response
         except RequestException as e:
             print(f"Attempt {attempt + 1} failed for URL: {url}. Error: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(sleep_between_retries)
-            else:
+            resp = getattr(e, "response", None)
+
+            # 404 is a permanent "this page doesn't exist" — retrying just wastes
+            # ~10s (e.g. tickers with no /metrics/ page). Give up immediately.
+            if resp is not None and resp.status_code == 404:
+                print(f"  Not Found (404) — giving up on {url} without retrying.")
+                return None
+
+            if attempt >= max_retries - 1:
                 print(f"Failed to fetch data for {url} after {max_retries} attempts.")
                 return None
+
+            # Rate limited → back off harder and respect Retry-After if given.
+            if resp is not None and resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    delay = int(retry_after)
+                else:
+                    delay = sleep_between_retries * (2 ** attempt)
+                delay += random.uniform(0, 1)  # jitter to de-sync concurrent jobs
+                print(f"  Rate limited (429) — backing off {delay:.1f}s before retry…")
+            else:
+                delay = sleep_between_retries
+
+            time.sleep(delay)
 
 def parse_html(content):
     """
