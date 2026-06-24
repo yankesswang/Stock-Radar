@@ -447,6 +447,98 @@ def compute_valuations_for_date(snapshot_date: date, fiscal_year: int = 2025):
         db.close()
 
 
+def recompute_all_valuations(snapshot_date: date, fiscal_year: int = 2025):
+    """
+    Recompute valuations for EVERY stock using each stock's *latest* metrics,
+    forecast, and PE median at or before ``snapshot_date``, writing a fresh
+    valuation row dated ``snapshot_date``.
+
+    Unlike :func:`compute_valuations_for_date` — which only covers stocks that
+    were scraped on exactly ``snapshot_date`` — this keeps every ticker's
+    over/under verdict current even when only its forecast or PE was refreshed
+    (e.g. ADI showed a stale "overvalued" because its 06-01 valuation kept using
+    an old EPS after the forecast was later revised up).
+
+    Note: uses the last-scraped price stored on the Metric row, so the verdict
+    is only as fresh as the most recent ratios scrape for that ticker.
+    """
+    ensure_tables()
+    db = SessionLocal()
+    try:
+        print(f"[DB] Recomputing all valuations for {snapshot_date}...")
+        stocks = db.query(Stock).all()
+        count = 0
+        skipped = 0
+        for stock in stocks:
+            metric = (
+                db.query(Metric)
+                .filter(Metric.stock_id == stock.id, Metric.snapshot_date <= snapshot_date)
+                .order_by(Metric.snapshot_date.desc())
+                .first()
+            )
+            forecast = (
+                db.query(Forecast)
+                .filter(Forecast.stock_id == stock.id, Forecast.snapshot_date <= snapshot_date)
+                .order_by(Forecast.snapshot_date.desc())
+                .first()
+            )
+            # Need both a price/market-cap snapshot and a forecast to value it.
+            if not metric or not forecast:
+                skipped += 1
+                continue
+
+            pe_rec = (
+                db.query(PeMedian)
+                .filter(PeMedian.stock_id == stock.id, PeMedian.snapshot_date <= snapshot_date)
+                .order_by(PeMedian.snapshot_date.desc())
+                .first()
+            )
+
+            ratio_dict = {
+                "eps_5y": metric.eps_5y,
+                "revenue_5y": metric.revenue_5y,
+                "current_price": metric.current_price,
+                "market_cap": metric.market_cap,
+            }
+            forecast_annual = {
+                "current_eps": forecast.current_eps,
+                "current_growth": forecast.current_eps_growth,
+                "next_year_eps": forecast.next_year_eps,
+                "next_year_growth": forecast.next_year_eps_growth,
+            }
+            pe_median_val = pe_rec.pe_median if pe_rec else None
+
+            val = compute_valuation(forecast_annual, ratio_dict, pe_median_val, fiscal_year)
+
+            existing = (
+                db.query(Valuation)
+                .filter_by(stock_id=stock.id, snapshot_date=snapshot_date)
+                .first()
+            )
+            if existing:
+                for k, v in val.items():
+                    setattr(existing, k, v)
+                existing.fiscal_year = fiscal_year
+            else:
+                db.add(
+                    Valuation(
+                        stock_id=stock.id,
+                        snapshot_date=snapshot_date,
+                        fiscal_year=fiscal_year,
+                        **val,
+                    )
+                )
+            count += 1
+
+        db.commit()
+        print(f"[DB] Recomputed {count} valuations for {snapshot_date} (skipped {skipped})")
+    except Exception as e:
+        db.rollback()
+        print(f"[DB] Error recomputing valuations: {e}")
+    finally:
+        db.close()
+
+
 def save_statistics(ticker: str, data: dict, snapshot_date: date):
     """
     Save statistics data for a single stock to the database.

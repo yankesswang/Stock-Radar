@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -43,7 +44,9 @@ _state: dict[str, Any] = {
     "current":   None,         # ticker being scraped right now
     "errors":    [],
     "log":       [],
+    "refresh_enabled": True,
     "report_status":        "idle",     # idle | running
+    "report_enabled":       True,
     "report_last_run":      None,       # ISO datetime string
     "report_last_run_date": None,       # YYYY-MM-DD
     "report_next_run":      None,       # ISO datetime string
@@ -55,6 +58,11 @@ _state: dict[str, Any] = {
 _refresh_task: asyncio.Task | None = None
 
 
+class SchedulerConfigIn(BaseModel):
+    refresh_enabled: bool | None = None
+    report_enabled: bool | None = None
+
+
 # ── State persistence ─────────────────────────────────────────────────────────
 
 def _load_state() -> None:
@@ -63,6 +71,8 @@ def _load_state() -> None:
         saved = json.loads(STATE_FILE.read_text())
         _state["last_run"] = saved.get("last_run")
         _state["next_run"] = saved.get("next_run")
+        _state["refresh_enabled"] = bool(saved.get("refresh_enabled", True))
+        _state["report_enabled"] = bool(saved.get("report_enabled", True))
         _state["report_last_run"] = saved.get("report_last_run")
         _state["report_last_run_date"] = saved.get("report_last_run_date")
         _state["report_next_run"] = saved.get("report_next_run")
@@ -75,6 +85,8 @@ def _save_state() -> None:
         STATE_FILE.write_text(json.dumps({
             "last_run": _state["last_run"],
             "next_run": _state["next_run"],
+            "refresh_enabled": _state["refresh_enabled"],
+            "report_enabled": _state["report_enabled"],
             "report_last_run": _state["report_last_run"],
             "report_last_run_date": _state["report_last_run_date"],
             "report_next_run": _state["report_next_run"],
@@ -246,8 +258,18 @@ async def _do_refresh() -> None:
 
 def _run_daily_reports_sync() -> dict[str, Any]:
     """Generate daily portfolio diagnosis snapshots for all CSV portfolios."""
+    from datetime import date as _date
     from ..database import SessionLocal
     from .portfolio import get_csv_portfolio, _generate_csv_portfolio_report
+
+    # Refresh every stock's valuation from its latest metrics/forecast/PE first,
+    # so verdicts (and the reports below) don't show stale over/under-valued
+    # results for tickers that weren't re-scraped today.
+    try:
+        from src.db_service import recompute_all_valuations
+        recompute_all_valuations(_date.today())
+    except Exception as exc:
+        _log(f"Daily valuation recompute error: {exc}")
 
     db = SessionLocal()
     try:
@@ -319,22 +341,24 @@ async def scheduler_loop() -> None:
         if _state["status"] == "running":
             continue
 
-        last = _state.get("last_run")
-        if last is None:
-            _log("No previous run found — scheduling first refresh.")
-            asyncio.create_task(_do_refresh())
-            continue
+        if _state.get("refresh_enabled", True):
+            last = _state.get("last_run")
+            if last is None:
+                _log("No previous run found — scheduling first refresh.")
+                asyncio.create_task(_do_refresh())
+                continue
 
-        last_dt = datetime.fromisoformat(last)
-        if (datetime.now() - last_dt).days >= REFRESH_INTERVAL_DAYS:
-            _log("7 days elapsed — starting scheduled refresh.")
-            asyncio.create_task(_do_refresh())
+            last_dt = datetime.fromisoformat(last)
+            if (datetime.now() - last_dt).days >= REFRESH_INTERVAL_DAYS:
+                _log("7 days elapsed — starting scheduled refresh.")
+                asyncio.create_task(_do_refresh())
 
         now = datetime.now()
-        should_run, reason = _should_run_daily_report(now)
-        if should_run:
-            _log(f"Daily report trigger ({reason}) — starting report generation.")
-            asyncio.create_task(_do_daily_report_refresh())
+        if _state.get("report_enabled", True):
+            should_run, reason = _should_run_daily_report(now)
+            if should_run:
+                _log(f"Daily report trigger ({reason}) — starting report generation.")
+                asyncio.create_task(_do_daily_report_refresh())
 
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
@@ -344,6 +368,7 @@ def get_status():
     """Return scheduler state."""
     return {
         "status":   _state["status"],
+        "refresh_enabled": _state["refresh_enabled"],
         "last_run": _state["last_run"],
         "next_run": _state["next_run"],
         "total":    _state["total"],
@@ -352,6 +377,7 @@ def get_status():
         "errors":   _state["errors"][-10:],   # last 10 errors only
         "log":      _state["log"][-30:],       # last 30 log lines
         "report": {
+            "enabled": _state["report_enabled"],
             "status": _state["report_status"],
             "last_run": _state["report_last_run"],
             "last_run_date": _state["report_last_run_date"],
@@ -360,6 +386,21 @@ def get_status():
             "total": _state["report_total"],
             "errors": _state["report_errors"][-10:],
         },
+    }
+
+
+@router.post("/config")
+def update_config(payload: SchedulerConfigIn):
+    """Enable or disable background scheduler tasks."""
+    if payload.refresh_enabled is not None:
+        _state["refresh_enabled"] = payload.refresh_enabled
+    if payload.report_enabled is not None:
+        _state["report_enabled"] = payload.report_enabled
+    _save_state()
+    return {
+        "ok": True,
+        "refresh_enabled": _state["refresh_enabled"],
+        "report_enabled": _state["report_enabled"],
     }
 
 

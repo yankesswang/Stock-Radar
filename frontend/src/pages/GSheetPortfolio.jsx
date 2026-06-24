@@ -33,6 +33,44 @@ function fmtSignedDollar(n) {
   return `${n >= 0 ? '+' : '-'}$${fmt(Math.abs(n))}`;
 }
 
+// Sector slice → which tickers contribute (used as the pie's hover tooltip).
+const _sectorOf = (h) => (h.ticker === 'CASH' ? 'Cash' : (h.industry || 'Unknown'));
+
+function SectorTickerTooltip({ active, payload, holdings = [], totalValue = 0 }) {
+  if (!active || !payload || !payload.length) return null;
+  const sector = payload[0]?.payload?.name;
+  if (!sector) return null;
+  const rows = holdings
+    .filter(h => _sectorOf(h) === sector)
+    .map(h => ({ ticker: h.ticker, value: h.market_value ?? h.cost_basis ?? 0 }))
+    .sort((a, b) => b.value - a.value);
+  const sectorValue = rows.reduce((s, r) => s + r.value, 0);
+  return (
+    <div style={{
+      background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)',
+      borderRadius: 8, fontSize: 12, padding: '8px 10px', minWidth: 190, maxWidth: 260,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontWeight: 700, marginBottom: 6 }}>
+        <span style={{ color: 'var(--text-primary)' }}>{sector}</span>
+        <span style={{ color: 'var(--text-secondary)' }}>
+          ${fmt(sectorValue)} · {totalValue > 0 ? (sectorValue / totalValue * 100).toFixed(1) : 0}%
+        </span>
+      </div>
+      {rows.slice(0, 8).map(r => (
+        <div key={r.ticker} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, lineHeight: 1.6 }}>
+          <span style={{ fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{r.ticker}</span>
+          <span style={{ color: 'var(--text-secondary)' }}>
+            ${fmt(r.value)} <span style={{ color: 'var(--text-muted)' }}>({sectorValue > 0 ? (r.value / sectorValue * 100).toFixed(0) : 0}%)</span>
+          </span>
+        </div>
+      ))}
+      {rows.length > 8 && (
+        <div style={{ color: 'var(--text-muted)', marginTop: 4 }}>+{rows.length - 8} more</div>
+      )}
+    </div>
+  );
+}
+
 function StatusBadge({ status }) {
   if (!status) return <span className="text-[var(--text-muted)]">—</span>;
   const s = status.toLowerCase();
@@ -46,6 +84,49 @@ function StatusBadge({ status }) {
 }
 
 const EMPTY_ADD = { account: 'Firstrade', ticker: '', shares: '', avg_cost: '', notes: '' };
+
+function buildTechNote(tech) {
+  if (!tech) return null;
+  const parts = [];
+  let score = 0; // positive = bullish, negative = bearish
+
+  const rsi = tech.rsi_14;
+  if (rsi != null) {
+    if (rsi >= 85)      { parts.push(`RSI ${rsi} 極端超買`); score -= 3; }
+    else if (rsi >= 70) { parts.push(`RSI ${rsi} 超買`);     score -= 1; }
+    else if (rsi <= 25) { parts.push(`RSI ${rsi} 極端超賣`); score += 3; }
+    else if (rsi <= 35) { parts.push(`RSI ${rsi} 超賣`);     score += 1; }
+    else                  parts.push(`RSI ${rsi}`);
+  }
+
+  if (tech.ma_cross === 'golden')      { parts.push('黃金交叉'); score += 2; }
+  else if (tech.ma_cross === 'death')  { parts.push('死亡交叉'); score -= 2; }
+  else if (tech.price_vs_ma20_pct != null && Math.abs(tech.price_vs_ma20_pct) >= 10) {
+    const dev = tech.price_vs_ma20_pct;
+    parts.push(`偏離MA20 ${dev > 0 ? '+' : ''}${dev}%`);
+    if (dev >= 15) score -= 1;
+  }
+
+  const s = (tech.near_support || [])[0];
+  const r = (tech.near_resistance || [])[0];
+  if (s) { parts.push(`支撐 $${s.price}↓${s.dist_pct}%`); score += 1; }
+  if (r) { parts.push(`壓力 $${r.price}↑${r.dist_pct}%`); score -= 1; }
+
+  if (tech.volume_ratio != null && tech.volume_ratio >= 2) {
+    parts.push(`量能 ${tech.volume_ratio}×`);
+  }
+
+  if (!parts.length) return null;
+
+  let tone;
+  if (score <= -3)     tone = 'red';
+  else if (score <= -1) tone = 'orange';
+  else if (score >= 3)  tone = 'green';
+  else if (score >= 1)  tone = 'cyan';
+  else                  tone = 'muted';
+
+  return { text: parts.join(' · '), tone };
+}
 
 export default function GSheetPortfolio() {
   const [allData,    setAllData]    = useState(null);
@@ -82,7 +163,57 @@ export default function GSheetPortfolio() {
   const [riskError,       setRiskError]       = useState('');
   const [showHoldings,    setShowHoldings]    = useState(false);
   const [selectedSector,  setSelectedSector]  = useState(null);
-  const pendingReloadRef = useRef(false);
+  const [scrapingTickers, setScrapingTickers] = useState(new Set());
+  const [groups,          setGroups]          = useState([]);
+  const [changingGroup,   setChangingGroup]   = useState(null);
+  const pendingReloadRef    = useRef(false);
+  const loadDataRef         = useRef(null);
+  const scrapeAttemptedRef  = useRef(new Set());
+  const scrapePolls         = useRef([]);
+
+  const _scrapeMissing = (data) => {
+    const SKIP = new Set(['CASH', '']);
+    const toScrape = [];
+    for (const pname of (data.portfolio_names || [])) {
+      for (const h of (data.portfolios?.[pname]?.holdings || [])) {
+        const t = (h.ticker || '').toUpperCase();
+        if (!SKIP.has(t) && h.valuation_status == null && h.current_price != null
+            && !scrapeAttemptedRef.current.has(h.ticker)) {
+          toScrape.push(h.ticker);
+          scrapeAttemptedRef.current.add(h.ticker);
+        }
+      }
+    }
+    if (toScrape.length === 0) return;
+
+    setScrapingTickers(prev => new Set([...prev, ...toScrape]));
+    let done = 0;
+
+    const onOneDone = (ticker) => {
+      setScrapingTickers(prev => { const n = new Set(prev); n.delete(ticker); return n; });
+      done++;
+      if (done >= toScrape.length && loadDataRef.current) {
+        setTimeout(() => loadDataRef.current({ force: true }), 500);
+      }
+    };
+
+    for (const ticker of toScrape) {
+      axios.post('/api/scrape', { ticker, group: '其他' })
+        .then(({ data: job }) => {
+          const poll = setInterval(async () => {
+            try {
+              const { data: s } = await axios.get(`/api/scrape/${job.job_id}`);
+              if (s.status === 'completed' || s.status === 'failed') {
+                clearInterval(poll);
+                onOneDone(ticker);
+              }
+            } catch { clearInterval(poll); onOneDone(ticker); }
+          }, 3000);
+          scrapePolls.current.push(poll);
+        })
+        .catch(() => onOneDone(ticker));
+    }
+  };
 
   const loadData = ({ force = false } = {}) => {
     // Avoid clobbering user input while editing inline cells.
@@ -98,10 +229,13 @@ export default function GSheetPortfolio() {
         setSelected(prev =>
           r.data.portfolio_names.includes(prev) ? prev : r.data.portfolio_names[0] ?? null
         );
+        _scrapeMissing(r.data);
       })
       .catch(e => setError(e?.response?.data?.detail || 'Failed to load portfolio'))
       .finally(() => setLoading(false));
   };
+
+  loadDataRef.current = loadData;
 
   const syncFromSheet = () => {
     if (editCell) {
@@ -115,9 +249,30 @@ export default function GSheetPortfolio() {
       .finally(() => setSyncing(false));
   };
 
+  // Reassign a ticker's sector/group, then reload so the pie regroups.
+  const changeGroup = (ticker, newGroup) => {
+    if (!ticker || !newGroup || newGroup === selectedSector) return;
+    setChangingGroup(ticker);
+    setError(null);
+    axios.patch(`/api/stocks/${ticker}/industry`, { industry: newGroup })
+      .then(() => {
+        setGroups(prev => prev.includes(newGroup) ? prev : [...prev, newGroup].sort());
+        loadData({ force: true });
+      })
+      .catch(e => setError(e?.response?.data?.detail || `Failed to move ${ticker} to ${newGroup}`))
+      .finally(() => setChangingGroup(null));
+  };
+
   useEffect(() => {
     // Load local CSV cache only. Remote Google Sheet sync is manual via "Sync Sheet".
     loadData({ force: true });
+  }, []);
+
+  // Available sector/group names for the per-ticker "change group" dropdown.
+  useEffect(() => {
+    axios.get('/api/scrape')
+      .then(r => setGroups(r.data.groups || []))
+      .catch(() => {});
   }, []);
 
   // If a reload was deferred during editing, run it after editing ends.
@@ -745,6 +900,30 @@ export default function GSheetPortfolio() {
           </div>
         )}
 
+        {/* Risk Flags */}
+        {report?.risk_flags?.length > 0 && (
+          <div className="border-t border-[var(--glass-border)] pt-4 space-y-2">
+            <p className="text-xs font-semibold text-[var(--text-secondary)]">風險警示 · Risk Alerts</p>
+            <div className="space-y-1.5">
+              {report.risk_flags.map((flag, i) => {
+                const styles = {
+                  high:   'text-[var(--accent-danger)] border-[rgba(248,113,113,0.35)] bg-[rgba(248,113,113,0.07)]',
+                  bear:   'text-[var(--accent-danger)] border-[rgba(248,113,113,0.25)] bg-[rgba(248,113,113,0.04)]',
+                  medium: 'text-[var(--accent-yellow)] border-[rgba(245,158,11,0.30)] bg-[rgba(245,158,11,0.06)]',
+                  bull:   'text-[var(--accent-green)]  border-[rgba(16,185,129,0.30)]  bg-[rgba(16,185,129,0.06)]',
+                  info:   'text-[var(--accent-cyan)]   border-[rgba(6,182,212,0.25)]   bg-[rgba(6,182,212,0.04)]',
+                };
+                const cls = styles[flag.level] || styles.info;
+                return (
+                  <div key={i} className={`px-3 py-2 rounded-lg border text-xs leading-relaxed ${cls}`}>
+                    {flag.message}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {report && (
           <div className="space-y-4">
             <div className="grid md:grid-cols-2 gap-4">
@@ -762,6 +941,13 @@ export default function GSheetPortfolio() {
               </div>
             </div>
 
+            {/* Technical Signals by Ticker */}
+            {Object.keys(techSignals).some(k => k !== 'per_holding' && techSignals[k]?.length > 0) && (
+              <div className="border-t border-[var(--glass-border)] pt-4 space-y-2.5">
+                <p className="text-xs font-semibold text-[var(--text-secondary)]">技術訊號總覽 · Technical Signals by Ticker</p>
+                <TechSignalsByTicker techSignals={techSignals} />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -919,7 +1105,7 @@ export default function GSheetPortfolio() {
                     />
                   ))}
                 </Pie>
-                <Tooltip formatter={(v) => [`$${fmt(v)}  (${total_value > 0 ? (v / total_value * 100).toFixed(1) : 0}%)`, 'Value']} contentStyle={{ background: 'var(--bg-secondary)', border: '1px solid var(--glass-border)', borderRadius: 8, fontSize: 12 }} />
+                <Tooltip content={<SectorTickerTooltip holdings={holdings} totalValue={total_value} />} />
                 <Legend
                   onClick={(entry) => setSelectedSector(prev => prev === entry.value ? null : entry.value)}
                   formatter={(v) => (
@@ -961,7 +1147,7 @@ export default function GSheetPortfolio() {
                   const value = h.market_value ?? h.cost_basis ?? 0;
                   const pct = selectedSectorValue > 0 ? value / selectedSectorValue * 100 : 0;
                   return (
-                    <div key={`${h.account}-${h.ticker}`} className="grid grid-cols-[minmax(80px,1fr)_minmax(120px,2fr)_minmax(80px,1fr)_minmax(90px,1fr)] gap-3 px-4 py-2.5 text-xs items-center">
+                    <div key={`${h.account}-${h.ticker}`} className="grid grid-cols-[minmax(64px,0.7fr)_minmax(90px,1.4fr)_minmax(58px,0.6fr)_minmax(80px,0.9fr)_minmax(104px,1fr)] gap-2 px-4 py-2.5 text-xs items-center">
                       {h.ticker === 'CASH' ? (
                         <span className="font-mono font-semibold text-[var(--text-primary)]">{h.ticker}</span>
                       ) : (
@@ -972,6 +1158,21 @@ export default function GSheetPortfolio() {
                       <span className="text-[var(--text-secondary)] truncate">{h.company_name || h.notes || '—'}</span>
                       <span className="text-[var(--text-muted)] truncate">{h.account || 'Unknown'}</span>
                       <span className="text-right text-[var(--text-primary)]">${fmt(value)} <span className="text-[var(--text-muted)]">({pct.toFixed(1)}%)</span></span>
+                      {h.ticker === 'CASH' ? (
+                        <span />
+                      ) : (
+                        <select
+                          value={selectedSector}
+                          disabled={changingGroup === h.ticker}
+                          onChange={e => changeGroup(h.ticker, e.target.value)}
+                          title="Change sector / group"
+                          className="w-full bg-[var(--bg-primary)] border border-[var(--glass-border)] rounded-md px-1.5 py-1 text-[11px] text-[var(--text-secondary)] focus:outline-none focus:border-[rgba(139,92,246,0.5)] disabled:opacity-50 cursor-pointer"
+                        >
+                          {Array.from(new Set([selectedSector, ...groups])).map(g => (
+                            <option key={g} value={g}>{g}</option>
+                          ))}
+                        </select>
+                      )}
                     </div>
                   );
                 })}
@@ -1013,7 +1214,7 @@ export default function GSheetPortfolio() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--glass-border)]">
-              {['Account','Ticker','Company','Shares','Avg Cost','Lev','Price','Vol','RSI','Market Value','Weight','P&L $','P&L %','Fair Value (PE)','Valuation',''].map(h => (
+              {['Account','Ticker','Company','Shares','Avg Cost','Lev','Price','Market Value','Weight','P&L $','P&L %','Fair Value (PE)','Valuation','備注','Vol','RSI','MA',''].map(h => (
                 h === 'Weight' ? (
                   <th key={h} className="px-4 py-3 text-left text-xs font-semibold whitespace-nowrap">
                     <button
@@ -1102,32 +1303,6 @@ export default function GSheetPortfolio() {
                     ) : <span className="text-[var(--text-muted)]">—</span>}
                   </td>
 
-                  {/* Vol ratio */}
-                  <td className="px-3 py-3 text-center">
-                    {(() => {
-                      const tech = perHoldingTech[h.ticker];
-                      const vr = tech?.volume_ratio;
-                      if (isCash || vr == null) return <span className="text-[var(--text-muted)] text-xs">—</span>;
-                      const cls = vr >= 3 ? 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.12)]'
-                                : vr >= 2 ? 'text-[var(--accent-yellow)] bg-[rgba(245,158,11,0.12)]'
-                                : 'text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)]';
-                      return <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{vr}×</span>;
-                    })()}
-                  </td>
-
-                  {/* RSI-14 */}
-                  <td className="px-3 py-3 text-center">
-                    {(() => {
-                      const tech = perHoldingTech[h.ticker];
-                      const rsi = tech?.rsi_14;
-                      if (isCash || rsi == null) return <span className="text-[var(--text-muted)] text-xs">—</span>;
-                      const cls = rsi >= 70 ? 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.12)]'
-                                : rsi <= 30 ? 'text-[var(--accent-green)] bg-[rgba(16,185,129,0.12)]'
-                                : 'text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)]';
-                      return <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{rsi}</span>;
-                    })()}
-                  </td>
-
                   <td className="px-4 py-3 font-medium">
                     {h.market_value != null ? `$${fmt(h.market_value)}` : <span className="text-[var(--text-muted)]">—</span>}
                   </td>
@@ -1169,9 +1344,83 @@ export default function GSheetPortfolio() {
                           </span>
                         )}
                       </div>
+                    ) : scrapingTickers.has(h.ticker) ? (
+                      <RefreshCw size={10} className="animate-spin text-blue-400" />
                     ) : <span className="text-[var(--text-muted)]">—</span>}
                   </td>
-                  <td className="px-4 py-3"><StatusBadge status={h.valuation_status} /></td>
+                  <td className="px-4 py-3">
+                    {scrapingTickers.has(h.ticker) && h.valuation_status == null
+                      ? <RefreshCw size={10} className="animate-spin text-blue-400" />
+                      : <StatusBadge status={h.valuation_status} />}
+                  </td>
+
+                  {/* 備注：技術分析文字 */}
+                  <td className="px-4 py-3 max-w-[220px]">
+                    {isCash ? null : (() => {
+                      const note = buildTechNote(perHoldingTech[h.ticker]);
+                      if (!note) return <span className="text-[var(--text-muted)] text-xs">—</span>;
+                      const colorMap = {
+                        red:    'text-[var(--accent-danger)]',
+                        orange: 'text-[#fb923c]',
+                        green:  'text-[var(--accent-green)]',
+                        cyan:   'text-[var(--accent-cyan)]',
+                        muted:  'text-[var(--text-muted)]',
+                      };
+                      return (
+                        <span className={`text-[11px] leading-relaxed ${colorMap[note.tone]}`}>
+                          {note.text}
+                        </span>
+                      );
+                    })()}
+                  </td>
+
+                  {/* Vol ratio */}
+                  <td className="px-3 py-3 text-center">
+                    {(() => {
+                      const tech = perHoldingTech[h.ticker];
+                      const vr = tech?.volume_ratio;
+                      if (isCash || vr == null) return <span className="text-[var(--text-muted)] text-xs">—</span>;
+                      const cls = vr >= 3 ? 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.12)]'
+                                : vr >= 2 ? 'text-[var(--accent-yellow)] bg-[rgba(245,158,11,0.12)]'
+                                : 'text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)]';
+                      return <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{vr}×</span>;
+                    })()}
+                  </td>
+
+                  {/* RSI-14 */}
+                  <td className="px-3 py-3 text-center">
+                    {(() => {
+                      const tech = perHoldingTech[h.ticker];
+                      const rsi = tech?.rsi_14;
+                      if (isCash || rsi == null) return <span className="text-[var(--text-muted)] text-xs">—</span>;
+                      const cls = rsi >= 70 ? 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.12)]'
+                                : rsi <= 30 ? 'text-[var(--accent-green)] bg-[rgba(16,185,129,0.12)]'
+                                : 'text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)]';
+                      return <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`}>{rsi}</span>;
+                    })()}
+                  </td>
+
+                  {/* MA cross / MA20 deviation */}
+                  <td className="px-3 py-3 text-center">
+                    {(() => {
+                      const tech = perHoldingTech[h.ticker];
+                      if (isCash || !tech) return <span className="text-[var(--text-muted)] text-xs">—</span>;
+                      const cross = tech.ma_cross;
+                      const dev = tech.price_vs_ma20_pct;
+                      if (cross === 'golden') return (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded text-[var(--accent-green)] bg-[rgba(16,185,129,0.15)]">▲金叉</span>
+                      );
+                      if (cross === 'death') return (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded text-[var(--accent-danger)] bg-[rgba(248,113,113,0.15)]">▼死叉</span>
+                      );
+                      if (dev == null) return <span className="text-[var(--text-muted)] text-xs">—</span>;
+                      const cls = dev >= 15  ? 'text-[var(--accent-yellow)] bg-[rgba(245,158,11,0.12)]'
+                                : dev <= -10 ? 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.10)]'
+                                : dev >= 0   ? 'text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)]'
+                                :              'text-[var(--text-secondary)] bg-[rgba(255,255,255,0.04)]';
+                      return <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${cls}`} title="Distance from MA20">{dev > 0 ? '+' : ''}{dev}%</span>;
+                    })()}
+                  </td>
 
                   <td className="px-4 py-3">
                     <button

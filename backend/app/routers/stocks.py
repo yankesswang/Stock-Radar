@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import yfinance as yf
@@ -8,6 +9,39 @@ from ..models import Stock, Industry, Metric, Forecast, Valuation, PeMedian
 from ..schemas import StockBrief, StockDetail, MetricOut, ForecastOut, ValuationOut
 
 router = APIRouter()
+
+
+class IndustryUpdate(BaseModel):
+    industry: str
+
+
+@router.patch("/{ticker}/industry")
+def update_stock_industry(ticker: str, body: IndustryUpdate, db: Session = Depends(get_db)):
+    """Reassign a stock's industry/sector group. Creates the industry if it's new.
+
+    Drives the portfolio sector pie (holdings get their sector from this join),
+    so changing it here reclassifies the ticker on the next portfolio load.
+    """
+    name = (body.industry or "").strip()
+    if not name or len(name) > 50 or any(c in name for c in "\r\n\t"):
+        raise HTTPException(status_code=400, detail="Industry must be 1-50 characters.")
+
+    stock = db.query(Stock).filter(func.upper(Stock.ticker) == ticker.upper()).first()
+    if not stock:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{ticker.upper()} not found — add it first via Add Stock.",
+        )
+
+    industry = db.query(Industry).filter(Industry.name == name).first()
+    if not industry:
+        industry = Industry(name=name)
+        db.add(industry)
+        db.flush()  # assign industry.id before linking
+
+    stock.industry_id = industry.id
+    db.commit()
+    return {"ticker": stock.ticker, "industry": name}
 
 
 @router.get("", response_model=dict)
@@ -118,24 +152,40 @@ def _valuation_to_out(stock: Stock, v: Valuation) -> ValuationOut:
 
 @router.get("/{ticker}/price")
 def get_stock_price(ticker: str):
-    """Get the latest real-time stock price using yfinance."""
+    """Get the latest real-time stock price using yfinance. Taiwan (.TW) prices are converted TWD→USD."""
     try:
         stock = yf.Ticker(ticker.upper())
         info = stock.info
 
         price = info.get("regularMarketPrice") or info.get("currentPrice")
+        prev_close = info.get("previousClose")
+        currency = info.get("currency", "USD")
 
         if price is None:
             raise HTTPException(status_code=404, detail=f"Could not fetch price for {ticker}")
 
+        # Convert TWD → USD for Taiwan-listed stocks
+        if ticker.upper().endswith(".TW") and currency == "TWD":
+            fx = yf.Ticker("TWD=X")
+            fx_hist = fx.history(period="1d", auto_adjust=True)
+            usd_twd = float(fx_hist["Close"].dropna().iloc[-1]) if not fx_hist.empty else None
+            if usd_twd:
+                price = price / usd_twd
+                if prev_close is not None:
+                    prev_close = prev_close / usd_twd
+                currency = "USD"
+
+        change = round(price - prev_close, 4) if prev_close else None
+        change_pct = round(change / prev_close * 100, 2) if (change and prev_close) else None
+
         return {
             "ticker": ticker.upper(),
-            "price": round(price, 2),
-            "currency": info.get("currency", "USD"),
+            "price": round(price, 4),
+            "currency": currency,
             "market_state": info.get("marketState", "UNKNOWN"),
-            "previous_close": info.get("previousClose"),
-            "change": round(price - info.get("previousClose", price), 2) if info.get("previousClose") else None,
-            "change_percent": round((price - info.get("previousClose", price)) / info.get("previousClose", 1) * 100, 2) if info.get("previousClose") else None,
+            "previous_close": round(prev_close, 4) if prev_close else None,
+            "change": change,
+            "change_percent": change_pct,
         }
     except HTTPException:
         raise
