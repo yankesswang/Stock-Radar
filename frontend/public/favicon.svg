@@ -1,0 +1,33 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0a2a7a"/>
+      <stop offset="1" stop-color="#0052ff"/>
+    </linearGradient>
+    <linearGradient id="sweep" x1="32" y1="32" x2="52" y2="14" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#578bfa" stop-opacity="0"/>
+      <stop offset="1" stop-color="#578bfa" stop-opacity="0.55"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded app tile -->
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+
+  <!-- Radar rings -->
+  <circle cx="32" cy="32" r="20" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="12.5" stroke="#ffffff" stroke-opacity="0.22" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="5" stroke="#ffffff" stroke-opacity="0.28" stroke-width="1.5"/>
+
+  <!-- Radar sweep wedge -->
+  <path d="M32 32 L32 12 A20 20 0 0 1 49.3 22 Z" fill="url(#sweep)"/>
+  <line x1="32" y1="32" x2="32" y2="12" stroke="#ffffff" stroke-opacity="0.45" stroke-width="1.5"/>
+
+  <!-- Upward stock trend line -->
+  <polyline points="14,42 24,36 31,40 40,28 50,20"
+    fill="none" stroke="#ffffff" stroke-width="3"
+    stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Detected blip at the trend peak -->
+  <circle cx="50" cy="20" r="4.5" fill="#ffffff"/>
+  <circle cx="50" cy="20" r="2.4" fill="#0052ff"/>
+</svg>
