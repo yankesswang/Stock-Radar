@@ -24,6 +24,7 @@ from src.utils import fetch_url, parse_html
 from src.config import STOCK_LIST
 from src import DATA_DIR
 from src.db_service import save_forecast
+from src.scrapers.forecast_fallback import apply_forecast_fallback
 
 HEADERS = {
     'User-Agent': (
@@ -236,10 +237,14 @@ def extract_range_table(table):
 # Core scraper
 # ---------------------------------------------------------------------------
 
-def scrape_forecast(ticker, current_year=2025):
+def scrape_forecast(ticker, current_year=2025, fallback=True, allow_unanchored=False):
     """
     Scrape all forecast data for a given ticker.
     Returns a comprehensive dict or None on failure.
+
+    StockAnalysis blanks FY+1 and beyond behind Pro. With ``fallback=True``
+    those holes are filled from Nasdaq (EPS) and yfinance (revenue); see
+    ``src.scrapers.forecast_fallback``.
     """
     url = f"https://stockanalysis.com/stocks/{ticker.lower()}/forecast/"
 
@@ -304,6 +309,11 @@ def scrape_forecast(ticker, current_year=2025):
             if result:
                 table_type, range_data = result
                 forecast_data['forecast_ranges'][range_key_map[table_type]] = range_data
+
+    # Fill Pro-locked years before deriving the legacy annual dict, so
+    # next_year_eps / next_year_revenue pick up the fallback values too.
+    if fallback:
+        apply_forecast_fallback(forecast_data, allow_unanchored=allow_unanchored)
 
     # Populate legacy annual format
     _populate_legacy_annual(forecast_data, current_year)
@@ -390,11 +400,11 @@ def has_existing(ticker):
 # Single-ticker scrape + save
 # ---------------------------------------------------------------------------
 
-def scrape_and_save(ticker, delay_range=(5, 15)):
+def scrape_and_save(ticker, delay_range=(5, 15), fallback=True, allow_unanchored=False):
     """Scrape one ticker, save JSON and to database. Returns (ticker, success, summary)."""
     time.sleep(random.uniform(*delay_range))
 
-    data = scrape_forecast(ticker)
+    data = scrape_forecast(ticker, fallback=fallback, allow_unanchored=allow_unanchored)
     if data is None:
         return (ticker, False, None)
 
@@ -409,6 +419,7 @@ def scrape_and_save(ticker, delay_range=(5, 15)):
         'annual_periods': len((data.get('annual_forecast') or {}).get('periods', [])),
         'range_categories': len(data.get('forecast_ranges', {})),
         'eps': data['annual'].get('current_eps'),
+        'filled': len((data.get('fallback') or {}).get('filled', [])),
     }
 
     return (ticker, True, summary)
@@ -439,7 +450,19 @@ def get_ticker_industry(ticker):
 # Batch scraper
 # ---------------------------------------------------------------------------
 
-def scrape_all(workers=1, skip_existing=False, delay_range=(5, 15)):
+def _ok_line(summary):
+    """Format the per-ticker success line."""
+    eps_str = f"EPS=${summary['eps']}" if summary['eps'] else "no EPS"
+    filled = summary.get('filled') or 0
+    fill_str = f", +{filled} filled" if filled else ""
+    return (
+        f"OK ({summary['annual_periods']} periods, "
+        f"{summary['recommendations']} recs, {eps_str}{fill_str})"
+    )
+
+
+def scrape_all(workers=1, skip_existing=False, delay_range=(5, 15), fallback=True,
+               allow_unanchored=False):
     """Scrape forecast for every stock in STOCK_LIST."""
     all_tickers = get_all_tickers()
     total = len(all_tickers)
@@ -467,10 +490,9 @@ def scrape_all(workers=1, skip_existing=False, delay_range=(5, 15)):
     if workers <= 1:
         for i, ticker in enumerate(all_tickers, 1):
             print(f"[{i}/{total_to_scrape}] {ticker} ...", end=" ", flush=True)
-            t, ok, summary = scrape_and_save(ticker, delay_range)
-            if ok:
-                eps_str = f"EPS=${summary['eps']}" if summary['eps'] else "no EPS"
-                print(f"OK ({summary['annual_periods']} periods, {summary['recommendations']} recs, {eps_str})")
+            t, ok, summary = scrape_and_save(ticker, delay_range, fallback, allow_unanchored)
+            if ok and summary:
+                print(_ok_line(summary))
                 succeeded.append(t)
             else:
                 print("FAILED")
@@ -479,7 +501,7 @@ def scrape_all(workers=1, skip_existing=False, delay_range=(5, 15)):
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for ticker in all_tickers:
-                fut = pool.submit(scrape_and_save, ticker, delay_range)
+                fut = pool.submit(scrape_and_save, ticker, delay_range, fallback, allow_unanchored)
                 futures[fut] = ticker
 
             done_count = 0
@@ -488,9 +510,8 @@ def scrape_all(workers=1, skip_existing=False, delay_range=(5, 15)):
                 ticker = futures[fut]
                 try:
                     t, ok, summary = fut.result()
-                    if ok:
-                        eps_str = f"EPS=${summary['eps']}" if summary['eps'] else "no EPS"
-                        print(f"[{done_count}/{total_to_scrape}] {t} - OK ({summary['annual_periods']} periods, {summary['recommendations']} recs, {eps_str})")
+                    if ok and summary:
+                        print(f"[{done_count}/{total_to_scrape}] {t} - {_ok_line(summary)}")
                         succeeded.append(t)
                     else:
                         print(f"[{done_count}/{total_to_scrape}] {t} - FAILED")
@@ -537,23 +558,34 @@ def main():
     parser.add_argument('--skip-existing', action='store_true', help='Skip tickers already scraped today')
     parser.add_argument('--delay-min', type=float, default=5, help='Min delay between requests in seconds (default: 5)')
     parser.add_argument('--delay-max', type=float, default=15, help='Max delay between requests in seconds (default: 15)')
+    parser.add_argument('--no-fallback', action='store_true',
+                        help="Don't fill Pro-locked years from Nasdaq / yfinance")
+    parser.add_argument('--allow-unanchored', action='store_true',
+                        help='Around a fiscal-year rollover the source may have dropped the '
+                             'one year StockAnalysis still shows, leaving nothing to calibrate '
+                             'against. Take its later years raw anyway (level may not match '
+                             "StockAnalysis's EPS definition).")
     args = parser.parse_args()
 
     if not args.all and not args.ticker:
         parser.error("Provide --ticker AAPL or --all")
 
     delay_range = (args.delay_min, args.delay_max)
+    fallback = not args.no_fallback
 
     if args.all:
         scrape_all(
             workers=args.workers,
             skip_existing=args.skip_existing,
             delay_range=delay_range,
+            fallback=fallback,
+            allow_unanchored=args.allow_unanchored,
         )
     else:
         ticker = args.ticker.upper()
         print(f"Scraping forecast for {ticker} ...")
-        data = scrape_forecast(ticker)
+        data = scrape_forecast(ticker, fallback=fallback,
+                               allow_unanchored=args.allow_unanchored)
         if data is None:
             print(f"Failed to scrape forecast for {ticker}")
             sys.exit(1)
@@ -583,6 +615,25 @@ def main():
             print(f"  Timeline:      {len(af.get('periods', []))} fiscal years")
         print(f"  Analyst Recs:  {len(recs)}")
         print()
+
+        fb = data.get('fallback') or {}
+        if fb.get('filled'):
+            print("  Pro-locked years filled from free sources:")
+            for f in fb['filled']:
+                src = fb['sources'].get(f['field'], '?')
+                thin = "  [thin: %s est.]" % f['num_estimates'] if f['thin_coverage'] else ""
+                if f['method'] == 'raw':
+                    origin = f"{src} {f['raw']} taken RAW — level not calibrated"
+                else:
+                    origin = f"{src} {f['raw']}, rebased {f['method']} off {f['anchor_year']}"
+                print(
+                    f"    {f['year']} {f['field']:<8} {f['value']:>14,.2f}   ({origin}){thin}"
+                )
+            print()
+        for note in fb.get('notes', []):
+            print(f"  [fallback] {note}")
+        if fb.get('notes'):
+            print()
 
         # Show top 5 analyst recommendations
         if recs:
