@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, asc, or_, func
 
+from ..analyst_revisions import build_revisions
 from ..database import get_db
 from ..models import Stock, Industry, Valuation
 from ..schemas import ValuationOut
@@ -112,6 +113,27 @@ def list_valuations(
             "total_pages": (total + per_page - 1) // per_page,
         },
     }
+
+
+@router.get("/{ticker}/revisions", response_model=dict)
+def analyst_revisions(ticker: str, db: Session = Depends(get_db)):
+    """
+    分析師預期修正 — is the sell side raising or lowering its expectations?
+
+    Combines FY-aligned consensus EPS, price targets, rating drift and individual
+    analyst actions across every forecast snapshot on disk. See
+    ``app/analyst_revisions.py`` for how fiscal-year rolls are excluded.
+    """
+    stock = db.query(Stock).filter(func.upper(Stock.ticker) == ticker.upper()).first()
+    rows = (
+        db.query(Valuation)
+        .filter_by(stock_id=stock.id)
+        .order_by(Valuation.snapshot_date)
+        .all()
+        if stock
+        else []
+    )
+    return build_revisions(ticker, rows)
 
 
 @router.get("/{ticker}/history", response_model=list[ValuationOut])

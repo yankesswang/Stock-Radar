@@ -371,3 +371,30 @@ class HoldingSnapshot(Base):
         Index("idx_hs_snapshot", "snapshot_id"),
         Index("idx_hs_ticker", "ticker"),
     )
+
+
+class MimiWatchlist(Base):
+    """One row per ticker parsed from the Mimi strategy document."""
+    __tablename__ = "mimi_watchlist"
+
+    ticker            = Column(String, primary_key=True)
+    company_name      = Column(String, default="")
+    entry_zone_raw    = Column(String, default="")
+    stop_loss_raw     = Column(String, default="")
+    position_size_raw = Column(String, default="")
+    target_price_raw  = Column(String, default="")
+    time_frame_raw    = Column(String, default="")
+    catalyst_raw      = Column(String, default="")
+    rec_date          = Column(String, default="")  # 首推日期
+    date_updated      = Column(String, default="")  # 最後更新日期
+    tags              = Column(String, default="")  # heading description
+    sector            = Column(String, default="")  # chapter/sector
+    direction         = Column(String, default="")  # 當前動作 / 現況 / 操作方向
+    logic_raw         = Column(String, default="")  # 邏輯 / callout tip
+    risk_raw          = Column(String, default="")  # 風險 / callout warning
+    section_raw       = Column(String, default="")
+    action_light      = Column(String, default="")  # 🟢🟡🟠🔴⚪ 燈號（new format）
+    return_pct        = Column(String, default="")  # 首推→現報酬率（yfinance，new format）
+    price_rec         = Column(Float,  nullable=True)  # 首推當時價（new format）
+    history_json      = Column(String, default="")  # 觀點演變 rows, JSON list（new format）
+    last_synced       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

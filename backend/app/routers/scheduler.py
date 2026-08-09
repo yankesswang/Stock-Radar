@@ -33,6 +33,9 @@ REFRESH_INTERVAL_DAYS = 7
 CHECK_INTERVAL_SECONDS = 60            # check every minute
 TICKER_DELAY_SECONDS   = 2             # throttle between tickers
 REPORT_DAILY_HOUR = 8                  # local server time
+# AI 持倉決策日報「不」由本內部排程自動觸發 —— 改由 stock digest 流程
+# （~/Library/Scripts/stock-digest-portfolio.sh，launchd 6:30）呼叫
+# POST /api/scheduler/ai-report/run 觸發。此處僅保留手動端點與狀態。
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 _state: dict[str, Any] = {
@@ -53,6 +56,14 @@ _state: dict[str, Any] = {
     "report_done":          0,
     "report_total":         0,
     "report_errors":        [],
+    "ai_report_status":        "idle",   # idle | running
+    "ai_report_enabled":       True,
+    "ai_report_last_run":      None,     # ISO datetime string
+    "ai_report_last_run_date": None,     # YYYY-MM-DD
+    "ai_report_next_run":      None,     # ISO datetime string
+    "ai_report_done":          0,
+    "ai_report_total":         0,
+    "ai_report_errors":        [],
 }
 
 _refresh_task: asyncio.Task | None = None
@@ -61,6 +72,7 @@ _refresh_task: asyncio.Task | None = None
 class SchedulerConfigIn(BaseModel):
     refresh_enabled: bool | None = None
     report_enabled: bool | None = None
+    ai_report_enabled: bool | None = None
 
 
 # ── State persistence ─────────────────────────────────────────────────────────
@@ -76,6 +88,10 @@ def _load_state() -> None:
         _state["report_last_run"] = saved.get("report_last_run")
         _state["report_last_run_date"] = saved.get("report_last_run_date")
         _state["report_next_run"] = saved.get("report_next_run")
+        _state["ai_report_enabled"] = bool(saved.get("ai_report_enabled", True))
+        _state["ai_report_last_run"] = saved.get("ai_report_last_run")
+        _state["ai_report_last_run_date"] = saved.get("ai_report_last_run_date")
+        _state["ai_report_next_run"] = saved.get("ai_report_next_run")
     except Exception:
         pass
 
@@ -90,37 +106,44 @@ def _save_state() -> None:
             "report_last_run": _state["report_last_run"],
             "report_last_run_date": _state["report_last_run_date"],
             "report_next_run": _state["report_next_run"],
+            "ai_report_enabled": _state["ai_report_enabled"],
+            "ai_report_last_run": _state["ai_report_last_run"],
+            "ai_report_last_run_date": _state["ai_report_last_run_date"],
+            "ai_report_next_run": _state["ai_report_next_run"],
         }))
     except Exception:
         pass
 
 
-def _calc_next_report_run(now: datetime | None = None) -> datetime:
+def _calc_next_run_at(hour: int, now: datetime | None = None) -> datetime:
     now = now or datetime.now()
-    target = now.replace(hour=REPORT_DAILY_HOUR, minute=0, second=0, microsecond=0)
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if now >= target:
         target = target + timedelta(days=1)
     return target
 
 
-def _should_run_daily_report(now: datetime) -> tuple[bool, str]:
+def _calc_next_report_run(now: datetime | None = None) -> datetime:
+    return _calc_next_run_at(REPORT_DAILY_HOUR, now)
+
+
+def _should_run_at(now: datetime, hour: int, last_run_date: str | None, is_running: bool) -> tuple[bool, str]:
     """
-    Decide whether daily report should run now.
+    Decide whether a daily task should run now.
     Rules:
-    - normal schedule: run once per day at/after REPORT_DAILY_HOUR
-    - catch-up mode: if reports are missing for >=2 days, run immediately
+    - normal schedule: run once per day at/after `hour`
+    - catch-up mode: if it's been missing for >=2 days, run immediately
     """
-    if _state.get("report_status") == "running":
+    if is_running:
         return False, "already-running"
 
     today = now.date().isoformat()
-    last_run_date = _state.get("report_last_run_date")
     if last_run_date == today:
         return False, "already-ran-today"
 
     # First run ever
     if not last_run_date:
-        if now.hour >= REPORT_DAILY_HOUR:
+        if now.hour >= hour:
             return True, "first-run"
         return False, "before-scheduled-hour"
 
@@ -131,11 +154,19 @@ def _should_run_daily_report(now: datetime) -> tuple[bool, str]:
         return True, "invalid-last-run-date"
 
     gap_days = (now.date() - last_d).days
-    if now.hour >= REPORT_DAILY_HOUR:
+    if now.hour >= hour:
         return True, "scheduled-hour"
     if gap_days >= 2:
         return True, f"catch-up-gap-{gap_days}d"
     return False, "before-scheduled-hour"
+
+
+def _should_run_daily_report(now: datetime) -> tuple[bool, str]:
+    return _should_run_at(
+        now, REPORT_DAILY_HOUR,
+        _state.get("report_last_run_date"),
+        _state.get("report_status") == "running",
+    )
 
 
 def _log(msg: str) -> None:
@@ -326,6 +357,53 @@ async def _do_daily_report_refresh() -> None:
     )
 
 
+def _run_ai_report_sync() -> dict[str, Any]:
+    """
+    批次產生並「快取」所有持倉的 per-stock AI 決策卡。
+
+    這不再是獨立推播的日報 —— 卡片只寫入快取（data/ai_analysis/{TICKER}_{date}.json
+    + data/ai_reports/{date}.json 供前端閱覽），供 scripts/daily_analysis.py 收盤分析
+    當作逐股 context 讀取。故 to_obsidian / to_telegram 皆為 False。
+    """
+    from .ai_report import generate_ai_portfolio_report
+    return generate_ai_portfolio_report(refresh=False, to_obsidian=False, to_telegram=False)
+
+
+async def _do_ai_report_refresh() -> None:
+    if _state["ai_report_status"] == "running":
+        return
+
+    _state.update({
+        "ai_report_status": "running",
+        "ai_report_done": 0,
+        "ai_report_total": 0,
+        "ai_report_errors": [],
+    })
+    _log("Starting AI portfolio decision report.")
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, _run_ai_report_sync)
+        done = result.get("ok", 0)
+        total = result.get("total", 0)
+        errors = result.get("errors", [])
+    except Exception as exc:
+        done, total, errors = 0, 0, [str(exc)]
+    now = datetime.now()
+
+    _state.update({
+        "ai_report_status": "idle",
+        "ai_report_last_run": now.isoformat(timespec="seconds"),
+        "ai_report_last_run_date": now.date().isoformat(),
+        "ai_report_next_run": None,   # 由 stock digest 流程外部排程，非內部自動觸發
+        "ai_report_done": done,
+        "ai_report_total": total,
+        "ai_report_errors": errors,
+    })
+    _save_state()
+    _log(f"AI report complete. ok={done}/{total} errors={len(errors)} next={_state['ai_report_next_run']}")
+
+
 # ── Background scheduler loop ─────────────────────────────────────────────────
 
 async def scheduler_loop() -> None:
@@ -360,6 +438,9 @@ async def scheduler_loop() -> None:
                 _log(f"Daily report trigger ({reason}) — starting report generation.")
                 asyncio.create_task(_do_daily_report_refresh())
 
+        # AI 持倉日報不在此自動觸發 —— 由 stock digest 流程（launchd 6:30）呼叫
+        # POST /api/scheduler/ai-report/run 驅動，見 trigger_ai_report_run()。
+
 
 # ── API endpoints ─────────────────────────────────────────────────────────────
 
@@ -386,6 +467,16 @@ def get_status():
             "total": _state["report_total"],
             "errors": _state["report_errors"][-10:],
         },
+        "ai_report": {
+            "enabled": _state["ai_report_enabled"],
+            "status": _state["ai_report_status"],
+            "last_run": _state["ai_report_last_run"],
+            "last_run_date": _state["ai_report_last_run_date"],
+            "next_run": _state["ai_report_next_run"],
+            "done": _state["ai_report_done"],
+            "total": _state["ai_report_total"],
+            "errors": _state["ai_report_errors"][-10:],
+        },
     }
 
 
@@ -396,11 +487,14 @@ def update_config(payload: SchedulerConfigIn):
         _state["refresh_enabled"] = payload.refresh_enabled
     if payload.report_enabled is not None:
         _state["report_enabled"] = payload.report_enabled
+    if payload.ai_report_enabled is not None:
+        _state["ai_report_enabled"] = payload.ai_report_enabled
     _save_state()
     return {
         "ok": True,
         "refresh_enabled": _state["refresh_enabled"],
         "report_enabled": _state["report_enabled"],
+        "ai_report_enabled": _state["ai_report_enabled"],
     }
 
 
@@ -420,3 +514,12 @@ async def trigger_report_run():
         raise HTTPException(status_code=409, detail="Report generation already in progress.")
     asyncio.create_task(_do_daily_report_refresh())
     return {"ok": True, "message": "Daily report generation started in background."}
+
+
+@router.post("/ai-report/run")
+async def trigger_ai_report_run():
+    """Manually trigger AI portfolio decision report generation (non-blocking)."""
+    if _state["ai_report_status"] == "running":
+        raise HTTPException(status_code=409, detail="AI report generation already in progress.")
+    asyncio.create_task(_do_ai_report_refresh())
+    return {"ok": True, "message": "AI portfolio report generation started in background."}

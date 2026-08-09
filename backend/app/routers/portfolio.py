@@ -26,6 +26,7 @@ from ..config import settings
 from ..database import get_db, SessionLocal
 from ..models import Portfolio, Holding, Stock, Industry, Valuation, PortfolioSnapshot, HoldingSnapshot, PortfolioMeta, PortfolioDeposit
 from .chart import _fetch_yahoo_chart_df, _find_sr_levels
+from ..indicators import ewma_volatility, percentile_rank, volatility_regime
 try:
     from src.config import STOCK_LIST
 except ModuleNotFoundError:
@@ -122,22 +123,41 @@ def _fetch_prices(tickers: list[str]) -> dict[str, float]:
 
 
 def _fetch_price_info(ticker: str) -> dict | None:
-    """Return price + daily change by comparing last two closes."""
+    """Return price + daily change by comparing last two closes.
+
+    Tries yfinance first; falls back to the Yahoo chart API (query1) which
+    isn't gated behind the rate-limited cookie/crumb, so live prices keep
+    flowing even when yfinance returns YFRateLimitError.
+    """
+    closes = None
     try:
         hist = yf.Ticker(ticker.upper()).history(period="5d", auto_adjust=True)
-        closes = hist["Close"].dropna()
-        if closes.empty:
-            return None
-        price = float(closes.iloc[-1])
-        if len(closes) >= 2:
-            prev  = float(closes.iloc[-2])
-            change     = round(price - prev, 4)
-            change_pct = round(change / prev * 100, 2)
-        else:
-            prev = change = change_pct = None
-        return {"price": price, "prev_close": prev, "day_change": change, "day_change_pct": change_pct}
+        c = hist["Close"].dropna()
+        if not c.empty:
+            closes = c
     except Exception:
+        closes = None
+
+    if closes is None or closes.empty:
+        try:
+            df = _fetch_yahoo_chart_df(ticker, "5d", "1d")
+            c = df["Close"].dropna() if not df.empty else None
+            if c is not None and not c.empty:
+                closes = c
+        except Exception:
+            closes = None
+
+    if closes is None or closes.empty:
         return None
+
+    price = float(closes.iloc[-1])
+    if len(closes) >= 2:
+        prev  = float(closes.iloc[-2])
+        change     = round(price - prev, 4)
+        change_pct = round(change / prev * 100, 2)
+    else:
+        prev = change = change_pct = None
+    return {"price": price, "prev_close": prev, "day_change": change, "day_change_pct": change_pct}
 
 
 def _fetch_prices_info(tickers: list[str]) -> dict[str, dict]:
@@ -153,14 +173,25 @@ def _fetch_prices_info(tickers: list[str]) -> dict[str, dict]:
 
 
 def _fetch_technicals(ticker: str) -> dict | None:
-    """RSI-14, MA5/20/50, volume ratio, S/R proximity for a single ticker (6mo history)."""
+    """RSI-14, MA5/20/50, volume ratio, S/R proximity and volatility regime.
+
+    One year of history (not six months) so the volatility percentile has a full
+    trailing distribution to rank against.
+    """
     try:
-        hist = yf.Ticker(ticker.upper()).history(period="6mo", auto_adjust=True)
+        hist = pd.DataFrame()
+        try:
+            hist = yf.Ticker(ticker.upper()).history(period="1y", auto_adjust=True)
+        except Exception:
+            pass
+        if hist.empty:
+            hist = _fetch_yahoo_chart_df(ticker, "1y", "1d")
         if hist.empty or len(hist) < 15:
             return None
         closes  = hist["Close"].dropna().astype(float)
         volumes = hist["Volume"].dropna().astype(float)
         price   = float(closes.iloc[-1])
+        prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else None
 
         # Volume
         today_vol  = float(volumes.iloc[-1]) if not volumes.empty else None
@@ -201,11 +232,17 @@ def _fetch_technicals(ticker: str) -> dict | None:
             else:
                 rsi = 50.0
 
-        # S/R proximity — reuse the same algorithm as the chart endpoint
+        # S/R proximity — reuse the same algorithm as the chart endpoint.
+        # Breakouts use yesterday's levels so today's close can cross them.
+        prev_hist = hist.iloc[:-1] if len(hist) >= 31 else hist
+        prev_sr = _find_sr_levels(prev_hist, window=10, n_levels=6)
         sr = _find_sr_levels(hist, window=10, n_levels=6)
         near_support: list[dict] = []
         near_resistance: list[dict] = []
+        breakouts: list[dict] = []
+        breakdowns: list[dict] = []
         _PROXIMITY = 0.03   # 3% threshold for "near"
+        _BREAK_BUFFER = 0.002  # avoid flagging tiny round-off crosses
 
         for lvl in sr.get("support", []):
             dist_pct = (price - lvl["price"]) / price * 100
@@ -227,12 +264,58 @@ def _fetch_technicals(ticker: str) -> dict | None:
                 })
         near_resistance.sort(key=lambda x: x["dist_pct"])
 
+        if prev_close and prev_close > 0:
+            for lvl in prev_sr.get("resistance", []):
+                level_price = float(lvl["price"])
+                if prev_close <= level_price and price > level_price * (1 + _BREAK_BUFFER):
+                    breakouts.append({
+                        "price": round(level_price, 2),
+                        "prev_close": round(prev_close, 2),
+                        "current_price": round(price, 2),
+                        "move_pct": round((price - level_price) / level_price * 100, 2),
+                        "strength": lvl["strength"],
+                    })
+            for lvl in prev_sr.get("support", []):
+                level_price = float(lvl["price"])
+                if prev_close >= level_price and price < level_price * (1 - _BREAK_BUFFER):
+                    breakdowns.append({
+                        "price": round(level_price, 2),
+                        "prev_close": round(prev_close, 2),
+                        "current_price": round(price, 2),
+                        "move_pct": round((price - level_price) / level_price * 100, 2),
+                        "strength": lvl["strength"],
+                    })
+        breakouts.sort(key=lambda x: (-x["strength"], -x["move_pct"]))
+        breakdowns.sort(key=lambda x: (-x["strength"], x["move_pct"]))
+
+        # Volatility regime — "is this name unusually volatile *right now*",
+        # which is what the daily-analysis risk_level judgement actually needs.
+        ewma_vol = vol_pct_rank = vol_regime = price_pct_rank = None
+        if len(closes) >= 40:
+            ev = ewma_volatility(closes)
+            last_ev = ev.iloc[-1]
+            if pd.notna(last_ev):
+                ewma_vol = round(float(last_ev), 1)
+                win = max(20, min(252, int(ev.notna().sum())))
+                pr = percentile_rank(ev, win).iloc[-1]
+                if pd.notna(pr):
+                    vol_pct_rank = int(round(float(pr)))
+                    vol_regime = volatility_regime(float(pr))
+            ppr = percentile_rank(closes, max(20, min(252, len(closes)))).iloc[-1]
+            if pd.notna(ppr):
+                price_pct_rank = int(round(float(ppr)))
+
         return {
             "price":              round(price, 2),
+            "prev_close":         round(prev_close, 2) if prev_close else None,
             "volume":             int(today_vol)  if today_vol  else None,
             "avg_volume_20":      int(avg_vol_20) if avg_vol_20 else None,
             "volume_ratio":       vol_ratio,
             "rsi_14":             rsi,
+            "ewma_vol":           ewma_vol,
+            "vol_pct_rank":       vol_pct_rank,
+            "vol_regime":         vol_regime,
+            "price_pct_rank":     price_pct_rank,
             "ma5":                ma5,
             "ma20":               ma20,
             "ma50":               ma50,
@@ -240,6 +323,8 @@ def _fetch_technicals(ticker: str) -> dict | None:
             "ma_cross":           ma_cross,  # "golden" | "death" | None
             "near_support":       near_support[:2],
             "near_resistance":    near_resistance[:2],
+            "breakouts":          breakouts[:2],
+            "breakdowns":         breakdowns[:2],
         }
     except Exception:
         return None
@@ -383,7 +468,7 @@ def _parse_main_sheet(raw: bytes) -> list[dict]:
     df = pd.read_csv(io.BytesIO(raw))
     df.columns = df.columns.str.lower().str.strip()
     df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
-    df = df[df["ticker"].str.match(r"^[A-Z]{1,6}(-[A-Z])?$")]
+    df = df[df["ticker"].str.match(r"^([A-Z]{1,6}(-[A-Z])?|\d{4,5}\.TW)$")]
     # CASH rows have no shares — treat as 1 share at the cash balance value
     df.loc[df["ticker"] == "CASH", "shares"] = 1.0
     df = df.dropna(subset=["shares", "avg_cost"])
@@ -743,6 +828,145 @@ def _build_risk_flags(current_snapshot: dict, baseline_snapshot: dict | None) ->
                 flags.append({"level": "info", "message": f"本期組合市值波動 {delta_pct:+.2f}% ，建議檢查主要貢獻部位"})
 
     return flags
+
+
+def _build_abnormal_stocks(
+    holdings: list[dict],
+    technicals: dict[str, dict],
+    cur_map: dict[str, dict],
+) -> dict:
+    """Aggregate all per-stock abnormal signals for the daily report."""
+    holding_map = {h["ticker"]: h for h in holdings if h.get("ticker") and h["ticker"] != "CASH"}
+    categories: dict[str, list[dict]] = {
+        "breakouts": [],
+        "breakdowns": [],
+        "volume_spikes": [],
+        "rsi_extreme": [],
+        "ma_crosses": [],
+        "near_support": [],
+        "near_resistance": [],
+        "large_moves": [],
+    }
+    per_stock: dict[str, dict] = {}
+
+    def add_signal(ticker: str, category: str, signal: dict, severity: int, tone: str) -> None:
+        h = holding_map.get(ticker, {})
+        position = cur_map.get(ticker, {})
+        item = {
+            "ticker": ticker,
+            "category": category,
+            "tone": tone,
+            "severity": severity,
+            "price": signal.get("current_price") or signal.get("price") or h.get("current_price"),
+            "day_change_pct": h.get("day_change_pct"),
+            "weight_pct": float(position.get("weight_pct") or 0),
+            **signal,
+        }
+        categories[category].append(item)
+        row = per_stock.setdefault(
+            ticker,
+            {
+                "ticker": ticker,
+                "price": h.get("current_price") or signal.get("current_price") or signal.get("price"),
+                "day_change_pct": h.get("day_change_pct"),
+                "weight_pct": float(position.get("weight_pct") or 0),
+                "signals": [],
+                "severity": 0,
+                "tone": "neutral",
+            },
+        )
+        row["signals"].append(item)
+        previous_severity = row["severity"]
+        row["severity"] = max(previous_severity, severity)
+        if severity > previous_severity:
+            row["tone"] = tone
+        elif severity == previous_severity and tone == "bear":
+            row["tone"] = "bear"
+        elif severity == previous_severity and tone == "bull" and row["tone"] in ("neutral", "watch"):
+            row["tone"] = "bull"
+        elif severity == previous_severity and tone == "watch" and row["tone"] == "neutral":
+            row["tone"] = "watch"
+
+    for ticker, tech in technicals.items():
+        h = holding_map.get(ticker, {})
+        day_change_pct = h.get("day_change_pct")
+
+        for item in tech.get("breakouts", []):
+            add_signal(ticker, "breakouts", {
+                "label": f"突破壓力 ${item['price']}",
+                "level_price": item["price"],
+                "prev_close": item.get("prev_close"),
+                "current_price": item.get("current_price"),
+                "move_pct": item.get("move_pct"),
+                "strength": item.get("strength"),
+            }, 4, "bull")
+
+        for item in tech.get("breakdowns", []):
+            add_signal(ticker, "breakdowns", {
+                "label": f"跌破支撐 ${item['price']}",
+                "level_price": item["price"],
+                "prev_close": item.get("prev_close"),
+                "current_price": item.get("current_price"),
+                "move_pct": item.get("move_pct"),
+                "strength": item.get("strength"),
+            }, 5, "bear")
+
+        vol_ratio = tech.get("volume_ratio")
+        if vol_ratio is not None and vol_ratio >= 2.0:
+            add_signal(ticker, "volume_spikes", {
+                "label": f"量能 {vol_ratio:.1f}× 均量",
+                "volume_ratio": vol_ratio,
+                "volume": tech.get("volume"),
+            }, 2 if vol_ratio < 3 else 3, "watch")
+
+        rsi = tech.get("rsi_14")
+        if rsi is not None and (rsi >= 70 or rsi <= 30):
+            tone = "bear" if rsi >= 70 else "bull"
+            add_signal(ticker, "rsi_extreme", {
+                "label": f"RSI {rsi:.0f} {'超買' if rsi >= 70 else '超賣'}",
+                "rsi": rsi,
+            }, 3 if rsi >= 80 or rsi <= 25 else 2, tone)
+
+        ma_cross = tech.get("ma_cross")
+        if ma_cross in ("golden", "death"):
+            add_signal(ticker, "ma_crosses", {
+                "label": "MA5 突破 MA20" if ma_cross == "golden" else "MA5 跌破 MA20",
+                "ma_cross": ma_cross,
+                "ma5": tech.get("ma5"),
+                "ma20": tech.get("ma20"),
+            }, 3, "bull" if ma_cross == "golden" else "bear")
+
+        for item in tech.get("near_support", []):
+            add_signal(ticker, "near_support", {
+                "label": f"接近支撐 ${item['price']}",
+                "level_price": item["price"],
+                "dist_pct": item.get("dist_pct"),
+                "strength": item.get("strength"),
+            }, 1, "bull")
+
+        for item in tech.get("near_resistance", []):
+            add_signal(ticker, "near_resistance", {
+                "label": f"接近壓力 ${item['price']}",
+                "level_price": item["price"],
+                "dist_pct": item.get("dist_pct"),
+                "strength": item.get("strength"),
+            }, 1, "bear")
+
+        if day_change_pct is not None and abs(float(day_change_pct)) >= 3:
+            add_signal(ticker, "large_moves", {
+                "label": f"單日 {'+' if day_change_pct > 0 else ''}{day_change_pct:.1f}%",
+                "move_pct": day_change_pct,
+            }, 2 if abs(float(day_change_pct)) < 5 else 3, "bull" if day_change_pct > 0 else "bear")
+
+    for rows in categories.values():
+        rows.sort(key=lambda x: (-x["severity"], -abs(float(x.get("weight_pct") or 0)), x["ticker"]))
+
+    summary = sorted(
+        per_stock.values(),
+        key=lambda x: (-x["severity"], -abs(float(x.get("weight_pct") or 0)), x["ticker"]),
+    )
+    counts = {key: len(value) for key, value in categories.items()}
+    return {"counts": counts, "categories": categories, "summary": summary}
 
 
 def _calc_mwr(deposits: list[dict], current_value: float) -> float | None:
@@ -1313,6 +1537,18 @@ def get_csv_portfolio(
             shares = float(row["shares"])
             avg_cost = float(row["avg_cost"])
             leverage = float(row.get("leverage") or 1)
+
+            # Convert TWD → USD for Taiwan stocks
+            is_tw = t.upper().endswith(".TW")
+            day_change = pinfo.get("day_change")
+            day_change_pct = pinfo.get("day_change_pct")
+            if is_tw and usd_twd_rate:
+                if price is not None:
+                    price = round(price / usd_twd_rate, 4)
+                if day_change is not None:
+                    day_change = round(day_change / usd_twd_rate, 4)
+                avg_cost = round(avg_cost / usd_twd_rate, 4)
+
             cost_basis = round(shares * avg_cost, 2)
             market_value = round(shares * price, 2) if price else None
             raw_pnl = round(market_value - cost_basis, 2) if market_value is not None else None
@@ -1337,8 +1573,8 @@ def get_csv_portfolio(
                 "leverage":                leverage,
                 "notes":                   row["notes"],
                 "current_price":           price,
-                "day_change":              pinfo.get("day_change"),
-                "day_change_pct":          pinfo.get("day_change_pct"),
+                "day_change":              day_change,
+                "day_change_pct":          day_change_pct,
                 "cost_basis":              cost_basis,
                 "market_value":            market_value,
                 "unrealized_pnl":          pnl,
@@ -1606,6 +1842,8 @@ def _generate_csv_portfolio_report(portfolio: str, period: str, db: Session) -> 
     death_cross:      list[dict] = []
     sr_near_support:     list[dict] = []
     sr_near_resistance:  list[dict] = []
+    sr_breakouts:        list[dict] = []
+    sr_breakdowns:       list[dict] = []
 
     for ticker in sorted(technicals):
         tech = technicals[ticker]
@@ -1623,6 +1861,10 @@ def _generate_csv_portfolio_report(portfolio: str, period: str, db: Session) -> 
             golden_cross.append({"ticker": ticker, "ma5": tech.get("ma5"), "ma20": tech.get("ma20")})
         elif ma_cross == "death":
             death_cross.append({"ticker": ticker, "ma5": tech.get("ma5"), "ma20": tech.get("ma20")})
+        for lvl in tech.get("breakouts", []):
+            sr_breakouts.append({"ticker": ticker, **lvl})
+        for lvl in tech.get("breakdowns", []):
+            sr_breakdowns.append({"ticker": ticker, **lvl})
         for lvl in tech.get("near_support", []):
             sr_near_support.append({"ticker": ticker, **lvl})
         for lvl in tech.get("near_resistance", []):
@@ -1631,8 +1873,12 @@ def _generate_csv_portfolio_report(portfolio: str, period: str, db: Session) -> 
     volume_anomalies.sort(key=lambda x: x["volume_ratio"], reverse=True)
     rsi_overbought.sort(key=lambda x: x["rsi"], reverse=True)
     rsi_oversold.sort(key=lambda x: x["rsi"])
+    sr_breakouts.sort(key=lambda x: (-x.get("strength", 0), -x.get("move_pct", 0)))
+    sr_breakdowns.sort(key=lambda x: (-x.get("strength", 0), x.get("move_pct", 0)))
     sr_near_support.sort(key=lambda x: x["dist_pct"])
     sr_near_resistance.sort(key=lambda x: x["dist_pct"])
+
+    abnormal_stocks = _build_abnormal_stocks(holdings, technicals, cur_map)
 
     # ── Per-stock insights for notable movers ─────────────────────────────────
     stock_insights = _build_stock_insights(holdings, technicals, cur_map)
@@ -1659,6 +1905,12 @@ def _generate_csv_portfolio_report(portfolio: str, period: str, db: Session) -> 
 
     for item in golden_cross:
         risk_flags.append({"level": "bull", "message": f"↑ {item['ticker']} MA5 突破 MA20（黃金交叉）"})
+
+    for item in sr_breakouts:
+        risk_flags.append({"level": "bull", "message": f"↑ {item['ticker']} 突破壓力 ${item['price']}（現價 ${item['current_price']}，強度 {'★' * item['strength']}）"})
+
+    for item in sr_breakdowns:
+        risk_flags.append({"level": "bear", "message": f"↓ {item['ticker']} 跌破支撐 ${item['price']}（現價 ${item['current_price']}，強度 {'★' * item['strength']}）"})
 
     # Neutral attention → "info"
     for item in volume_anomalies:
@@ -1708,10 +1960,13 @@ def _generate_csv_portfolio_report(portfolio: str, period: str, db: Session) -> 
             "rsi_oversold":      rsi_oversold[:10],
             "golden_cross":      golden_cross[:10],
             "death_cross":       death_cross[:10],
+            "breakouts":         sr_breakouts[:10],
+            "breakdowns":        sr_breakdowns[:10],
             "near_support":      sr_near_support[:10],
             "near_resistance":   sr_near_resistance[:10],
             "per_holding":       technicals,
         },
+        "abnormal_stocks": abnormal_stocks,
         "risk_flags": risk_flags,
         "stock_insights": stock_insights,
     }
@@ -1732,6 +1987,8 @@ def _build_stock_insights(holdings: list, technicals: dict, cur_map: dict) -> li
         ma_cross = tech.get("ma_cross")
         supports = tech.get("near_support", [])
         resistances = tech.get("near_resistance", [])
+        breakouts = tech.get("breakouts", [])
+        breakdowns = tech.get("breakdowns", [])
         price = tech.get("price")
 
         # Determine if this stock is "notable" enough to include
@@ -1741,6 +1998,8 @@ def _build_stock_insights(holdings: list, technicals: dict, cur_map: dict) -> li
             or (vol_ratio is not None and vol_ratio >= 2.0)
             or (price_vs_ma20 is not None and (price_vs_ma20 >= 15 or price_vs_ma20 <= -10))
             or ma_cross in ("golden", "death")
+            or bool(breakouts)
+            or bool(breakdowns)
             or any(s["dist_pct"] <= 2 for s in supports)
             or any(r["dist_pct"] <= 2 for r in resistances)
         )
@@ -1784,6 +2043,15 @@ def _build_stock_insights(holdings: list, technicals: dict, cur_map: dict) -> li
                 signals.append({"tag": f"偏離MA20 {price_vs_ma20:.1f}%", "tone": "yellow"})
 
         # Support / Resistance
+        if breakouts:
+            b = max(breakouts, key=lambda x: x.get("strength", 0))
+            signals.append({"tag": f"突破壓力 ${b['price']}", "tone": "cyan"})
+            direction_score += 3
+        if breakdowns:
+            b = max(breakdowns, key=lambda x: x.get("strength", 0))
+            signals.append({"tag": f"跌破支撐 ${b['price']}", "tone": "red"})
+            direction_score -= 3
+
         close_supports = [s for s in supports if s["dist_pct"] <= 3]
         close_resistances = [r for r in resistances if r["dist_pct"] <= 3]
         if close_supports:

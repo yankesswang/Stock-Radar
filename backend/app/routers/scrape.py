@@ -4,19 +4,21 @@ Scrape router — lets users add a ticker to a group and trigger data scraping.
 POST /api/scrape          → start a background scrape job
 GET  /api/scrape          → list available industry groups
 GET  /api/scrape/{job_id} → poll job status
+POST /api/scrape/mimi-all → auto-scrape all mimi watchlist tickers (sequential, 6h cooldown)
 """
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
-from backend.app.models import Industry
+from backend.app.models import Industry, MimiWatchlist
 
 # Ensure project root is on sys.path so scraper imports work
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -30,7 +32,37 @@ router = APIRouter()
 # In-memory job store (keyed by job_id)
 _jobs: Dict[str, Dict[str, Any]] = {}
 
+# Cooldown guard for bulk mimi scrape
+_mimi_scrape_started_at: Optional[datetime] = None
+_MIMI_SCRAPE_COOLDOWN_HOURS = 6
+
 STATIC_GROUPS: list[str] = list(STOCK_LIST.keys())
+
+
+# ---------------------------------------------------------------------------
+# Bulk mimi-all scrape (3-worker parallel)
+# ---------------------------------------------------------------------------
+
+_MIMI_WORKERS = 3
+
+def _scrape_one(ticker: str, group: str) -> None:
+    job_id = f"mimi_{ticker.lower()}"
+    _jobs[job_id] = {
+        "job_id": job_id,
+        "ticker": ticker,
+        "group": group,
+        "status": "running",
+        "steps": [f"Auto-scrape for {ticker}…"],
+        "error": None,
+        "started_at": datetime.now().isoformat(),
+    }
+    _run_scrape(job_id, ticker, group)
+
+
+def _run_scrape_all(tickers_with_groups: list) -> None:
+    """Scrape all mimi tickers with a 3-worker thread pool."""
+    with ThreadPoolExecutor(max_workers=_MIMI_WORKERS) as pool:
+        pool.map(lambda t: _scrape_one(t[0], t[1]), tickers_with_groups)
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +188,44 @@ def _is_valid_group_name(group: str) -> bool:
     return bool(group) and len(group) <= 50 and not any(c in group for c in "\r\n\t")
 
 
+@router.post("/mimi-all")
+async def scrape_mimi_all(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Auto-scrape all mimi watchlist tickers sequentially. Enforces a 6h cooldown."""
+    global _mimi_scrape_started_at
+
+    if _mimi_scrape_started_at:
+        elapsed_h = (datetime.now() - _mimi_scrape_started_at).total_seconds() / 3600
+        if elapsed_h < _MIMI_SCRAPE_COOLDOWN_HOURS:
+            return {
+                "ok": False,
+                "skipped": True,
+                "message": f"Last bulk scrape started {elapsed_h:.1f}h ago — cooldown {_MIMI_SCRAPE_COOLDOWN_HOURS}h",
+                "count": 0,
+            }
+
+    rows = db.query(MimiWatchlist).all()
+    tickers_with_groups = []
+    for r in rows:
+        ticker: str = r.ticker  # type: ignore[assignment]
+        if not ticker:
+            continue
+        sector: str = r.sector or ""  # type: ignore[assignment]
+        tickers_with_groups.append((ticker, sector.strip() or "其他"))
+
+    if not tickers_with_groups:
+        return {"ok": False, "message": "No tickers in mimi watchlist", "count": 0}
+
+    _mimi_scrape_started_at = datetime.now()
+    background_tasks.add_task(_run_scrape_all, tickers_with_groups)
+
+    return {
+        "ok": True,
+        "count": len(tickers_with_groups),
+        "tickers": [t[0] for t in tickers_with_groups],
+        "started_at": _mimi_scrape_started_at.isoformat(),
+    }
+
+
 @router.get("")
 def list_groups(db: Session = Depends(get_db)):
     """Return available industry groups."""
@@ -179,6 +249,19 @@ async def start_scrape(request: ScrapeRequest, background_tasks: BackgroundTasks
 
     if not _is_valid_group_name(group):
         raise HTTPException(status_code=400, detail="Group must be 1-50 characters.")
+
+    # Dedup: if this ticker already has a running job, return it instead of
+    # starting a second one — concurrent jobs hammer the data source and
+    # trigger HTTP 429 rate limiting, which makes the whole add fail.
+    for existing in _jobs.values():
+        if existing["ticker"] == ticker and existing["status"] == "running":
+            return {
+                "job_id": existing["job_id"],
+                "ticker": ticker,
+                "group": existing["group"],
+                "status": "running",
+                "deduped": True,
+            }
 
     job_id = str(uuid.uuid4())[:8]
     _jobs[job_id] = {

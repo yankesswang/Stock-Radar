@@ -8,6 +8,8 @@ from fastapi import APIRouter, Query
 import requests
 import yfinance as yf
 
+from ..extended_quote import fetch_extended_quotes
+
 router = APIRouter()
 
 MARKET_SYMBOLS = [
@@ -212,7 +214,7 @@ def _fetch_performance_stats(symbol: str) -> dict:
     try:
         pairs = _fetch_yahoo_chart_closes(symbol, "1y")
         if len(pairs) < 2:
-            return {"ytd_return_pct": None, "one_month_return_pct": None, "max_drawdown_pct": None}
+            return {"ytd_return_pct": None, "one_month_return_pct": None, "max_drawdown_pct": None, "sparkline": []}
 
         latest_ts, latest_close = pairs[-1]
         latest_year = time.gmtime(latest_ts).tm_year
@@ -220,11 +222,19 @@ def _fetch_performance_stats(symbol: str) -> dict:
         one_month_base = pairs[-22][1] if len(pairs) >= 22 else pairs[0][1]
         closes = [close for _, close in pairs]
 
+        # last 30 trading days as sparkline
+        spark_pairs = pairs[-30:]
+        sparkline = [
+            {"date": time.strftime("%m/%d", time.gmtime(int(ts))), "close": round(float(c), 4)}
+            for ts, c in spark_pairs
+        ]
+
         return {
             "ytd_return_pct": _pct_change(latest_close, ytd_base),
             "one_month_return_pct": _pct_change(latest_close, one_month_base),
             "max_drawdown_pct": _max_drawdown(closes),
             "stats_period": "1y",
+            "sparkline": sparkline,
         }
     except Exception:
         return {
@@ -232,6 +242,7 @@ def _fetch_performance_stats(symbol: str) -> dict:
             "one_month_return_pct": None,
             "max_drawdown_pct": None,
             "stats_period": None,
+            "sparkline": [],
         }
 
 
@@ -357,3 +368,68 @@ def get_market_overview(symbols: str | None = Query(None, description="Comma-sep
     if valid:
         _CACHE = {"data": payload, "ts": now, "key": cache_key}
     return payload
+
+
+# ── Sparklines ────────────────────────────────────────────────────────────────
+
+_SPARK_CACHE: dict = {}
+_SPARK_TTL = 15 * 60  # 15 min
+
+
+def _fetch_sparkline(symbol: str, days: int) -> list[dict]:
+    """Return the last `days` daily closes for a symbol."""
+    range_map = {7: "5d", 30: "1mo", 90: "3mo"}
+    range_val = range_map.get(days, "1mo")
+    try:
+        pairs = _fetch_yahoo_chart_closes(symbol, range_val)
+        cutoff = len(pairs) - days
+        pairs = pairs[max(0, cutoff):]
+        return [
+            {"date": time.strftime("%m/%d", time.gmtime(int(ts))), "close": round(float(c), 4)}
+            for ts, c in pairs
+        ]
+    except Exception:
+        return []
+
+
+@router.get("/sparklines")
+def get_sparklines(
+    symbols: str = Query(..., description="Comma-separated symbols"),
+    days: int = Query(30, ge=5, le=90),
+):
+    """Batch 30-day sparkline data for multiple symbols. Cached 15 min."""
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    now = time.time()
+
+    result: dict[str, list[dict]] = {}
+    to_fetch = []
+    for sym in requested:
+        cache_key = f"{sym}_{days}"
+        if cache_key in _SPARK_CACHE and now - _SPARK_CACHE[cache_key]["ts"] < _SPARK_TTL:
+            result[sym] = _SPARK_CACHE[cache_key]["data"]
+        else:
+            to_fetch.append(sym)
+
+    if to_fetch:
+        with ThreadPoolExecutor(max_workers=min(len(to_fetch), 12)) as pool:
+            futures = {pool.submit(_fetch_sparkline, sym, days): sym for sym in to_fetch}
+            for fut in as_completed(futures):
+                sym = futures[fut]
+                data = fut.result()
+                cache_key = f"{sym}_{days}"
+                _SPARK_CACHE[cache_key] = {"data": data, "ts": now}
+                result[sym] = data
+
+    return {"sparklines": result, "days": days, "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+
+
+@router.get("/extended")
+def get_extended_quotes(symbols: str = Query(..., description="Comma-separated symbols")):
+    """Pre/post-market quotes. Symbols not currently in an extended session are
+    omitted from `quotes`, so an empty dict means "regular hours or closed"."""
+    requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    quotes = fetch_extended_quotes(requested)
+    return {
+        "quotes": quotes,
+        "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
