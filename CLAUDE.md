@@ -9,7 +9,12 @@ Always use `./start.sh` from the project root to start both services:
 ```
 
 - **Backend**: `http://localhost:6000` (FastAPI + uvicorn via `uv`)
-- **Frontend**: `http://localhost:5000` (Vite + React)
+- **Frontend**: `http://localhost:4000` (Vite + React)
+
+Note: under Arthur.OS the whole stack is started by the root `start-all.sh` (owned by
+launchd), and StockRadar is served through the gateway at `/stocks/`. Running this
+`start.sh` standalone kills whatever holds :6000/:4000 and opens its own tunnel, so
+don't run it while Arthur.OS is up.
 
 ## Testing Services
 
@@ -59,8 +64,11 @@ stock-radar/
 - The `.venv` in this project may have a broken shebang path; always prefer `uv run`
 - Backend runs from the **project root** (`backend.app.main:app`), not from inside `backend/`
 - New routers must be imported and registered in `backend/app/main.py`
-- Frontend proxy is set in `frontend/vite.config.js` — backend port is **6000**
-- Frontend port is **5000**
+- Frontend proxy is set in `frontend/vite.config.js` — backend port is **6000** (override with `STOCKS_BACKEND_PORT`)
+- Frontend port is **4000**
+- Routing uses wouter with a runtime `base` set in `frontend/src/main.jsx`: `''` when served
+  at `/` (direct :4000), `/stocks` when served through the gateway. New routes need no
+  change; never hardcode `/stocks` into a `<Link>`.
 
 ## Data Scrapers
 
