@@ -10,7 +10,8 @@ A full-stack stock analysis platform that tracks 150+ stocks across 18 sectors. 
 |----------|---------|
 | **Valuation** | PE-based fair price, 5-year PE median, current/next-year EPS estimates, over/undervalued status |
 | **Metrics** | 60+ financial ratios — margins, ROE/ROA/ROIC, debt, dividends, short interest |
-| **Charts** | Candlestick + MA/BB/MACD/RSI/KDJ/Williams %R/OBV with 1m–5y range |
+| **Charts** | Candlestick + 14 overlays / 18 oscillator panels — Ichimoku, SuperTrend, Keltner, Donchian, PSAR, anchored VWAP, ADX/DMI, TTM Squeeze, Stoch RSI, MFI, CMF, RS vs SPY ([usage guide](docs/indicators.md)) |
+| **Risk analytics** | EWMA volatility, rolling beta/alpha, percentile ranks vs own history, ATR-based stops, pivot points, volume profile, auto-Fibonacci, aggregated technical rating |
 | **Support & Resistance** | Swing-high/low detection with clustering, drawn as solid price lines |
 | **Signal Watchlist** | Parallel scan of all tracked tickers for RSI/KDJ/MACD/BB signals |
 | **Portfolio** | Google Sheets sync — live P&L, valuation overlay, sector allocation |
@@ -132,6 +133,7 @@ stock-radar/
 ├── scripts/                    # Standalone utility scripts
 ├── docs/                       # Technical documentation
 │   ├── DCF_README.md
+│   ├── indicators.md           # ← 進階指標使用說明（怎麼看、怎麼搭配）
 │   └── support_resistance.md
 ├── data/                       # Scraped JSON snapshots (gitignored)
 │   ├── pe/
@@ -200,6 +202,39 @@ uv run python -m src.scrapers.ratio_scraper          # Ratios/metrics only
 uv run python -m src.scrapers.pe_scraper             # PE history only
 uv run python -m src.scrapers.forecast_scraper       # Forecasts only
 ```
+
+### Pro-locked forecast years
+
+StockAnalysis shows the fiscal-year labels but blanks FY+1 and beyond behind
+Pro, so `next_year_eps` used to come back empty. `src/scrapers/forecast_fallback.py`
+fills those cells from two keyless sources — Nasdaq's analyst earnings-forecast
+API (EPS, ~FY+3) and yfinance `revenue_estimate` (revenue, FY+1 only).
+
+Values are **rebased**, not pasted: the fallback's year-over-year change is
+applied to the StockAnalysis level. The sources disagree on EPS definition
+(ADBE FY2026: StockAnalysis 24.41 vs Nasdaq 19.81) and `compute_valuation`
+multiplies `next_year_eps` by a PE median built from StockAnalysis's own
+history, so a raw paste would skew the fair price by the definition gap.
+
+Every filled cell is recorded under `fallback` in the saved JSON with its raw
+source value, rebasing method, and analyst count. Fills resting on fewer than
+3 analysts carry `thin_coverage: true`. Disable with `--no-fallback`.
+
+Around a fiscal-year rollover the source may have already dropped the one year
+StockAnalysis still shows — a June filer in August, say — leaving no overlapping
+year to calibrate against. Those years are left empty by default rather than
+guessing at the level; `--allow-unanchored` takes them raw instead, marked
+`method: "raw"` with `anchor_year: null` and a loud note. Don't feed a raw fill
+into a PE-median fair value without checking the EPS definition first.
+
+```bash
+uv run python scripts/scrape_forecast.py --ticker ADBE   # shows what was filled
+uv run python scripts/test_forecast_fallback.py          # offline checks
+```
+
+The Growth tab labels these columns with the actual fiscal year (`EPS 2027`,
+not `EPS Next Year`) and puts the fill's provenance in the ⓘ hint, so a filled
+number is never indistinguishable from a StockAnalysis one.
 
 ### Load snapshots into SQLite
 
