@@ -9,6 +9,7 @@ import {
     ArrowLeft, TrendingUp, TrendingDown, Target, Users, ChevronDown,
     ArrowUpRight, ArrowDownRight, Minus,
 } from 'lucide-react';
+import { CHART_GRID, CHART_AXIS } from '../components/chartTheme';
 
 function fmt(val, type) {
     if (val == null) return '\u2014';
@@ -152,20 +153,20 @@ export default function StockForecast() {
                             <div className="h-[280px]">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={ratingsChartData} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                                        <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
                                         <XAxis
                                             dataKey="period"
                                             stroke="var(--text-muted)"
                                             fontSize={11}
                                             tick={{ fill: 'var(--text-muted)' }}
-                                            axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
+                                            axisLine={{ stroke: CHART_AXIS }}
                                             tickLine={false}
                                         />
                                         <YAxis
                                             stroke="var(--text-muted)"
                                             fontSize={11}
                                             tick={{ fill: 'var(--text-muted)' }}
-                                            axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
+                                            axisLine={{ stroke: CHART_AXIS }}
                                             tickLine={false}
                                         />
                                         <Tooltip

@@ -5,6 +5,7 @@ import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts';
 import { ArrowLeft, ChevronDown, BarChart3 } from 'lucide-react';
+import { CHART_GRID, CHART_AXIS } from '../components/chartTheme';
 
 const COLORS = [
     'var(--accent-cyan)',
@@ -179,20 +180,20 @@ export default function StockMetrics() {
                     <div className="h-[260px]">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={chartData} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                                <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} />
                                 <XAxis
                                     dataKey="period"
                                     stroke="var(--text-muted)"
                                     fontSize={11}
                                     tick={{ fill: 'var(--text-muted)' }}
-                                    axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
+                                    axisLine={{ stroke: CHART_AXIS }}
                                     tickLine={false}
                                 />
                                 <YAxis
                                     stroke="var(--text-muted)"
                                     fontSize={11}
                                     tick={{ fill: 'var(--text-muted)' }}
-                                    axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
+                                    axisLine={{ stroke: CHART_AXIS }}
                                     tickLine={false}
                                     tickFormatter={v => {
                                         if (isSelectedGrowthOrMargin) return `${v}%`;

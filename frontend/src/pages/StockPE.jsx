@@ -6,6 +6,7 @@ import {
     ReferenceLine, Cell, CartesianGrid,
 } from 'recharts';
 import { ArrowLeft, TrendingUp, TrendingDown, Loader2, Info } from 'lucide-react';
+import { CHART_GRID, CHART_AXIS, CHART_REFERENCE } from '../components/chartTheme';
 
 // ── colour constants ──────────────────────────────────────────────────────────
 const CYAN   = 'var(--accent-cyan)';
@@ -55,31 +56,44 @@ function PEMeter({ today, forwardPE, min, max, median, average }) {
     const range = max - min;
     const pct   = v => v != null ? Math.max(2, Math.min(98, ((v - min) / range) * 100)) : null;
 
+    // Left-to-right, so labels can be stacked when two markers nearly coincide
+    // (Trailing and Forward PE are often within a fraction of a point).
     const markers = [
         { value: median,    label: 'Median',     color: GREEN  },
         { value: average,   label: 'Average',    color: CYAN   },
-        { value: today,     label: 'Trailing',   color: 'rgba(255,255,255,0.8)' },
+        { value: today,     label: 'Trailing',   color: 'var(--text-secondary)' },
         { value: forwardPE, label: 'Forward PE', color: AMBER  },
-    ].filter(m => m.value != null);
+    ].filter(m => m.value != null)
+        .map(m => ({ ...m, left: pct(m.value) }))
+        .sort((a, b) => a.left - b.left);
+
+    // Push a label down a row whenever it would overprint the one before it.
+    const LABEL_GAP_PCT = 9;
+    let row = 0;
+    markers.forEach((m, i) => {
+        row = i > 0 && m.left - markers[i - 1].left < LABEL_GAP_PCT ? row + 1 : 0;
+        m.row = row;
+    });
+    const rows = Math.max(...markers.map(m => m.row));
 
     return (
         <div className="card !p-5">
             <h3 className="text-sm font-semibold text-[var(--text-secondary)] mb-4 uppercase tracking-wider">
                 PE Position in Historical Range
             </h3>
-            <div className="relative h-4 rounded-full bg-gradient-to-r from-[#34d399] via-[#fbbf24] to-[#f87171] mb-12">
-                {markers.map(m => {
-                    const left = pct(m.value);
-                    return (
-                        <div key={m.label} className="absolute top-1/2 -translate-y-1/2 flex flex-col items-center" style={{ left: `${left}%` }}>
-                            <div className="w-3.5 h-3.5 rounded-full border-2 border-[var(--bg-primary)] shadow-lg" style={{ backgroundColor: m.color }} />
-                            <div className="absolute top-6 text-center whitespace-nowrap">
-                                <p className="text-[10px] font-bold" style={{ color: m.color }}>{m.label}</p>
-                                <p className="text-[10px] font-mono text-[var(--text-muted)]">{m.value}</p>
-                            </div>
+            <div
+                className="relative h-4 rounded-full bg-gradient-to-r from-[#34d399] via-[#fbbf24] to-[#f87171]"
+                style={{ marginBottom: `${3 + rows * 2.25}rem` }}
+            >
+                {markers.map(m => (
+                    <div key={m.label} className="absolute top-1/2 -translate-y-1/2 flex flex-col items-center" style={{ left: `${m.left}%` }}>
+                        <div className="w-3.5 h-3.5 rounded-full border-2 border-[var(--bg-primary)] shadow-lg" style={{ backgroundColor: m.color }} />
+                        <div className="absolute text-center whitespace-nowrap" style={{ top: `${1.5 + m.row * 2.25}rem` }}>
+                            <p className="text-[10px] font-bold" style={{ color: m.color }}>{m.label}</p>
+                            <p className="text-[10px] font-mono text-[var(--text-muted)]">{m.value}</p>
                         </div>
-                    );
-                })}
+                    </div>
+                ))}
             </div>
             <div className="flex justify-between text-xs text-[var(--text-muted)]">
                 <span>Min {min}</span>
@@ -118,7 +132,7 @@ function ForwardPECard({ forwardPE, trailingPE, median, nextEps, price }) {
                 </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {/* Forward PE */}
                 <div className="text-center p-4 rounded-xl bg-[var(--bg-tertiary)]">
                     <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Forward PE</p>
@@ -228,6 +242,30 @@ export default function StockPE() {
     // Chart data: oldest → newest
     const chartData = [...(peData.records || [])].reverse();
 
+    // ── chart reference lines ─────────────────────────────────────────────────
+    // All four sit on the right edge, so near-identical values (Trailing 32.31 vs
+    // Fwd PE 32.55 is typical) would print on top of each other. Nudge each label
+    // vertically once its neighbour is closer than one line-height.
+    const refLines = (() => {
+        const lines = [
+            { value: median,    label: `Median ${median}`,     color: GREEN, dash: '6 3', width: 1.5 },
+            { value: average,   label: `Avg ${average}`,       color: CYAN,  dash: '6 3', width: 1.5 },
+            { value: today,     label: `Trailing ${today}`,    color: 'var(--text-secondary)', dash: '3 3', width: 1 },
+            { value: forwardPE, label: `Fwd PE ${forwardPE}`,  color: AMBER, dash: '4 3', width: 2 },
+        ].filter(l => l.value != null).sort((a, b) => a.value - b.value);
+
+        // Y domain is [0, auto] over ~300px of plot area, so convert 13px of
+        // label height back into PE units to know what counts as "too close".
+        const domainMax = Math.max(...chartData.map(d => d.pe || 0), ...lines.map(l => l.value), 1);
+        const minGap = domainMax * 13 / 300;
+
+        lines.forEach((l, i) => {
+            // Labels are drawn above the line, so stack upward as values converge.
+            l.dy = i > 0 && l.value - lines[i - 1].value < minGap ? (lines[i - 1].dy ?? 0) - 13 : 0;
+        });
+        return lines;
+    })();
+
     // ── stat rows ─────────────────────────────────────────────────────────────
     const topStats = [
         { label: 'Trailing PE', value: today,     color: today > median ? RED : GREEN,
@@ -279,7 +317,7 @@ export default function StockPE() {
             </div>
 
             {/* Top stat cards */}
-            <div className="grid grid-cols-5 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                 {topStats.map(({ label, value, color, sub }) => (
                     <div key={label} className="card !p-4 text-center">
                         <p className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">{label}</p>
@@ -348,27 +386,16 @@ export default function StockPE() {
                 <div className="h-[340px]">
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={chartData} margin={{ top: 10, right: 80, bottom: 0, left: -10 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-                            <XAxis dataKey="date" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={{ stroke: 'rgba(255,255,255,0.06)' }} tickLine={false} />
+                            <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID} vertical={false} />
+                            <XAxis dataKey="date" tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={{ stroke: CHART_AXIS }} tickLine={false} />
                             <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 11 }} axisLine={false} tickLine={false} domain={[0, 'auto']} />
                             <Tooltip content={<PETooltip median={median} forwardPE={forwardPE} />} cursor={{ fill: 'rgba(255,255,255,0.03)' }} />
 
-                            {median && (
-                                <ReferenceLine y={median} stroke={GREEN} strokeDasharray="6 3" strokeWidth={1.5}
-                                    label={{ value: `Median ${median}`, position: 'right', fill: GREEN, fontSize: 11 }} />
-                            )}
-                            {average && (
-                                <ReferenceLine y={average} stroke={CYAN} strokeDasharray="6 3" strokeWidth={1.5}
-                                    label={{ value: `Avg ${average}`, position: 'right', fill: CYAN, fontSize: 11 }} />
-                            )}
-                            {today && (
-                                <ReferenceLine y={today} stroke="rgba(255,255,255,0.45)" strokeDasharray="3 3" strokeWidth={1}
-                                    label={{ value: `Trailing ${today}`, position: 'right', fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} />
-                            )}
-                            {forwardPE && (
-                                <ReferenceLine y={forwardPE} stroke={AMBER} strokeDasharray="4 3" strokeWidth={2}
-                                    label={{ value: `Fwd PE ${forwardPE}`, position: 'right', fill: AMBER, fontSize: 11 }} />
-                            )}
+                            {refLines.map(l => (
+                                <ReferenceLine key={l.label} y={l.value} stroke={l.color}
+                                    strokeDasharray={l.dash} strokeWidth={l.width}
+                                    label={{ value: l.label, position: 'right', fill: l.color, fontSize: 11, dy: l.dy }} />
+                            ))}
 
                             <Bar dataKey="pe" name="Annual PE" radius={[4, 4, 0, 0]} maxBarSize={48}>
                                 {chartData.map(entry => (

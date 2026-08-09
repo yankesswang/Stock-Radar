@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from ..database import get_db
-from ..models import Stock, Industry, Metric, Forecast, Valuation
+from ..models import Stock, Metric, Forecast, Valuation
 from ..schemas import StockDetail, MetricOut, ForecastOut, ValuationOut
 
 router = APIRouter()
@@ -53,6 +53,70 @@ def compare_stocks(
         result.append(detail)
 
     return {"stocks": result}
+
+
+@router.get("/peers/{ticker}")
+def compare_with_peers(ticker: str, db: Session = Depends(get_db)):
+    """Compare a stock against all industry peers tracked in the DB."""
+    ticker = ticker.upper()
+    stock = db.query(Stock).filter(func.upper(Stock.ticker) == ticker).first()
+    if not stock:
+        raise HTTPException(status_code=404, detail=f"{ticker} not found in database")
+
+    peers = (
+        db.query(Stock)
+        .filter(Stock.industry_id == stock.industry_id)
+        .order_by(Stock.ticker)
+        .all()
+    )
+
+    result = []
+    for s in peers:
+        m = (
+            db.query(Metric)
+            .filter_by(stock_id=s.id)
+            .order_by(Metric.snapshot_date.desc())
+            .first()
+        )
+        v = (
+            db.query(Valuation)
+            .filter_by(stock_id=s.id)
+            .order_by(Valuation.snapshot_date.desc())
+            .first()
+        )
+        result.append({
+            "ticker": s.ticker,
+            "company_name": s.company_name,
+            "is_target": s.ticker.upper() == ticker,
+            "metrics": {
+                "current_price":   m.current_price   if m else None,
+                "market_cap":      m.market_cap       if m else None,
+                "pe":              m.pe               if m else None,
+                "pe_forward":      m.pe_forward       if m else None,
+                "ev_ebitda":       m.ev_ebitda        if m else None,
+                "ps":              m.ps               if m else None,
+                "gross_margin":    m.gross_margin     if m else None,
+                "profit_margin":   m.profit_margin    if m else None,
+                "revenue":         m.revenue          if m else None,
+                "fcf":             m.fcf              if m else None,
+                "revenue_5y":      m.revenue_5y       if m else None,
+                "eps_5y":          m.eps_5y           if m else None,
+            },
+            "valuation": {
+                "status":                    v.valuation_status           if v else None,
+                "current_year_fair_price":   v.current_year_fair_price    if v else None,
+                "next_year_fair_price":      v.next_year_fair_price       if v else None,
+                "valuation_diff_pct":        v.valuation_diff_pct         if v else None,
+                "pe_median_5y":              v.pe_median_5y               if v else None,
+            } if v else None,
+        })
+
+    return {
+        "ticker": ticker,
+        "industry": stock.industry.name,
+        "peer_count": len(result),
+        "peers": result,
+    }
 
 
 def _val_out(stock, v):

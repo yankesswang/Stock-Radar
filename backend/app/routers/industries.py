@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -6,6 +7,11 @@ from ..database import get_db
 from ..models import Stock, Industry, Valuation, Metric
 
 router = APIRouter()
+
+
+class RenameRequest(BaseModel):
+    old_name: str
+    new_name: str
 
 
 @router.get("")
@@ -66,6 +72,39 @@ def list_industries(db: Session = Depends(get_db)):
         })
 
     return result
+
+
+@router.patch("/rename")
+def rename_industry(req: RenameRequest, db: Session = Depends(get_db)):
+    """Rename an industry group. If the target name already exists, merge the
+    source group's stocks into it and delete the now-empty source group."""
+    old_name = req.old_name.strip()
+    new_name = req.new_name.strip()
+
+    if not new_name or len(new_name) > 50 or any(c in new_name for c in "\r\n\t"):
+        raise HTTPException(status_code=400, detail="New name must be 1-50 characters.")
+    if old_name == new_name:
+        raise HTTPException(status_code=400, detail="New name is the same as the current name.")
+
+    source = db.query(Industry).filter(Industry.name == old_name).first()
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Industry '{old_name}' not found.")
+
+    target = db.query(Industry).filter(Industry.name == new_name).first()
+    if target and target.id != source.id:
+        # Merge: reassign stocks then drop the source group
+        moved = (
+            db.query(Stock)
+            .filter(Stock.industry_id == source.id)
+            .update({Stock.industry_id: target.id}, synchronize_session=False)
+        )
+        db.delete(source)
+        db.commit()
+        return {"ok": True, "merged": True, "name": new_name, "moved": moved}
+
+    source.name = new_name
+    db.commit()
+    return {"ok": True, "merged": False, "name": new_name}
 
 
 @router.get("/{industry_id}/stocks")

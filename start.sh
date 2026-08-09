@@ -5,8 +5,12 @@
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-BACKEND_PORT=2000
-FRONTEND_PORT=5000
+# Must match what Arthur.OS start-all.sh uses, otherwise the portal's health
+# check (:6000) and the Vite /api proxy both point at a backend that isn't there.
+BACKEND_PORT="${STOCKS_BACKEND_PORT:-6000}"
+FRONTEND_PORT="${STOCKS_FRONTEND_PORT:-4000}"
+# The Vite proxy reads this to find the backend.
+export STOCKS_BACKEND_PORT="$BACKEND_PORT"
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[0;33m'; RESET='\033[0m'
@@ -78,14 +82,13 @@ if command -v cloudflared &>/dev/null; then
     done
 
     if [[ -n "$TUNNEL_URL" ]]; then
-        TUNNEL_HOST="${TUNNEL_URL#https://}"
-
-        # Rewrite allowedHosts in vite.config.js so Vite accepts requests from the tunnel
-        log "Updating vite.config.js allowedHosts → $TUNNEL_HOST"
-        sed -i '' "s|allowedHosts: \[.*\]|allowedHosts: ['${TUNNEL_HOST}']|" \
-            "$PROJECT_ROOT/frontend/vite.config.js"
+        # No sed rewrite of vite.config.js here. It used to pin this run's hostname
+        # into a tracked source file, which then went stale on the next restart and
+        # made Vite 403 every tunnel request. vite.config.js now allows the whole
+        # .trycloudflare.com domain, so nothing needs patching.
+        ok "Tunnel ready → $TUNNEL_URL"
     else
-        warn "Tunnel URL not detected within 30 s — Vite allowedHosts not updated."
+        warn "Tunnel URL not detected within 30 s."
         warn "Check cloudflared logs or run: tail $TUNNEL_LOG"
     fi
 else

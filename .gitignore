@@ -77,3 +77,12 @@ data/scheduler_state.json
 *.tmp
 ~$*
 .cache/
+
+# ── Generated AI outputs (large, regenerable) ────────────────────────────────
+data/ai_analysis/
+data/ai_reports/
+data/agent/
+data/finance-digest/
+
+# ── DB backups ────────────────────────────────────────────────────────────────
+*.db.bak-*

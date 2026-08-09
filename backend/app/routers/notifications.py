@@ -2,6 +2,7 @@ from pathlib import Path
 import asyncio
 import csv
 import json
+import os
 import time
 from datetime import date, datetime, time as dt_time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,6 +24,12 @@ router = APIRouter()
 TELEGRAM_ENV_FALLBACKS = [
     "/Users/yankesswang/Desktop/Projects/Arthur_App/.env",
     "/Users/yankesswang/openclaw_backup/.env",
+]
+LINE_ENV_FALLBACKS = [
+    "/Users/yankesswang/Desktop/Projects/Arthur_App/.env",
+    "/Users/yankesswang/openclaw_backup/.env",
+    "/Users/yankesswang/.config/digest/.env",
+    "/Users/yankesswang/.hn-daily-digest/.env",
 ]
 MARKET_MOVE_CACHE_TTL = 10 * 60
 PRICE_MOVE_THRESHOLD_PCT = 5.0
@@ -90,6 +97,31 @@ def _telegram_config() -> tuple[str, str]:
     return token, chat_id
 
 
+def _line_access_token() -> str:
+    token = (
+        os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+        or os.environ.get("LINE_ACCESS_TOKEN", "").strip()
+        or os.environ.get("CHANNEL_ACCESS_TOKEN", "").strip()
+    )
+    if token:
+        return token
+
+    env_paths = [Path(settings.TELEGRAM_ENV_FILE).expanduser()]
+    env_paths.extend(Path(path).expanduser() for path in LINE_ENV_FALLBACKS)
+
+    for env_path in env_paths:
+        env_values = _read_env_file(env_path)
+        token = (
+            env_values.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+            or env_values.get("LINE_ACCESS_TOKEN", "").strip()
+            or env_values.get("CHANNEL_ACCESS_TOKEN", "").strip()
+        )
+        if token:
+            return token
+
+    return ""
+
+
 def _send_telegram_message(text: str) -> None:
     token, chat_id = _telegram_config()
     if not token or not chat_id:
@@ -108,6 +140,100 @@ def _send_telegram_message(text: str) -> None:
         response.raise_for_status()
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Telegram send failed: {exc}") from exc
+
+
+def _send_line_message(text: str, *, important_report: bool = False) -> None:
+    # StockRadar's routine earnings/mover/manual notifications remain on
+    # Telegram.  The reader-facing War Room report is sent by war_room.py.
+    if not important_report:
+        print("[notifications] LINE skipped: non-report notification")
+        return
+    token = _line_access_token()
+    if not token:
+        raise HTTPException(status_code=503, detail="LINE is not configured.")
+
+    try:
+        response = requests.post(
+            "https://api.line.me/v2/bot/message/broadcast",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"messages": [{"type": "text", "text": text[:5000]}]},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"LINE send failed: {exc}") from exc
+
+
+def _send_notification_message(text: str) -> None:
+    """Send to Telegram and LINE, treating either successful channel as delivered."""
+    telegram_error: Exception | None = None
+    line_error: Exception | None = None
+
+    try:
+        _send_telegram_message(text)
+    except Exception as exc:
+        telegram_error = exc
+        print(f"[notifications] Telegram send failed: {exc}")
+
+    try:
+        _send_line_message(text)
+    except Exception as exc:
+        line_error = exc
+        print(f"[notifications] LINE send failed: {exc}")
+
+    if telegram_error and line_error:
+        raise telegram_error
+
+
+def _send_long_line_message(text: str) -> None:
+    limit = 4900
+    if len(text) <= limit:
+        _send_line_message(text)
+        return
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for para in text.split("\n\n"):
+        para_len = len(para) + 2
+        if current_len + para_len > limit and current:
+            chunks.append("\n\n".join(current))
+            current = [para]
+            current_len = para_len
+        else:
+            current.append(para)
+            current_len += para_len
+    if current:
+        chunks.append("\n\n".join(current))
+
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(1)
+        suffix = f"\n\n-- {i + 1}/{len(chunks)} --" if len(chunks) > 1 else ""
+        _send_line_message(chunk + suffix)
+
+
+def _send_long_notification_message(text: str) -> None:
+    telegram_error: Exception | None = None
+    line_error: Exception | None = None
+
+    try:
+        _send_long_telegram_message(text)
+    except Exception as exc:
+        telegram_error = exc
+        print(f"[notifications] Telegram long send failed: {exc}")
+
+    try:
+        _send_long_line_message(text)
+    except Exception as exc:
+        line_error = exc
+        print(f"[notifications] LINE long send failed: {exc}")
+
+    if telegram_error and line_error:
+        raise telegram_error
 
 
 def _load_seen() -> dict[str, float]:
@@ -175,7 +301,7 @@ def _portfolio_tickers() -> set[str]:
 @router.post("/telegram")
 def send_telegram_notification(payload: TelegramNotification):
     text = f"{payload.title}\n\n{payload.body}"
-    _send_telegram_message(text)
+    _send_notification_message(text)
     return {"ok": True}
 
 
@@ -708,7 +834,8 @@ def _fetch_market_snapshot_lines() -> list[str]:
 
 def _compute_market_technical(symbol: str) -> dict | None:
     try:
-        hist = yf.Ticker(symbol).history(period="1y", auto_adjust=True)
+        # 2y — a 250-day MA needs 250 bars, and "1y" only ever returns ~251.
+        hist = yf.Ticker(symbol).history(period="2y", auto_adjust=True)
         if hist is None or hist.empty or len(hist) < 50:
             return None
 
@@ -720,7 +847,7 @@ def _compute_market_technical(symbol: str) -> dict | None:
         price = float(close.iloc[-1])
         ma20 = float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else None
         ma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
-        ma200 = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
+        ma250 = float(close.rolling(250).mean().iloc[-1]) if len(close) >= 250 else None
 
         delta = close.diff()
         gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
@@ -743,8 +870,8 @@ def _compute_market_technical(symbol: str) -> dict | None:
             trend_parts.append("站上20日" if price >= ma20 else "跌破20日")
         if ma50:
             trend_parts.append("站上50日" if price >= ma50 else "跌破50日")
-        if ma200:
-            trend_parts.append("站上200日" if price >= ma200 else "跌破200日")
+        if ma250:
+            trend_parts.append("站上250日" if price >= ma250 else "跌破250日")
 
         return {
             "symbol": symbol,
@@ -815,6 +942,7 @@ def _build_portfolio_report_section(report: dict, current: dict, period_label: s
     )[:3]
     risk_flags = report.get("risk_flags", [])[:3]
     stock_insights = report.get("stock_insights", [])[:3]
+    abnormal_summary = ((report.get("abnormal_stocks") or {}).get("summary") or [])[:6]
 
     lines = [
         f"📌 {portfolio_name}",
@@ -850,6 +978,19 @@ def _build_portfolio_report_section(report: dict, current: dict, period_label: s
             lines.append(
                 f"• {item.get('ticker')} {_fmt_pct(item.get('day_change_pct'))} | "
                 f"權重 {_fmt_plain_number(item.get('weight_pct'), '%')}{suffix}"
+            )
+    if abnormal_summary:
+        lines.append("")
+        lines.append("🚨 異常股票")
+        for item in abnormal_summary:
+            signals = "、".join(
+                sig.get("label", "")
+                for sig in (item.get("signals") or [])[:3]
+                if sig.get("label")
+            )
+            lines.append(
+                f"• {item.get('ticker')} {_fmt_pct(item.get('day_change_pct'))} | "
+                f"權重 {_fmt_plain_number(item.get('weight_pct'), '%')} | {signals}"
             )
     if risk_flags:
         lines.append("")
@@ -1200,8 +1341,24 @@ def _generate_claude_daily_analysis(db: Session, seen: dict) -> str | None:
     for name in names:
         try:
             report = _generate_csv_portfolio_report(portfolio=name, period="daily", db=db)
-            flags = report.get("risk_flags", [])[:6]
-            if flags:
+            abnormal = ((report.get("abnormal_stocks") or {}).get("summary") or [])[:8]
+            flags = report.get("risk_flags", [])[:4]
+            if abnormal:
+                report_sections.append(
+                    f"【{name}】異常股票\n"
+                    + "\n".join(
+                        "• "
+                        + item.get("ticker", "")
+                        + "｜"
+                        + "、".join(
+                            sig.get("label", "")
+                            for sig in (item.get("signals") or [])[:3]
+                            if sig.get("label")
+                        )
+                        for item in abnormal
+                    )
+                )
+            elif flags:
                 report_sections.append(
                     f"【{name}】風險提示\n"
                     + "\n".join(f"• {f['message']}" for f in flags)
@@ -1277,12 +1434,59 @@ def _generate_claude_daily_analysis(db: Session, seen: dict) -> str | None:
         print(f"[claude] API call failed: {exc}")
         return None
 
-    # ── Send via Telegram ──────────────────────────────────────────────────────
+    # ── Send via Telegram + LINE ───────────────────────────────────────────────
     header = f"🤖 Claude 收盤分析 {date_str}\n"
     try:
-        _send_long_telegram_message(header + analysis)
+        _send_long_notification_message(header + analysis)
     except Exception as exc:
-        print(f"[claude] Telegram send failed: {exc}")
+        print(f"[claude] Notification send failed: {exc}")
+        return None
+
+    return event_id
+
+
+def _trigger_daily_analysis_script(seen: dict) -> str | None:
+    """
+    Run scripts/war_room.py（戰情中心，claude -p 自主蒐集情報）once per trading day.
+    war_room.py 不在時 fallback 回 scripts/daily_analysis.py（舊版一次性大 prompt）。
+    The script handles its own Telegram/LINE sending; we just gate on the seen-event key.
+    Returns the event_id if triggered, None if skipped.
+    """
+    import subprocess
+
+    now = _taipei_now()
+    if not _should_send_claude_analysis(now, seen):
+        return None
+
+    event_id = f"{CLAUDE_ANALYSIS_EVENT_PREFIX}{now.date().isoformat()}"
+    scripts_dir = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
+    script_path = scripts_dir / "war_room.py"
+    if not script_path.exists():
+        script_path = scripts_dir / "daily_analysis.py"
+
+    if not script_path.exists():
+        print(f"[daily_analysis] Script not found: {script_path}")
+        return None
+
+    print(f"[daily_analysis] Triggering {script_path.name} ...")
+    try:
+        result = subprocess.run(
+            ["uv", "run", "python", str(script_path), "--no-obsidian"],
+            cwd=str(script_path.parent.parent),
+            capture_output=True,
+            text=True,
+            # war_room 的 claude 自主蒐集情報（tool-use 多輪）比舊版一次性 prompt 慢，放寬到 40 分鐘
+            timeout=2400,
+        )
+        if result.returncode != 0:
+            print(f"[daily_analysis] Non-zero exit:\n{result.stderr[:500]}")
+        else:
+            print("[daily_analysis] Completed successfully")
+    except subprocess.TimeoutExpired:
+        print("[daily_analysis] Timed out after 40 minutes")
+        return None
+    except Exception as exc:
+        print(f"[daily_analysis] Failed to launch: {exc}")
         return None
 
     return event_id
@@ -1301,21 +1505,21 @@ async def telegram_notification_loop() -> None:
             message = _compose_digest(earnings, portfolio_movers, valuation_movers)
 
             if message:
-                _send_telegram_message(message)
+                _send_notification_message(message)
                 _mark_digest_seen(seen, earnings, portfolio_movers, valuation_movers)
                 _save_seen(seen)
 
             for report in daily_reports:
-                _send_telegram_message(f"StockRadar 收盤通知 {_taipei_now().date().isoformat()}\n\n{report['text']}")
+                _send_notification_message(f"StockRadar 收盤通知 {_taipei_now().date().isoformat()}\n\n{report['text']}")
                 _mark_seen(seen, report["event_id"])
                 _save_seen(seen)
 
             for report in weekly_reports:
-                _send_telegram_message(f"StockRadar 週末復盤 {_iso_week_key(_taipei_now().date())}\n\n{report['text']}")
+                _send_notification_message(f"StockRadar 週末復盤 {_iso_week_key(_taipei_now().date())}\n\n{report['text']}")
                 _mark_seen(seen, report["event_id"])
                 _save_seen(seen)
 
-            claude_event_id = _generate_claude_daily_analysis(db, seen)
+            claude_event_id = _trigger_daily_analysis_script(seen)
             if claude_event_id:
                 _mark_seen(seen, claude_event_id)
                 _save_seen(seen)

@@ -10,7 +10,12 @@ import pandas as pd
 import numpy as np
 import requests
 
+from ..indicators import compute_indicator_frame, compute_analytics
+
 router = APIRouter()
+
+BENCHMARK = "SPY"
+_PERIODS_PER_YEAR = {"1d": 252, "1wk": 52, "1mo": 12}
 
 # In-memory cache: key -> {"data": ..., "ts": float}
 _CACHE: dict = {}
@@ -34,7 +39,7 @@ def _cache_set(key: str, data):
 
 
 
-def _compute_indicators(df: pd.DataFrame) -> list[dict]:
+def _compute_indicators(df: pd.DataFrame, extra: pd.DataFrame | None = None) -> list[dict]:
     close = df["Close"]
     high  = df["High"]
     low   = df["Low"]
@@ -45,7 +50,7 @@ def _compute_indicators(df: pd.DataFrame) -> list[dict]:
     ma10  = close.rolling(10).mean()
     ma20  = close.rolling(20).mean()
     ma50  = close.rolling(50).mean()
-    ma200 = close.rolling(200).mean()
+    ma250 = close.rolling(250).mean()
 
     # ── Bollinger Bands (20, 2) ──────────────────────────────────────────
     bb_mid   = close.rolling(20).mean()
@@ -93,7 +98,7 @@ def _compute_indicators(df: pd.DataFrame) -> list[dict]:
         "low":      df["Low"],
         "close":    df["Close"],
         "volume":   df["Volume"].fillna(0).astype("int64"),
-        "ma5":      ma5,   "ma10": ma10, "ma20": ma20, "ma50": ma50, "ma200": ma200,
+        "ma5":      ma5,   "ma10": ma10, "ma20": ma20, "ma50": ma50, "ma250": ma250,
         "bb_upper": bb_upper, "bb_mid": bb_mid, "bb_lower": bb_lower,
         "macd":     macd_line, "signal": signal_line, "hist": macd_hist,
         "rsi":      rsi,
@@ -102,16 +107,25 @@ def _compute_indicators(df: pd.DataFrame) -> list[dict]:
         "obv":      obv,
     })
 
+    if extra is not None and not extra.empty:
+        out = out.join(extra.reindex(out.index), how="left")
+
     def _clean(v):
         if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
             return None
         return round(float(v), 4)
 
+    # Fields kept as integers in the payload.
+    int_fields = {"time", "volume"}
     rows = []
     for rec in out.to_dict("records"):
-        rows.append({k: (_clean(v) if k != "time" and k != "volume" else
-                         int(v) if k == "volume" else int(v))
-                     for k, v in rec.items()})
+        row = {}
+        for k, v in rec.items():
+            if k in int_fields:
+                row[k] = int(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else 0
+            else:
+                row[k] = _clean(v)
+        rows.append(row)
     return rows
 
 
@@ -314,6 +328,7 @@ _MAX_BARS_BY_INTERVAL = {
     "1mo": 600,
 }
 _YAHOO_RANGE_BY_PERIOD = {
+    "5d": "5d",
     "1m": "1mo",
     "3m": "3mo",
     "6m": "6mo",
@@ -353,6 +368,49 @@ def _fetch_yahoo_chart_df(ticker: str, period: str, interval: str) -> pd.DataFra
         "Volume": quote_data.get("volume") or [],
     }, index=pd.to_datetime(timestamps, unit="s", utc=True))
     return df.dropna(subset=["Open", "High", "Low", "Close"])
+
+
+def _date_index(index) -> pd.DatetimeIndex:
+    """Timezone-naive, midnight-normalised dates.
+
+    The stock frame and the benchmark frame can come from different sources
+    (yfinance stamps bars at midnight local, the raw Yahoo chart API at 13:30
+    UTC). Aligning on the calendar date is the only way an ffill reindex lines
+    the two up — otherwise the benchmark silently shifts a day and beta /
+    correlation collapse toward zero.
+    """
+    idx = pd.to_datetime(index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    return idx.normalize()
+
+
+def _fetch_benchmark_close(period: str, interval: str) -> pd.Series | None:
+    """SPY closes for relative-strength / beta. Cached like any other chart pull."""
+    key = f"__BENCH__{BENCHMARK}_{period}_{interval}"
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached if isinstance(cached, pd.Series) else None
+
+    yf_period = _PERIOD_MAP.get(period, ("5y", "1d"))[0]
+    df = pd.DataFrame()
+    try:
+        df = yf.Ticker(BENCHMARK).history(period=yf_period, interval=interval, auto_adjust=True)
+    except Exception:
+        pass
+    if df.empty:
+        try:
+            df = _fetch_yahoo_chart_df(BENCHMARK, period, interval)
+        except Exception:
+            return None
+    if df.empty:
+        return None
+
+    s = df["Close"].astype(float)
+    s.index = _date_index(s.index)
+    s = s[~s.index.duplicated(keep="last")]
+    _cache_set(key, s)
+    return s
 
 
 @router.get("/{ticker}/chart")
@@ -400,8 +458,49 @@ def get_chart(
     if len(df) > max_bars:
         df = df.iloc[-max_bars:]
 
-    bars = _compute_indicators(df)
+    ppy = _PERIODS_PER_YEAR.get(yf_interval, 252)
+
+    # Benchmark for relative strength / beta. Aligned on a tz-naive index so the
+    # reindex inside the indicator module actually matches.
+    bench = None
+    if ticker.upper() != BENCHMARK:
+        raw_bench = _fetch_benchmark_close(period, yf_interval)
+        if raw_bench is not None:
+            bench = raw_bench.reindex(_date_index(df.index), method="ffill")
+            bench.index = df.index
+
+    try:
+        extra = compute_indicator_frame(df, bench_close=bench, periods_per_year=ppy)
+    except Exception:
+        extra = pd.DataFrame(index=df.index)
+
+    bars = _compute_indicators(df, extra)
     sr   = _find_sr_levels(df)
-    result = {"ticker": ticker.upper(), "period": period, "interval": yf_interval, "bars": bars, "sr": sr}
+
+    # Analytics need the legacy oscillators too so the aggregate rating can vote
+    # on RSI / MACD / Williams %R alongside the new indicators.
+    analytics = {}
+    try:
+        legacy = pd.DataFrame({
+            "_rsi":    [b.get("rsi") for b in bars],
+            "_willr":  [b.get("willr") for b in bars],
+            "_macd":   [b.get("macd") for b in bars],
+            "_signal": [b.get("signal") for b in bars],
+        }, index=df.index).astype(float)
+        combined = extra.join(legacy, how="left")
+        ma_series = {
+            "MA20": df["Close"].rolling(20).mean(),
+            "MA50": df["Close"].rolling(50).mean(),
+            "MA250": df["Close"].rolling(250).mean(),
+        }
+        analytics = compute_analytics(df, combined, bench_close=bench,
+                                      periods_per_year=ppy, ma=ma_series)
+    except Exception as exc:  # analytics are additive — never break the chart
+        analytics = {"error": str(exc)}
+
+    result = {
+        "ticker": ticker.upper(), "period": period, "interval": yf_interval,
+        "bars": bars, "sr": sr, "analytics": analytics,
+    }
     _cache_set(cache_key, result)
     return result

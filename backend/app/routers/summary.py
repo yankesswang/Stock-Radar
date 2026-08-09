@@ -65,6 +65,44 @@ def _dollar(val: float | None) -> str:
     return f"${val:,.2f}"
 
 
+def _year_label(years: list, idx: int, base: str, fallback: str) -> str:
+    """'EPS 2027' when the fiscal year is known, else the generic label."""
+    if idx < len(years) and years[idx]:
+        return f"{base} {years[idx]}"
+    return fallback
+
+
+def _fill_sources(fdata: dict) -> dict:
+    """
+    Per-(field, year) provenance for cells StockAnalysis left Pro-locked.
+
+    Keyed 'eps:2027' -> note text, so a valuation isn't built on a number
+    whose origin — or thin analyst coverage — is invisible in the UI.
+    """
+    out: dict = {}
+    for fill in (fdata.get("fallback") or {}).get("filled", []):
+        source = fill.get("source_fiscal_end", "")
+        origin = "Yahoo" if "yahoo" in str(source).lower() else "Nasdaq"
+        if fill.get("method") == "raw":
+            note = (f"⚠ {origin} 原始值，未校準口徑 — 無重疊年度可對齊，"
+                    f"與 StockAnalysis 的 EPS 定義可能不同，勿直接乘上 PE median")
+        else:
+            note = f"{origin} 補值（StockAnalysis Pro 鎖住），已按成長率校準到 StockAnalysis 基準"
+        if fill.get("thin_coverage"):
+            note += f"　⚠ 僅 {fill.get('num_estimates')} 位分析師"
+        out[f"{fill.get('field')}:{fill.get('year')}"] = note
+    return out
+
+
+def _with_source(metric: dict, fill_sources: dict, field: str, years: list, idx: int) -> dict:
+    """Append the fallback provenance to a metric's hint when it was filled."""
+    if idx < len(years):
+        note = fill_sources.get(f"{field}:{years[idx]}")
+        if note:
+            metric = {**metric, "hint": f"{metric.get('hint', '')}　·　{note}".strip("　·　")}
+    return metric
+
+
 @router.get("/{ticker}/summary")
 def get_summary(ticker: str, db: Session = Depends(get_db)):
     t = ticker.upper()
@@ -79,12 +117,23 @@ def get_summary(ticker: str, db: Session = Depends(get_db)):
     # ── Forecast JSON ────────────────────────────────────────────────────────
     annual: dict = {}
     price_target: dict = {}
+    eps_years: list = []
+    rev_years: list = []
+    fill_sources: dict = {}
     forecast_path = _latest(FORECAST_DIR, t, "forecast")
     if forecast_path:
         with open(forecast_path, encoding="utf-8") as f:
             fdata = json.load(f)
             annual = fdata.get("annual", {})
             price_target = fdata.get("price_target", {})
+            ranges = fdata.get("forecast_ranges") or {}
+            # "Next year" means FY2027 for a December filer but FY2028 for
+            # NVDA, so label the columns with the actual fiscal years. Index 0
+            # is the current year and 1 the next — the same positions
+            # _populate_legacy_annual reads when it fills the annual dict.
+            eps_years = (ranges.get("eps") or {}).get("years") or []
+            rev_years = (ranges.get("revenue") or {}).get("years") or []
+            fill_sources = _fill_sources(fdata)
 
     # ── PE JSON ──────────────────────────────────────────────────────────────
     pe_summary: dict = {}
@@ -174,31 +223,31 @@ def get_summary(ticker: str, db: Session = Depends(get_db)):
             "name": "Growth",
             "color": "purple",
             "metrics": [
-                {
-                    "label": "EPS Growth (FY est)",
+                _with_source({
+                    "label": _year_label(eps_years, 0, "EPS Growth", "EPS Growth (FY est)"),
                     "value": annual.get("current_growth"),
                     "display": _pct(annual.get("current_growth")),
                     "hint": "Current fiscal year EPS growth estimate",
-                },
-                {
-                    "label": "EPS Next Year",
+                }, fill_sources, "eps", eps_years, 0),
+                _with_source({
+                    "label": _year_label(eps_years, 1, "EPS", "EPS Next Year"),
                     "value": annual.get("next_year_eps"),
                     "display": _dollar(annual.get("next_year_eps")),
                     "sub": _pct(annual.get("next_year_growth")) if annual.get("next_year_growth") is not None else None,
                     "hint": "Next fiscal year EPS estimate · sub-line shows YoY growth %",
-                },
-                {
-                    "label": "Rev Growth (FY est)",
+                }, fill_sources, "eps", eps_years, 1),
+                _with_source({
+                    "label": _year_label(rev_years, 0, "Rev Growth", "Rev Growth (FY est)"),
                     "value": annual.get("current_revenue_growth"),
                     "display": _pct(annual.get("current_revenue_growth")),
                     "hint": "Current fiscal year revenue growth estimate",
-                },
-                {
-                    "label": "Rev Growth (Next FY)",
+                }, fill_sources, "revenue", rev_years, 0),
+                _with_source({
+                    "label": _year_label(rev_years, 1, "Rev Growth", "Rev Growth (Next FY)"),
                     "value": annual.get("next_year_revenue_growth"),
                     "display": _pct(annual.get("next_year_revenue_growth")),
                     "hint": "Next fiscal year revenue growth estimate",
-                },
+                }, fill_sources, "revenue", rev_years, 1),
                 {
                     **s("EPS Growth Forecast (5Y)"),
                     "label": "EPS Growth Fcst (5Y)",

@@ -2,6 +2,7 @@ from src.utils import fetch_url, parse_html
 from src.config import STOCK_LIST
 from src import DATA_DIR
 from src.db_service import save_forecast
+from src.scrapers.forecast_fallback import apply_forecast_fallback
 import json, time, random
 from datetime import datetime, date
 
@@ -203,7 +204,7 @@ class Forecast_Scraper_Working():
 
         return table_type, result
 
-    def extract_forecast_data(self, ticker, current_year=2025):
+    def extract_forecast_data(self, ticker, current_year=2025, fallback=True):
         """
         Extract all forecast data for a given ticker from the forecast page.
 
@@ -286,6 +287,11 @@ class Forecast_Scraper_Working():
                     }
                     range_key = key_map.get(table_type, table_type.lower().replace(' ', '_'))
                     forecast_data['forecast_ranges'][range_key] = range_data
+
+        # Fill Pro-locked years before deriving the legacy annual dict, so
+        # next_year_eps / next_year_revenue pick up the fallback values too.
+        if fallback:
+            apply_forecast_fallback(forecast_data)
 
         # Populate legacy annual format from range tables (Avg row)
         self._populate_legacy_annual(forecast_data, current_year)

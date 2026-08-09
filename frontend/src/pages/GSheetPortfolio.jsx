@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'wouter';
 import axios from 'axios';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
+import GroupSelect from '../components/GroupSelect';
+import { useExtendedQuotes } from '../components/useExtendedQuotes';
+import ExtendedQuoteBadge from '../components/ExtendedQuote';
 import {
   RefreshCw, TrendingUp, TrendingDown, DollarSign,
   BarChart2, Layers, Trash2, Plus, CloudDownload, Check, X,
@@ -31,6 +34,106 @@ function fmtPct(n) {
 function fmtSignedDollar(n) {
   if (n == null) return '—';
   return `${n >= 0 ? '+' : '-'}$${fmt(Math.abs(n))}`;
+}
+
+/* ─── Portfolio Diagnosis: one shared visual language ────────────────────────
+   Colour carries exactly one meaning in this block: direction.
+     green = 偏多 / 上漲   red = 偏空 / 下跌   amber = 需留意（方向未定）
+   Brand blue stays reserved for links, so a coloured number is never ambiguous.
+   Surfaces use the light-theme tokens; rgba(255,255,255,x) renders invisible
+   on this white background.
+─────────────────────────────────────────────────────────────────────────── */
+const DIR = {
+  bull:    { text: 'text-[var(--accent-green)]',   chip: 'bg-[rgba(5,150,105,0.10)]',  bar: 'bg-[var(--accent-green)]',  ring: 'border-[rgba(5,150,105,0.32)]',  wash: 'bg-[rgba(5,150,105,0.035)]' },
+  bear:    { text: 'text-[var(--accent-danger)]',  chip: 'bg-[rgba(220,38,38,0.09)]',  bar: 'bg-[var(--accent-danger)]', ring: 'border-[rgba(220,38,38,0.32)]',  wash: 'bg-[rgba(220,38,38,0.035)]' },
+  watch:   { text: 'text-[var(--accent-yellow)]',  chip: 'bg-[rgba(217,119,6,0.10)]',  bar: 'bg-[var(--accent-yellow)]', ring: 'border-[rgba(217,119,6,0.32)]',  wash: 'bg-[rgba(217,119,6,0.035)]' },
+  neutral: { text: 'text-[var(--text-secondary)]', chip: 'bg-[var(--bg-tertiary)]',    bar: 'bg-[var(--glass-border)]',  ring: 'border-[var(--glass-border)]',   wash: 'bg-[var(--bg-secondary)]' },
+};
+
+// The API still speaks the old five-tone vocabulary. Fold it onto the three-way lock.
+const toDir = (tone) =>
+  tone === 'bull' || tone === 'green' || tone === 'cyan' ? 'bull'
+  : tone === 'bear' || tone === 'red' ? 'bear'
+  : tone === 'watch' || tone === 'orange' || tone === 'yellow' ? 'watch'
+  : 'neutral';
+
+// Portfolio impact: weight% × day change% lands directly in basis points of
+// total portfolio. Answers "which of these actually moved my money", which raw
+// day-change % on its own does not.
+const impactBp = (x) =>
+  x?.weight_pct != null && x?.day_change_pct != null ? x.weight_pct * x.day_change_pct : null;
+
+const fmtBp = (bp) => (bp == null ? '—' : `${bp >= 0 ? '+' : '-'}${Math.abs(bp).toFixed(1)}`);
+
+// Decisive signals lead. `large_moves` sinks to the bottom because the Δ% column
+// already states it. Falls back to tone for feeds that carry no severity.
+const rankSignals = (signals = []) =>
+  [...signals].sort((a, b) => {
+    const redundant = (s) => (s.category === 'large_moves' ? 1 : 0);
+    if (redundant(a) !== redundant(b)) return redundant(a) - redundant(b);
+    if ((b.severity ?? 0) !== (a.severity ?? 0)) return (b.severity ?? 0) - (a.severity ?? 0);
+    const w = (s) => (toDir(s.tone) === 'neutral' ? 2 : toDir(s.tone) === 'watch' ? 1 : 0);
+    return w(a) - w(b);
+  });
+
+/* The backend composes suggestions as "。".join(parts), one part per signal, and
+   every part is written as 觀察，…，動作. Recover that structure instead of
+   printing a 150-character run-on: one line per signal, action set in the
+   primary text colour so the thing to actually do is the thing that stands out. */
+function SuggestionList({ text }) {
+  const lines = useMemo(() => (
+    (text || '')
+      .split('。')
+      .map(s => s.trim())
+      .filter(Boolean)
+      // 持倉佔比…重倉股…建議優先關注 repeats the 持倉 / 今日影響 fields rendered
+      // directly above, and the group heading already says 重點關注.
+      .filter(s => !s.startsWith('持倉佔比'))
+      .map(s => {
+        const cut = s.lastIndexOf('，');
+        return cut > 0
+          ? { observation: s.slice(0, cut + 1), action: s.slice(cut + 1) }
+          : { observation: '', action: s };
+      })
+  ), [text]);
+
+  if (lines.length === 0) return null;
+  return (
+    <ul className="space-y-1.5">
+      {lines.map((l, i) => (
+        <li key={i} className="flex gap-2">
+          <span className="mt-[9px] h-[3px] w-[3px] shrink-0 rounded-full bg-[var(--text-muted)]" />
+          <p className="text-[12.5px] leading-[1.8] text-[var(--text-secondary)]">
+            {l.observation}
+            <span className="font-medium text-[var(--text-primary)]">{l.action}</span>
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SignalChips({ signals, max = 4 }) {
+  const ranked = rankSignals(signals);
+  const shown = ranked.slice(0, max);
+  const rest = ranked.length - shown.length;
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {shown.map((s, i) => {
+        const d = DIR[toDir(s.tone)];
+        return (
+          <span key={i} className={`text-[10.5px] font-semibold px-1.5 py-0.5 rounded ${d.text} ${d.chip}`}>
+            {s.label ?? s.tag}
+          </span>
+        );
+      })}
+      {rest > 0 && (
+        <span className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded text-[var(--text-muted)] bg-[var(--bg-tertiary)]">
+          +{rest}
+        </span>
+      )}
+    </div>
+  );
 }
 
 // Sector slice → which tickers contribute (used as the pie's hover tooltip).
@@ -146,6 +249,7 @@ export default function GSheetPortfolio() {
   const [addSaving,       setAddSaving]       = useState(false);
   // deposit state
   const [depositsOpen,    setDepositsOpen]    = useState(false);
+  const [techOpen,        setTechOpen]        = useState(false);
   const [newDeposit,      setNewDeposit]      = useState({ date: '', amount: '' });
   const [depositSaving,   setDepositSaving]   = useState(false);
   const [depositError,    setDepositError]    = useState('');
@@ -166,6 +270,8 @@ export default function GSheetPortfolio() {
   const [scrapingTickers, setScrapingTickers] = useState(new Set());
   const [groups,          setGroups]          = useState([]);
   const [changingGroup,   setChangingGroup]   = useState(null);
+  const [autoRefresh,     setAutoRefresh]     = useState(true);   // 即時自動刷新
+  const [lastUpdated,     setLastUpdated]     = useState(null);
   const pendingReloadRef    = useRef(false);
   const loadDataRef         = useRef(null);
   const scrapeAttemptedRef  = useRef(new Set());
@@ -215,24 +321,26 @@ export default function GSheetPortfolio() {
     }
   };
 
-  const loadData = ({ force = false } = {}) => {
+  const loadData = ({ force = false, silent = false } = {}) => {
     // Avoid clobbering user input while editing inline cells.
     if (!force && editCell) {
       pendingReloadRef.current = true;
       return;
     }
-    setLoading(true);
+    // `silent` = background auto-refresh: skip the full-page spinner.
+    if (!silent) setLoading(true);
     setError(null);
     axios.get('/api/portfolio/csv')
       .then(r => {
         setAllData(r.data);
+        setLastUpdated(new Date());
         setSelected(prev =>
           r.data.portfolio_names.includes(prev) ? prev : r.data.portfolio_names[0] ?? null
         );
         _scrapeMissing(r.data);
       })
-      .catch(e => setError(e?.response?.data?.detail || 'Failed to load portfolio'))
-      .finally(() => setLoading(false));
+      .catch(e => { if (!silent) setError(e?.response?.data?.detail || 'Failed to load portfolio'); })
+      .finally(() => { if (!silent) setLoading(false); });
   };
 
   loadDataRef.current = loadData;
@@ -267,6 +375,19 @@ export default function GSheetPortfolio() {
     // Load local CSV cache only. Remote Google Sheet sync is manual via "Sync Sheet".
     loadData({ force: true });
   }, []);
+
+  // 即時自動刷新：每 60 秒在背景重新抓取即時股價（不打斷編輯、分頁隱藏時暫停）。
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const REFRESH_MS = 60_000;
+    const tick = () => {
+      if (document.hidden) return;          // pause when tab is in background
+      if (editCell) return;                 // don't clobber inline edits
+      loadDataRef.current?.({ silent: true });
+    };
+    const id = setInterval(tick, REFRESH_MS);
+    return () => clearInterval(id);
+  }, [autoRefresh, editCell]);
 
   // Available sector/group names for the per-ticker "change group" dropdown.
   useEffect(() => {
@@ -389,6 +510,15 @@ export default function GSheetPortfolio() {
       .finally(() => setAddSaving(false));
   };
 
+  // Pre/post-market quotes for the selected portfolio. Must stay above the
+  // early returns below — it's a hook.
+  const extendedQuotes = useExtendedQuotes(
+    useMemo(
+      () => (allData?.portfolios?.[selected]?.holdings || []).map(h => h.ticker),
+      [allData, selected]
+    )
+  );
+
   // ── render states ─────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -454,6 +584,7 @@ export default function GSheetPortfolio() {
   const rotation = report?.weight_rotation;
   const techSignals = report?.technical_signals || {};
   const perHoldingTech = techSignals.per_holding || {};
+  const abnormalStocks = report?.abnormal_stocks;
   const stockInsights = report?.stock_insights || [];
   const perfRows = perfHistory?.rows || [];
 
@@ -510,6 +641,25 @@ export default function GSheetPortfolio() {
           >
             <RefreshCw size={14} /> Refresh
           </button>
+
+          {/* 即時自動刷新 toggle + last-updated */}
+          <button
+            onClick={() => setAutoRefresh(v => !v)}
+            title={autoRefresh ? '即時自動刷新已開啟（每 60 秒）' : '即時自動刷新已關閉'}
+            className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+              autoRefresh
+                ? 'text-[var(--accent-green)] bg-[rgba(16,185,129,0.08)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.05)]'
+            }`}
+          >
+            <span className={`inline-block w-2 h-2 rounded-full ${autoRefresh ? 'bg-[var(--accent-green)] animate-pulse' : 'bg-[var(--text-muted)]'}`} />
+            即時 Live
+          </button>
+          {lastUpdated && (
+            <span className="text-[11px] text-[var(--text-muted)] whitespace-nowrap">
+              更新 {lastUpdated.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+            </span>
+          )}
 
           <button
             onClick={() => setShowPerfPanel(v => !v)}
@@ -636,6 +786,8 @@ export default function GSheetPortfolio() {
           label="Net Gain"
           value={`${gainValue >= 0 ? '+' : ''}$${fmt(gainValue)}`}
           subValue={gainPct != null ? `${gainPct >= 0 ? '+' : ''}${fmt(gainPct)}%` : null}
+          subValue2={usd_twd_rate ? `${gainValue >= 0 ? '+' : '-'}NT$ ${Math.round(Math.abs(gainValue) * usd_twd_rate).toLocaleString('zh-TW')}` : null}
+          subValue2Color={gainValue >= 0 ? 'green' : 'red'}
           color={gainValue >= 0 ? 'green' : 'red'}
         />
         <SummaryCard
@@ -860,69 +1012,65 @@ export default function GSheetPortfolio() {
               tone={headline.daily_pnl == null ? 'neutral' : headline.daily_pnl >= 0 ? 'green' : 'red'}
             />
             <MiniStat
-              label="Period Change"
+              label="期間變化 Period"
               value={fmtSignedDollar(headline.value_change)}
               sub={headline.value_change_pct != null ? fmtPct(headline.value_change_pct) : '—'}
               tone={headline.value_change == null ? 'neutral' : headline.value_change >= 0 ? 'green' : 'red'}
             />
             <MiniStat
-              label="Cash %"
+              label="現金水位 Cash"
               value={headline.cash_pct != null ? `${fmt(headline.cash_pct, 1)}%` : '—'}
               sub={headline.cash_pct_change != null ? `${headline.cash_pct_change >= 0 ? '+' : ''}${fmt(headline.cash_pct_change, 1)} pts` : '—'}
-              tone="orange"
             />
             <MiniStat
-              label="Positions"
+              label="持股檔數 Positions"
               value={String(headline.position_count ?? '—')}
-              sub={headline.position_count_change != null ? `${headline.position_count_change >= 0 ? '+' : ''}${headline.position_count_change}` : '—'}
-              tone="purple"
+              sub={headline.position_count_change != null ? `${headline.position_count_change >= 0 ? '+' : ''}${headline.position_count_change} 檔` : '—'}
             />
             <MiniStat
-              label="Net Gain"
+              label="總損益 Net Gain"
               value={fmtSignedDollar(headline.net_gain)}
               sub={headline.net_return_pct != null ? fmtPct(headline.net_return_pct) : '—'}
               tone={headline.net_gain >= 0 ? 'green' : 'red'}
             />
             <MiniStat
-              label="MWR"
+              label="資金報酬 MWR"
               value={headline.mwr != null ? fmtPct(headline.mwr) : '—'}
-              sub={`${report?.snapshots_available ?? 0} snapshots`}
+              sub={`${report?.snapshots_available ?? 0} 筆快照`}
               tone={headline.mwr == null ? 'neutral' : headline.mwr >= 0 ? 'green' : 'red'}
             />
+          </div>
+        )}
+
+        {/* Abnormal Stocks */}
+        {abnormalStocks?.summary?.length > 0 && (
+          <div className="border-t border-[var(--glass-border)] pt-4 space-y-3">
+            <div className="flex items-baseline justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-sm font-bold text-[var(--text-primary)]">異常股票 · Breakout / Breakdown Radar</p>
+                <p className="text-[11px] text-[var(--text-muted)]">技術面掃描，依對投組的影響排序</p>
+              </div>
+              <span className="font-mono tabular-nums text-[11px] text-[var(--text-muted)]">
+                {abnormalStocks.summary.length} 檔 / {Object.values(abnormalStocks.counts || {}).reduce((s, n) => s + n, 0)} 個訊號
+              </span>
+            </div>
+            <AbnormalStocksPanel abnormal={abnormalStocks} />
           </div>
         )}
 
         {/* Stock Insights */}
         {stockInsights.length > 0 && (
           <div className="border-t border-[var(--glass-border)] pt-4 space-y-4">
-            <p className="text-xs font-semibold text-[var(--text-secondary)]">個股分析 · Notable Movers</p>
+            <div>
+              <p className="text-sm font-bold text-[var(--text-primary)]">個股分析 · Notable Movers</p>
+              <p className="text-[11px] text-[var(--text-muted)]">同一批標的，依處理優先順序分組並附操作建議</p>
+            </div>
             <StockInsightsGrouped insights={stockInsights} />
           </div>
         )}
 
         {/* Risk Flags */}
-        {report?.risk_flags?.length > 0 && (
-          <div className="border-t border-[var(--glass-border)] pt-4 space-y-2">
-            <p className="text-xs font-semibold text-[var(--text-secondary)]">風險警示 · Risk Alerts</p>
-            <div className="space-y-1.5">
-              {report.risk_flags.map((flag, i) => {
-                const styles = {
-                  high:   'text-[var(--accent-danger)] border-[rgba(248,113,113,0.35)] bg-[rgba(248,113,113,0.07)]',
-                  bear:   'text-[var(--accent-danger)] border-[rgba(248,113,113,0.25)] bg-[rgba(248,113,113,0.04)]',
-                  medium: 'text-[var(--accent-yellow)] border-[rgba(245,158,11,0.30)] bg-[rgba(245,158,11,0.06)]',
-                  bull:   'text-[var(--accent-green)]  border-[rgba(16,185,129,0.30)]  bg-[rgba(16,185,129,0.06)]',
-                  info:   'text-[var(--accent-cyan)]   border-[rgba(6,182,212,0.25)]   bg-[rgba(6,182,212,0.04)]',
-                };
-                const cls = styles[flag.level] || styles.info;
-                return (
-                  <div key={i} className={`px-3 py-2 rounded-lg border text-xs leading-relaxed ${cls}`}>
-                    {flag.message}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {report?.risk_flags?.length > 0 && <RiskAlerts flags={report.risk_flags} />}
 
         {report && (
           <div className="space-y-4">
@@ -941,11 +1089,22 @@ export default function GSheetPortfolio() {
               </div>
             </div>
 
-            {/* Technical Signals by Ticker */}
+            {/* Technical Signals by Ticker — the same signals the radar above
+                already ranks, kept as a per-ticker index behind a disclosure so
+                the card is not three copies of one list. */}
             {Object.keys(techSignals).some(k => k !== 'per_holding' && techSignals[k]?.length > 0) && (
               <div className="border-t border-[var(--glass-border)] pt-4 space-y-2.5">
-                <p className="text-xs font-semibold text-[var(--text-secondary)]">技術訊號總覽 · Technical Signals by Ticker</p>
-                <TechSignalsByTicker techSignals={techSignals} />
+                <button
+                  type="button"
+                  onClick={() => setTechOpen(o => !o)}
+                  aria-expanded={techOpen}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+                >
+                  {techOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  技術訊號總覽 · Technical Signals by Ticker
+                  <span className="font-normal text-[var(--text-muted)]">（依代號分組）</span>
+                </button>
+                {techOpen && <TechSignalsByTicker techSignals={techSignals} />}
               </div>
             )}
           </div>
@@ -1161,17 +1320,15 @@ export default function GSheetPortfolio() {
                       {h.ticker === 'CASH' ? (
                         <span />
                       ) : (
-                        <select
+                        <GroupSelect
                           value={selectedSector}
-                          disabled={changingGroup === h.ticker}
-                          onChange={e => changeGroup(h.ticker, e.target.value)}
-                          title="Change sector / group"
-                          className="w-full bg-[var(--bg-primary)] border border-[var(--glass-border)] rounded-md px-1.5 py-1 text-[11px] text-[var(--text-secondary)] focus:outline-none focus:border-[rgba(139,92,246,0.5)] disabled:opacity-50 cursor-pointer"
-                        >
-                          {Array.from(new Set([selectedSector, ...groups])).map(g => (
-                            <option key={g} value={g}>{g}</option>
-                          ))}
-                        </select>
+                          options={groups}
+                          loading={changingGroup === h.ticker}
+                          onChange={g => changeGroup(h.ticker, g)}
+                          size="sm"
+                          align="right"
+                          ariaLabel={`Change sector for ${h.ticker}`}
+                        />
                       )}
                     </div>
                   );
@@ -1214,7 +1371,7 @@ export default function GSheetPortfolio() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--glass-border)]">
-              {['Account','Ticker','Company','Shares','Avg Cost','Lev','Price','Market Value','Weight','P&L $','P&L %','Fair Value (PE)','Valuation','備注','Vol','RSI','MA',''].map(h => (
+              {['Account','Ticker','Company','Shares','Avg Cost','Lev','Price','Market Value','今日 Today','Weight','P&L $','P&L %','Fair Value (PE)','Valuation','備注','Vol','RSI','MA',''].map(h => (
                 h === 'Weight' ? (
                   <th key={h} className="px-4 py-3 text-left text-xs font-semibold whitespace-nowrap">
                     <button
@@ -1299,6 +1456,15 @@ export default function GSheetPortfolio() {
                             {h.day_change >= 0 ? '+' : ''}{fmt(h.day_change)} ({h.day_change_pct >= 0 ? '+' : ''}{fmt(h.day_change_pct)}%)
                           </span>
                         )}
+                        {extendedQuotes[h.ticker] && (
+                          <ExtendedQuoteBadge
+                            quote={extendedQuotes[h.ticker]}
+                            showPrice
+                            upColor="#059669"
+                            downColor="#dc2626"
+                            className="mt-0.5"
+                          />
+                        )}
                       </div>
                     ) : <span className="text-[var(--text-muted)]">—</span>}
                   </td>
@@ -1306,6 +1472,26 @@ export default function GSheetPortfolio() {
                   <td className="px-4 py-3 font-medium">
                     {h.market_value != null ? `$${fmt(h.market_value)}` : <span className="text-[var(--text-muted)]">—</span>}
                   </td>
+
+                  {/* 今日價值改變 — today's $ change of this position (day_change × shares) */}
+                  <td className="px-4 py-3 font-medium">
+                    {!isCash && h.day_change != null && h.shares != null ? (() => {
+                      const dayVal = h.day_change * h.shares;
+                      return (
+                        <div className="flex flex-col leading-tight">
+                          <span className={dayVal >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-danger)]'}>
+                            {dayVal >= 0 ? '+' : ''}${fmt(dayVal)}
+                          </span>
+                          {h.day_change_pct != null && (
+                            <span className={`text-[10px] ${h.day_change_pct >= 0 ? 'text-[var(--accent-green)]' : 'text-[var(--accent-danger)]'}`}>
+                              {h.day_change_pct >= 0 ? '+' : ''}{fmt(h.day_change_pct)}%
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })() : <span className="text-[var(--text-muted)]">—</span>}
+                  </td>
+
                   <td className="px-4 py-3">
                     {weight != null ? (
                       <div className="flex flex-col gap-1 min-w-[64px]">
@@ -1474,7 +1660,7 @@ export default function GSheetPortfolio() {
                     className="w-24 px-2 py-1 rounded bg-[var(--bg-tertiary)] border border-[var(--glass-border)] text-xs outline-none"
                   />
                 </td>
-                <td colSpan={7} className="px-4 py-2">
+                <td colSpan={8} className="px-4 py-2">
                   {addError && <span className="text-[10px] text-[var(--accent-danger)]">{addError}</span>}
                 </td>
                 <td className="px-4 py-2">
@@ -1507,7 +1693,7 @@ export default function GSheetPortfolio() {
               </tr>
             ) : (
               <tr className="border-t border-[var(--glass-border)]">
-                <td colSpan={14} className="px-4 py-2">
+                <td colSpan={15} className="px-4 py-2">
                   <button
                     onClick={() => { setAdding(true); setAddVals({ ...EMPTY_ADD, portfolio: selected }); }}
                     className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent-purple)] transition-colors py-1"
@@ -1553,7 +1739,7 @@ function EditableCell({ value, display, isEditing, editVal, onStart, onChange, o
   );
 }
 
-function SummaryCard({ icon, label, value, subValue, subValueColor, color }) {
+function SummaryCard({ icon, label, value, subValue, subValueColor, subValue2, subValue2Color, color }) {
   const colorMap = {
     cyan:   'from-[var(--accent-cyan)] to-[#0891b2]',
     purple: 'from-[var(--accent-purple)] to-[#7c3aed]',
@@ -1583,25 +1769,31 @@ function SummaryCard({ icon, label, value, subValue, subValueColor, color }) {
             {subValue}
           </p>
         )}
+        {subValue2 && (
+          <p className={`text-[10px] mt-0.5 ${subValue2Color ? textColorMap[subValue2Color] : 'text-[var(--text-muted)]'}`}>
+            {subValue2}
+          </p>
+        )}
       </div>
     </div>
   );
 }
 
 function MiniStat({ label, value, sub, tone = 'neutral' }) {
+  // Only directional stats get colour. Cash % and position count are facts, not
+  // gains, so they stay neutral — otherwise the palette stops meaning anything.
   const toneMap = {
-    neutral: 'text-[var(--text-secondary)]',
+    neutral: 'text-[var(--text-primary)]',
     green: 'text-[var(--accent-green)]',
     red: 'text-[var(--accent-danger)]',
-    cyan: 'text-[var(--accent-cyan)]',
-    purple: 'text-[var(--accent-purple)]',
-    orange: 'text-[#f97316]',
   };
   return (
-    <div className="rounded-xl border border-[var(--glass-border)] bg-[rgba(255,255,255,0.02)] px-3 py-2">
-      <p className="text-[10px] text-[var(--text-muted)] uppercase tracking-wider">{label}</p>
-      <p className={`text-base font-extrabold ${toneMap[tone]}`}>{value}</p>
-      <p className="text-[10px] text-[var(--text-muted)]">{sub}</p>
+    <div className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] px-3 py-2.5">
+      <p className="text-[11px] font-medium text-[var(--text-secondary)] truncate" title={label}>{label}</p>
+      <p className={`mt-1 text-lg font-bold font-mono tabular-nums leading-none ${toneMap[tone] || toneMap.neutral}`}>
+        {value}
+      </p>
+      <p className="mt-1 text-[11px] font-mono tabular-nums text-[var(--text-muted)]">{sub}</p>
     </div>
   );
 }
@@ -1626,7 +1818,7 @@ function FlowRow({ label, tone, items }) {
           <span className="text-xs text-[var(--text-muted)]">—</span>
         ) : (
           items.slice(0, 6).map((t) => (
-            <span key={t} className="text-[11px] px-2 py-0.5 rounded-md bg-[rgba(255,255,255,0.05)] text-[var(--text-secondary)]">
+            <span key={t} className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
               {t}
             </span>
           ))
@@ -1645,7 +1837,7 @@ function FlowDeltaRow({ label, tone, items }) {
           <span className="text-xs text-[var(--text-muted)]">—</span>
         ) : (
           items.slice(0, 6).map((x) => (
-            <span key={x.ticker} className="text-[11px] px-2 py-0.5 rounded-md bg-[rgba(255,255,255,0.05)] text-[var(--text-secondary)]">
+            <span key={x.ticker} className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
               {x.ticker} {x.share_diff > 0 ? '+' : ''}{x.share_diff}
             </span>
           ))
@@ -1664,11 +1856,234 @@ function WeightRow({ label, tone, items }) {
           <span className="text-xs text-[var(--text-muted)]">—</span>
         ) : (
           items.slice(0, 6).map((x) => (
-            <span key={x.ticker} className="text-[11px] px-2 py-0.5 rounded-md bg-[rgba(255,255,255,0.05)] text-[var(--text-secondary)]">
+            <span key={x.ticker} className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
               {x.ticker} {x.weight_diff_pct > 0 ? '+' : ''}{fmt(x.weight_diff_pct, 2)} pts
             </span>
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+// All eight categories the API returns, so the tally reconciles with the signal
+// count in the section header. The old panel showed five and silently dropped 15
+// of the 22 signals it claimed to summarise.
+const RADAR_CATS = [
+  { key: 'breakouts',       label: '突破',   dir: 'bull'    },
+  { key: 'breakdowns',      label: '跌破',   dir: 'bear'    },
+  { key: 'ma_crosses',      label: '均線',   dir: 'neutral' },
+  { key: 'rsi_extreme',     label: 'RSI',    dir: 'watch'   },
+  { key: 'volume_spikes',   label: '爆量',   dir: 'watch'   },
+  { key: 'near_support',    label: '近支撐', dir: 'bull'    },
+  { key: 'near_resistance', label: '近壓力', dir: 'watch'   },
+  { key: 'large_moves',     label: '大漲跌', dir: 'neutral' },
+];
+
+// Shared column track so the header labels and every row line up exactly.
+const RADAR_COLS = 'md:grid-cols-[4.25rem_5.5rem_4.75rem_3.75rem_4.5rem_minmax(0,1fr)]';
+
+function RiskAlerts({ flags }) {
+  // Severity first: a real warning should not sit below fifteen routine notes.
+  const RANK = { high: 0, bear: 1, medium: 2, info: 3, bull: 4 };
+  const ordered = useMemo(
+    () => [...flags].sort((a, b) => (RANK[a.level] ?? 9) - (RANK[b.level] ?? 9)),
+    [flags], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const urgent = ordered.filter(f => f.level === 'high' || f.level === 'bear');
+  const rest = ordered.filter(f => !(f.level === 'high' || f.level === 'bear'));
+  const [showAll, setShowAll] = useState(false);
+  const dirOf = (lvl) => (lvl === 'high' || lvl === 'bear' ? 'bear' : lvl === 'medium' ? 'watch' : lvl === 'bull' ? 'bull' : 'neutral');
+
+  // A coloured rule instead of a full bordered box per row: 15 outlined pills
+  // stacked full-width was more frame than content.
+  const Row = (flag, i) => {
+    const d = DIR[dirOf(flag.level)];
+    return (
+      <div key={i} className="flex items-start gap-2 py-1">
+        <span className={`mt-[5px] h-3 w-[3px] shrink-0 rounded-full ${d.bar}`} />
+        <span className={`text-xs leading-relaxed ${d.text}`}>{flag.message}</span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="border-t border-[var(--glass-border)] pt-4 space-y-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm font-bold text-[var(--text-primary)]">風險警示 · Risk Alerts</p>
+        <span className="font-mono tabular-nums text-[11px] text-[var(--text-muted)]">
+          {urgent.length} 緊急 / {flags.length} 則
+        </span>
+      </div>
+
+      {urgent.length > 0 && (
+        <div className={`rounded-xl border px-3 py-2 ${DIR.bear.ring} ${DIR.bear.wash}`}>
+          {urgent.map(Row)}
+        </div>
+      )}
+
+      {rest.length > 0 && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6">
+            {(showAll ? rest : rest.slice(0, 6)).map(Row)}
+          </div>
+          {rest.length > 6 && (
+            <button
+              type="button"
+              onClick={() => setShowAll(v => !v)}
+              className="text-[11px] font-semibold text-[var(--accent-cyan)] hover:underline"
+            >
+              {showAll ? '收合' : `顯示其餘 ${rest.length - 6} 則`}
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AbnormalStocksPanel({ abnormal }) {
+  const [activeCat, setActiveCat] = useState(null);
+  const categories = abnormal?.categories;
+
+  // ticker → which categories it fired, so the tally can filter the list below
+  // instead of just restating it.
+  const catsByTicker = useMemo(() => {
+    const map = {};
+    RADAR_CATS.forEach(c => ((categories?.[c.key]) || []).forEach(x => {
+      if (!map[x.ticker]) map[x.ticker] = new Set();
+      map[x.ticker].add(c.key);
+    }));
+    return map;
+  }, [categories]);
+
+  // Largest portfolio impact first. The API order buries a 6.6% position that
+  // dropped 4.8% underneath a 1.1% position that ticked up.
+  const rows = useMemo(() => {
+    const all = abnormal?.summary || [];
+    const list = activeCat ? all.filter(s => catsByTicker[s.ticker]?.has(activeCat)) : all;
+    return [...list].sort((a, b) => Math.abs(impactBp(b) ?? 0) - Math.abs(impactBp(a) ?? 0));
+  }, [abnormal, activeCat, catsByTicker]);
+
+  return (
+    <div className="space-y-3">
+      {/* Signal tally, doubling as a filter */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {RADAR_CATS.map(cat => {
+          const n = ((categories?.[cat.key]) || []).length;
+          const on = activeCat === cat.key;
+          const d = DIR[cat.dir];
+          return (
+            <button
+              key={cat.key}
+              type="button"
+              disabled={n === 0}
+              aria-pressed={on}
+              onClick={() => setActiveCat(on ? null : cat.key)}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition-colors
+                ${n === 0
+                  ? 'border-[var(--glass-border)] text-[var(--text-muted)] opacity-55 cursor-default'
+                  : on
+                    ? `${d.ring} ${d.text} bg-[var(--bg-tertiary)]`
+                    : 'border-[var(--glass-border)] text-[var(--text-secondary)] hover:border-[var(--glass-border-hover)] hover:text-[var(--text-primary)]'}`}
+            >
+              <span>{cat.label}</span>
+              <span className={`font-mono tabular-nums ${n > 0 && !on ? d.text : ''}`}>{n}</span>
+            </button>
+          );
+        })}
+        {activeCat && (
+          <button
+            type="button"
+            onClick={() => setActiveCat(null)}
+            className="text-[11px] font-medium text-[var(--accent-cyan)] hover:underline px-1"
+          >
+            顯示全部
+          </button>
+        )}
+      </div>
+
+      {rows.length === 0 ? (
+        <p className="py-6 text-center text-xs text-[var(--text-muted)]">
+          此分類沒有持倉中的個股觸發訊號。
+        </p>
+      ) : (
+        <div>
+          <div className={`hidden md:grid ${RADAR_COLS} gap-x-3 px-2 pb-1.5 text-[10px] font-semibold text-[var(--text-muted)] border-b border-[var(--glass-border)]`}>
+            <span>代號</span>
+            <span className="text-right">股價</span>
+            <span className="text-right">單日</span>
+            <span className="text-right">持倉</span>
+            <span className="text-right" title="持倉比重 × 單日漲跌，對整體投組的影響（基點）">影響 bp</span>
+            <span>訊號</span>
+          </div>
+          <div className="divide-y divide-[rgba(148,163,184,0.22)]">
+            {rows.map(item => <AbnormalStockRow key={item.ticker} item={item} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AbnormalStockRow({ item }) {
+  const bp = impactBp(item);
+  const chgDir = item.day_change_pct == null ? 'neutral' : item.day_change_pct >= 0 ? 'bull' : 'bear';
+
+  const Ticker = (
+    <Link href={`/stock/${item.ticker}`}>
+      <span className="font-mono text-[13px] font-bold text-[var(--accent-cyan)] hover:underline cursor-pointer">
+        {item.ticker}
+      </span>
+    </Link>
+  );
+  const Price = (
+    <span className="font-mono tabular-nums text-[12px] text-[var(--text-primary)]">
+      {item.price != null ? `$${fmt(item.price)}` : '—'}
+    </span>
+  );
+  const Chg = (
+    <span className={`font-mono tabular-nums text-[12px] font-semibold ${DIR[chgDir].text}`}>
+      {fmtPct(item.day_change_pct)}
+    </span>
+  );
+  const Weight = (
+    <span className="font-mono tabular-nums text-[12px] text-[var(--text-secondary)]">
+      {item.weight_pct != null ? `${fmt(item.weight_pct, 1)}%` : '—'}
+    </span>
+  );
+  const Impact = (
+    <span className={`font-mono tabular-nums text-[12px] font-semibold ${DIR[bp == null ? 'neutral' : bp >= 0 ? 'bull' : 'bear'].text}`}>
+      {fmtBp(bp)}
+    </span>
+  );
+
+  return (
+    <div className="px-2 py-2 hover:bg-[var(--bg-secondary)] transition-colors">
+      {/* Desktop: aligned columns so prices and percentages read down the page */}
+      <div className={`hidden md:grid ${RADAR_COLS} gap-x-3 items-center`}>
+        {Ticker}
+        <div className="text-right">{Price}</div>
+        <div className="text-right">{Chg}</div>
+        <div className="text-right">{Weight}</div>
+        <div className="text-right">{Impact}</div>
+        <SignalChips signals={item.signals} />
+      </div>
+
+      {/* < 768px: identity line, then signals */}
+      <div className="md:hidden space-y-1.5">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          {Ticker}
+          {Price}
+          {Chg}
+          <span className="ml-auto flex items-baseline gap-2">
+            <span className="text-[10px] text-[var(--text-muted)]">持倉</span>
+            {Weight}
+            <span className="text-[10px] text-[var(--text-muted)]">影響</span>
+            {Impact}
+          </span>
+        </div>
+        <SignalChips signals={item.signals} max={3} />
       </div>
     </div>
   );
@@ -1693,30 +2108,9 @@ function StockInsightsGrouped({ insights }) {
   insights.forEach(ins => groups[classifyInsight(ins)].push(ins));
 
   const sections = [
-    {
-      key: 'critical',
-      label: '重點關注',
-      sub: '需優先處理',
-      dot: 'bg-[var(--accent-danger)]',
-      headerCls: 'text-[var(--accent-danger)]',
-      pulse: true,
-    },
-    {
-      key: 'watch',
-      label: '留意觀察',
-      sub: '訊號偏空或混合',
-      dot: 'bg-[var(--accent-yellow)]',
-      headerCls: 'text-[var(--accent-yellow)]',
-      pulse: false,
-    },
-    {
-      key: 'opportunity',
-      label: '潛在機會',
-      sub: '技術面偏多',
-      dot: 'bg-[var(--accent-green)]',
-      headerCls: 'text-[var(--accent-green)]',
-      pulse: false,
-    },
+    { key: 'critical',    label: '重點關注', sub: '需優先處理',     dir: 'bear'  },
+    { key: 'watch',       label: '留意觀察', sub: '訊號偏空或混合', dir: 'watch' },
+    { key: 'opportunity', label: '潛在機會', sub: '技術面偏多',     dir: 'bull'  },
   ];
 
   return (
@@ -1724,21 +2118,21 @@ function StockInsightsGrouped({ insights }) {
       {sections.map(sec => {
         const items = groups[sec.key];
         if (items.length === 0) return null;
+        const d = DIR[sec.dir];
+        // Biggest position first — a 7% holding outranks a 1% holding.
+        const ordered = [...items].sort((a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0));
         return (
           <div key={sec.key}>
-            <div className="flex items-center gap-2 mb-2.5">
-              <span className={`relative flex h-2 w-2`}>
-                {sec.pulse && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${sec.dot} opacity-60`} />}
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${sec.dot}`} />
-              </span>
-              <span className={`text-xs font-bold ${sec.headerCls}`}>{sec.label}</span>
-              <span className="text-[10px] text-[var(--text-muted)]">{sec.sub}</span>
-              <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ml-auto ${sec.headerCls} bg-[rgba(255,255,255,0.06)]`}>
-                {items.length}
+            <div className="flex items-baseline gap-2 mb-2.5 pb-1.5 border-b border-[var(--glass-border)]">
+              <span className={`self-center h-3.5 w-1 rounded-full ${d.bar}`} />
+              <span className={`text-[13px] font-bold ${d.text}`}>{sec.label}</span>
+              <span className="text-[11px] text-[var(--text-muted)]">{sec.sub}</span>
+              <span className="ml-auto font-mono tabular-nums text-[11px] font-semibold text-[var(--text-secondary)]">
+                {ordered.length} 檔
               </span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-              {items.map(ins => (
+              {ordered.map(ins => (
                 <StockInsightCard key={ins.ticker} ins={ins} priority={sec.key} />
               ))}
             </div>
@@ -1751,64 +2145,57 @@ function StockInsightsGrouped({ insights }) {
 
 function StockInsightCard({ ins, priority }) {
   const dirMap = {
-    bull:    { label: '↑ 偏多', labelCls: 'text-[var(--accent-green)]  bg-[rgba(16,185,129,0.15)]' },
-    bear:    { label: '↓ 偏空', labelCls: 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.15)]' },
-    neutral: { label: '〜 中性', labelCls: 'text-[var(--text-muted)]   bg-[rgba(255,255,255,0.08)]' },
+    bull:    { label: '偏多', dir: 'bull' },
+    bear:    { label: '偏空', dir: 'bear' },
+    neutral: { label: '中性', dir: 'neutral' },
   };
-  const priorityStyle = {
-    critical:    { border: 'border-[rgba(248,113,113,0.45)]', bg: 'bg-[rgba(248,113,113,0.06)]', leftBar: 'bg-[var(--accent-danger)]' },
-    watch:       { border: 'border-[rgba(245,158,11,0.30)]',  bg: 'bg-[rgba(245,158,11,0.04)]',  leftBar: 'bg-[var(--accent-yellow)]' },
-    opportunity: { border: 'border-[rgba(16,185,129,0.30)]',  bg: 'bg-[rgba(16,185,129,0.04)]',  leftBar: 'bg-[var(--accent-green)]' },
-  };
-  const toneCls = {
-    red:    'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.12)]',
-    orange: 'text-[var(--accent-yellow)] bg-[rgba(249,115,22,0.12)]',
-    green:  'text-[var(--accent-green)]  bg-[rgba(16,185,129,0.12)]',
-    cyan:   'text-[var(--accent-cyan)]   bg-[rgba(6,182,212,0.12)]',
-    yellow: 'text-[var(--accent-yellow)] bg-[rgba(245,158,11,0.12)]',
-  };
+  const priorityDir = { critical: 'bear', watch: 'watch', opportunity: 'bull' };
   const d = dirMap[ins.direction] || dirMap.neutral;
-  const p = priorityStyle[priority] || priorityStyle.watch;
+  const dc = DIR[d.dir];
+  const p = DIR[priorityDir[priority] || 'watch'];
+  const chgDir = ins.day_change_pct == null ? 'neutral' : ins.day_change_pct >= 0 ? 'bull' : 'bear';
+  const bp = impactBp(ins);
 
   return (
-    <div className={`rounded-xl border flex overflow-hidden ${p.border} ${p.bg}`}>
-      {/* left accent bar */}
-      <div className={`w-1 shrink-0 ${p.leftBar}`} />
-      <div className="flex-1 p-3.5 space-y-2.5">
-        {/* Header row */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+    <div className={`rounded-xl border flex overflow-hidden ${p.ring} ${p.wash}`}>
+      {/* Left rule repeats the group's direction so a card stays readable out of context. */}
+      <div className={`w-1 shrink-0 ${p.bar}`} />
+      <div className="flex-1 p-3.5 space-y-2.5 min-w-0">
+        <div className="flex items-baseline justify-between gap-2 flex-wrap">
+          <div className="flex items-baseline gap-2">
             <Link href={`/stock/${ins.ticker}`}>
-              <span className="text-sm font-extrabold text-[var(--accent-cyan)] hover:underline cursor-pointer">{ins.ticker}</span>
+              <span className="font-mono text-[15px] font-bold text-[var(--accent-cyan)] hover:underline cursor-pointer">{ins.ticker}</span>
             </Link>
-            {ins.price != null && (
-              <span className="text-xs text-[var(--text-muted)]">${ins.price.toFixed(2)}</span>
-            )}
-            {ins.day_change_pct != null && (
-              <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${ins.day_change_pct >= 0 ? 'text-[var(--accent-green)] bg-[rgba(16,185,129,0.12)]' : 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.12)]'}`}>
-                {ins.day_change_pct >= 0 ? '+' : ''}{ins.day_change_pct.toFixed(1)}%
+            <span className="font-mono tabular-nums text-[12px] text-[var(--text-primary)]">
+              {ins.price != null ? `$${fmt(ins.price)}` : '—'}
+            </span>
+            <span className={`font-mono tabular-nums text-[13px] font-bold ${DIR[chgDir].text}`}>
+              {fmtPct(ins.day_change_pct)}
+            </span>
+          </div>
+          <span className={`shrink-0 text-[10.5px] font-semibold px-2 py-0.5 rounded-full ${dc.text} ${dc.chip}`}>
+            {d.label}
+          </span>
+        </div>
+
+        {/* Position context: how much of the portfolio this is, and what it did to it today. */}
+        {ins.weight_pct > 0 && (
+          <div className="flex items-baseline gap-3 text-[11px] text-[var(--text-muted)]">
+            <span>
+              持倉 <span className="font-mono tabular-nums text-[var(--text-secondary)]">{fmt(ins.weight_pct, 1)}%</span>
+            </span>
+            {bp != null && (
+              <span>
+                今日影響{' '}
+                <span className={`font-mono tabular-nums font-semibold ${DIR[bp >= 0 ? 'bull' : 'bear'].text}`}>{fmtBp(bp)} bp</span>
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            {ins.weight_pct > 0 && (
-              <span className="text-[10px] text-[var(--text-muted)]">{ins.weight_pct.toFixed(1)}% 持倉</span>
-            )}
-            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${d.labelCls}`}>{d.label}</span>
-          </div>
-        </div>
-
-        {/* Signal tags */}
-        <div className="flex flex-wrap gap-1">
-          {ins.signals.map((s, i) => (
-            <span key={i} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${toneCls[s.tone] || toneCls.yellow}`}>{s.tag}</span>
-          ))}
-        </div>
-
-        {/* Suggestion text */}
-        {ins.suggestion && (
-          <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">{ins.suggestion}</p>
         )}
+
+        <SignalChips signals={(ins.signals || []).map(s => ({ label: s.tag, tone: s.tone }))} max={4} />
+
+        {ins.suggestion && <SuggestionList text={ins.suggestion} />}
       </div>
     </div>
   );
@@ -1824,6 +2211,8 @@ function TechSignalsByTicker({ techSignals }) {
   };
   add(techSignals.golden_cross,    '↑ 黃金交叉', 'cyan');
   add(techSignals.death_cross,     '↓ 死亡交叉', 'red');
+  add(techSignals.breakouts,        '↑ 突破壓力', 'cyan',   x => `$${x.price}`);
+  add(techSignals.breakdowns,       '↓ 跌破支撐', 'red',    x => `$${x.price}`);
   add(techSignals.rsi_oversold,    '↑ RSI 超賣', 'green',  x => `RSI ${x.rsi}`);
   add(techSignals.rsi_overbought,  '↓ RSI 超買', 'orange', x => `RSI ${x.rsi}`);
   add(techSignals.near_support,    '↑ 近支撐',   'green',  x => `$${x.price} ↓${x.dist_pct}%`);
@@ -1842,7 +2231,7 @@ function TechSignalsByTicker({ techSignals }) {
   return (
     <div className="flex flex-wrap gap-2">
       {tickers.map(ticker => (
-        <div key={ticker} className="rounded-xl border border-[var(--glass-border)] bg-[rgba(255,255,255,0.03)] px-3 py-2.5 min-w-[130px]">
+        <div key={ticker} className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] px-3 py-2.5 min-w-[130px]">
           <p className="text-xs font-bold text-[var(--accent-cyan)] mb-2">
             <Link href={`/stock/${ticker}`}><span className="hover:underline cursor-pointer">{ticker}</span></Link>
           </p>

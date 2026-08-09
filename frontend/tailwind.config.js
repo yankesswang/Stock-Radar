@@ -6,6 +6,11 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        // Match --font-mono-family so `font-mono` gives the design system's
+        // tabular figures instead of the browser default mono stack.
+        mono: ['Fira Code', 'SFMono-Regular', 'ui-monospace', 'monospace'],
+      },
       animation: {
         'fade-in': 'fadeIn 0.6s ease-out',
         'fade-in-up': 'fadeInUp 0.8s ease-out',

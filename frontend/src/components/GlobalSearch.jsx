@@ -88,7 +88,7 @@ export default function GlobalSearch() {
   const showDropdown = open && (loading || results.length > 0 || (debouncedQ && !loading));
 
   return (
-    <div ref={containerRef} className="relative w-full sm:w-72 lg:w-80">
+    <div ref={containerRef} className="relative w-full sm:w-72">
       {/* Input */}
       <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all duration-200 ${
         open

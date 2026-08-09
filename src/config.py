@@ -70,21 +70,28 @@ STOCK_LIST = {
         "銀行": {"BAC", "JPM", "GS", "C", "WFC", 'NU', 'SOFI'},
         "傳統": {"DIS", "ISRG", "UNH", "ABBV", "CVS", 'TRV', "JNJ","PFE","MRK","LLY","AMGN"},
         "支付": {"MA", "V", "PYPL", "AXP"},
-        "零售": {"LULU", "COST", "PG", "KR", "JWN", "NKE", "DG", "FL", "EL", "PVH", "TPR"},
-        "食品": {"HIMS", "CELH","TSN", "MNST", "MCD", "SBUX", "KO", "PEP", "CMG", "YUM", 'DPZ', 'CAKE', 'JACK', 'PLAY', 'FIZZ', 'BLMN', 'DENN', 'DIN'},
+        # JWN 2025-05-21 私有化下市、FL 2025-09-08 併入 DKS，皆已移除
+        "零售": {"LULU", "COST", "PG", "KR", "NKE", "DG", "EL", "PVH", "TPR"},
+        # DENN 2026-01-16 由 TriArtisan 財團私有化下市，已移除
+        "食品": {"HIMS", "CELH","TSN", "MNST", "MCD", "SBUX", "KO", "PEP", "CMG", "YUM", 'DPZ', 'CAKE', 'JACK', 'PLAY', 'FIZZ', 'BLMN', 'DIN'},
         "半導體": {'NVDA', "TSM", "AMD", "QCOM", "MU", "INTC", "ASML", "SWKS", "QRVO", "AVGO", "AMAT", 'MRVL', 'ARM', 'CLS', 'DELL', "ORCL", "NXPI", "MTSI", "ENTG", "WOLF", "DIOD", "POWI"},
         "原油": {"CVX", "VLO", "COP", "XOM", "OXY",},
         "旅遊": {"BKNG", "EXPE", "MAR", "HLT", "ABNB", "H", "WYNN", "IHG", "LVS", "MGM"},
-        "工業": {'NEE', "DE", "HD", "APD", "CAT", "ETN", "HON", "WM", "GE", "MMM", "SUM", "X", 'ENPH', 'SEDG', "FSLR", "OKLO", "ETN", "BE", "VRT", "FLEX", "LYB", "VIAV"},
-        'SaaS': {'SAP', 'CFLT', 'ACN', 'BSX', 'SHOP', 'CRM', 'DDOG', 'NOW', 'INTU', 'SQ','SNOW', 'MDB', 'OKTA', 'ADSK', 'TTD', 'INOD', "FISV"},
+        # SUM 2025-02-10 併入 Quikrete、X 2025-06 由 Nippon Steel 收購下市，皆已移除
+        "工業": {'NEE', "DE", "HD", "APD", "CAT", "ETN", "HON", "WM", "GE", "MMM", 'ENPH', 'SEDG', "FSLR", "OKLO", "ETN", "BE", "VRT", "FLEX", "LYB", "VIAV"},
+        # 下市/改名（2026-08-03 核對）：CFLT 查無報價已移除；SQ 已改代號為 XYZ（Block, Inc.）
+        'SaaS': {'SAP', 'ACN', 'BSX', 'SHOP', 'CRM', 'DDOG', 'NOW', 'INTU', 'XYZ','SNOW', 'MDB', 'OKTA', 'ADSK', 'TTD', 'INOD', "FISV"},
+        # SPLK 查無報價已移除（併入 CSCO，已在本籃）
         '軟體':   {
-            "U", "RBLX",   "SNAP",   "PINS", "Z",   "TTD",    "APP",   "ETSY", "RDDT","DASH",      "MTCH",   "EXPE", "SPLK", "SE", "BKSY",
+            "U", "RBLX",   "SNAP",   "PINS", "Z",   "TTD",    "APP",   "ETSY", "RDDT","DASH",      "MTCH",   "EXPE", "SE", "BKSY",
              "OKTA",   "PATH","IBM","CSCO"
         },
 
-        "記憶體":{"MU","WDC", "PSTG", "SNDK", "STX", "BLZE", "NTAP"},
+        # PSTG 2026-04-17 隨 Pure Storage → Everpure 改名，代號改為 P
+        "記憶體":{"MU","WDC", "P", "SNDK", "STX", "BLZE", "NTAP"},
+        # CYBR 查無報價已移除（併入 PANW，已在本籃）
         "資安":{
-             "PANW", "CRWD", "CYBR","NET","ZS","DOCU","FTNT","S","DDOG"
+             "PANW", "CRWD","NET","ZS","DOCU","FTNT","S","DDOG"
         },
         "ai半導體": {
             "FN", "LITE", "CLS", "TTMI", "ANET", "ALAB"
@@ -152,10 +159,8 @@ PE_TICKER_TO_COMPANY = {
     "cost": "costco-wholesale",
     "pg": "procter-&-gamble",
     "kr": "kroger",
-    "jwn": "nordstrom",
     "nke": "nike",
     "dg": "dollar-general",
-    "fl": "foot-locker",
     "lvmhf": "lvmh",
     "el": "estée-lauder",
     "pvh": "pvh-corp.",
@@ -175,7 +180,6 @@ PE_TICKER_TO_COMPANY = {
     "play": "dave-&-busters",
     "fizz": "national-beverage",
     "blmn": "bloomin'-brands",
-    "denn": "denny's",
     "din": "dine-brands-global",
 
     # 半導體
@@ -229,15 +233,12 @@ PE_TICKER_TO_COMPANY = {
     "wm": "waste-management",
     "ge": "general-electric",
     "mmm": "3m-company",
-    "sum": "summit-materials",
-    "x": "u.s.-steel",
     "enph": "enphase-energy",
     "sedg": "solaredge",
     "fslr": "first-solar",
 
     # SaaS
     "sap": "sap-se",           # Ticker is sometimes just 'sap'
-    "cflt": "confluent",
     "acn": "accenture",
     "bsx": "boston-scientific",
     "shop": "shopify",
@@ -245,7 +246,7 @@ PE_TICKER_TO_COMPANY = {
     "ddog": "datadog",
     "now": "servicenow",
     "intu": "intuit",
-    "sq": "block-(square)",
+    "xyz": "block",            # 前 SQ，2025 改代號
     "wdays": "workday",
     "snow": "snowflake",
     "mdb": "mongodb",
@@ -287,21 +288,19 @@ PE_TICKER_TO_COMPANY = {
     "rblx": "roblox",
     "rddt": "reddit",
     "snap": "snap",
-    "splk": "splunk",
     "u": "unity-software",
     "z": "zillow-group",
 
     # 記憶體 / 儲存
     "blze": "backblaze",
     "ntap": "netapp",
-    "pstg": "pure-storage",
+    "p": "everpure",           # 前 PSTG（Pure Storage），2026-04 改名改代號
     "sndk": "sandisk",
     "stx": "seagate-technology",
     "wdc": "western-digital",
 
     # 資安
     "crwd": "crowdstrike",
-    "cybr": "cyberark-software",
     "docu": "docusign",
     "ftnt": "fortinet",
     "net": "cloudflare",

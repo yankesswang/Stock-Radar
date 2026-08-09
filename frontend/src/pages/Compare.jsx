@@ -9,6 +9,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Cell, ReferenceLine, LabelList,
 } from 'recharts';
+import { CHART_AXIS, CHART_REFERENCE } from '../components/chartTheme';
 
 // ── Column definitions per tab ──────────────────────────────────────────────
 
@@ -325,7 +326,7 @@ function MetricsChart({ columns, tickers }) {
                 dataKey="ticker"
                 tick={{ fill: 'var(--text-secondary)', fontSize: 11, fontWeight: 600 }}
                 tickLine={false}
-                axisLine={{ stroke: 'rgba(255,255,255,0.08)' }}
+                axisLine={{ stroke: CHART_AXIS }}
               />
               <YAxis
                 tick={{ fill: 'var(--text-muted)', fontSize: 10 }}
@@ -343,7 +344,7 @@ function MetricsChart({ columns, tickers }) {
                 cursor={{ fill: 'rgba(255,255,255,0.04)' }}
               />
               {hasNegative && (
-                <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" strokeDasharray="3 3" />
+                <ReferenceLine y={0} stroke={CHART_REFERENCE} strokeDasharray="3 3" />
               )}
               <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={52}>
                 <LabelList

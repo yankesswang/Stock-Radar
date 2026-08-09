@@ -1,280 +1,387 @@
 import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import SearchBar from '../components/SearchBar';
-import { TrendingUp, TrendingDown, BarChart3, Zap, ArrowRight, Activity, RefreshCw } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, RefreshCw, AlertTriangle, Globe2 } from 'lucide-react';
 import { Link } from 'wouter';
+import { useExtendedQuotes } from '../components/useExtendedQuotes';
+import ExtendedQuoteBadge from '../components/ExtendedQuote';
 
-export default function Home() {
-  const [market, setMarket] = useState(null);
-  const [marketLoading, setMarketLoading] = useState(true);
-  const [marketError, setMarketError] = useState('');
+// ── SVG Sparkline (inline, no ResizeObserver dependency) ─────────────────────
+function Sparkline({ data, positive, height = 56 }) {
+  if (!data || data.length < 2) return <div style={{ height }} />;
+  const W = 300, H = height;
+  const closes = data.map(d => d.close);
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+  const pad = 4;
 
-  const loadMarket = () => {
-    setMarketLoading(true);
-    setMarketError('');
-    axios.get('/api/market/overview')
-      .then(res => setMarket(res.data))
-      .catch(err => setMarketError(err?.response?.data?.detail || 'Failed to load market overview'))
-      .finally(() => setMarketLoading(false));
-  };
+  const pts = closes.map((c, i) => {
+    const x = (i / (closes.length - 1)) * W;
+    const y = H - pad - ((c - min) / range) * (H - pad * 2);
+    return [x, y];
+  });
 
-  useEffect(() => {
-    loadMarket();
-  }, []);
+  const linePts  = pts.map(([x, y]) => `${x},${y}`).join(' ');
+  const areaPts  = [
+    `0,${H}`,
+    ...pts.map(([x, y]) => `${x},${y}`),
+    `${W},${H}`,
+  ].join(' ');
+
+  const stroke = positive ? '#10b981' : '#ef4444';
+  const fill   = positive ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.12)';
 
   return (
-    <div className="space-y-6 lg:space-y-8 px-3 lg:px-6">
-      <section className="container relative overflow-hidden rounded-[32px] border border-[var(--glass-border)] bg-white px-5 py-10 sm:px-8 lg:px-14 lg:py-14 animate-fade-in-up">
-        <div className="pointer-events-none absolute inset-0">
-          <div className="absolute -right-24 top-[-120px] h-72 w-72 rounded-full bg-[rgba(0,82,255,0.08)] blur-3xl" />
-          <div className="absolute left-[-100px] bottom-[-130px] h-72 w-72 rounded-full bg-[rgba(87,139,250,0.08)] blur-3xl" />
-        </div>
-
-        <div className="relative grid items-start gap-8 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="space-y-6">
-            <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(0,82,255,0.2)] bg-[rgba(0,82,255,0.06)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-success)] animate-pulse" />
-              Tracking 150+ stocks with refreshed metrics
-            </div>
-
-            <h1 className="max-w-3xl text-[42px] font-semibold leading-[1.02] tracking-[-0.02em] text-[var(--text-primary)] sm:text-[56px] lg:text-[72px]">
-              Fair Value
-              <span className="text-gradient"> Decoded</span>
-            </h1>
-
-            <p className="max-w-xl text-base leading-relaxed text-[var(--text-secondary)] sm:text-lg">
-              Institutional-grade valuation analysis using historical PE medians, analyst growth forecasts, and fast side-by-side comparison.
-            </p>
-
-            <div className="max-w-2xl">
-              <SearchBar />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <Link href="/valuations" className="btn btn-primary rounded-[56px] text-sm px-6 py-3.5">
-                Browse All Valuations <ArrowRight size={16} />
-              </Link>
-              <Link href="/compare" className="btn btn-ghost rounded-[56px] text-sm px-6 py-3.5">
-                Compare Tickers
-              </Link>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
-            <KpiCard label="Coverage" value="150+" detail="Actively tracked tickers" />
-            <KpiCard label="Refresh" value="Daily" detail="Automatic valuation updates" />
-            <KpiCard label="Signals" value="Realtime" detail="Alert and watchlist routing" />
-          </div>
-        </div>
-      </section>
-
-      <MarketOverview
-        data={market}
-        loading={marketLoading}
-        error={marketError}
-        onRefresh={loadMarket}
+    <svg
+      width="100%"
+      height={H}
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      style={{ display: 'block' }}
+    >
+      <polygon points={areaPts} fill={fill} />
+      <polyline
+        points={linePts}
+        fill="none"
+        stroke={stroke}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
+    </svg>
+  );
+}
 
-      <section className="container grid gap-4 rounded-[28px] bg-[#0a0b0d] px-5 py-8 sm:px-8 lg:grid-cols-3 lg:gap-5 lg:px-10">
-        <FeatureCard
-          icon={<TrendingUp size={18} />}
-          iconBg="bg-[rgba(5,82,255,0.18)]"
-          iconColor="text-[#578bfa]"
-          title="Growth Forecasts"
-          desc="5-year EPS and revenue projections from analyst consensus."
-        />
-        <FeatureCard
-          icon={<BarChart3 size={18} />}
-          iconBg="bg-[rgba(87,139,250,0.18)]"
-          iconColor="text-[#89acff]"
-          title="Historical PE Bands"
-          desc="Contextual valuation ranges anchored on 5-year medians."
-        />
-        <FeatureCard
-          icon={<Zap size={18} />}
-          iconBg="bg-[rgba(217,119,6,0.2)]"
-          iconColor="text-[#fbbf24]"
-          title="Execution Speed"
-          desc="Data-dense views tuned for quick triage and decision loops."
-        />
-      </section>
+export default function Home() {
+  const [market, setMarket]       = useState(null);
+  const [marketLoading, setML]    = useState(true);
+  const [marketError, setME]      = useState('');
+  const [macro, setMacro]         = useState(null);
+  const [macroLoading, setMacroL] = useState(true);
+
+  const loadAll = (bust = false) => {
+    setML(true); setME('');
+    const mReq = bust
+      ? axios.delete('/api/market/cache').then(() => axios.get('/api/market/overview'))
+      : axios.get('/api/market/overview');
+    mReq.then(r => setMarket(r.data))
+        .catch(e => setME(e?.response?.data?.detail || 'Failed to load'))
+        .finally(() => setML(false));
+
+    setMacroL(true);
+    const macReq = bust
+      ? axios.delete('/api/macro/cache').then(() => axios.get('/api/macro/overview'))
+      : axios.get('/api/macro/overview');
+    macReq.then(r => setMacro(r.data))
+          .catch(() => setMacro(null))
+          .finally(() => setMacroL(false));
+  };
+
+  useEffect(() => { loadAll(); }, []);
+
+  return (
+    <div className="space-y-6 px-3 lg:px-6 py-6">
+      <MarketOverview
+        data={market} loading={marketLoading} error={marketError}
+        onRefresh={() => loadAll(true)}
+      />
+      <MacroSection data={macro} loading={macroLoading} />
     </div>
   );
 }
 
+// ── Market Overview ───────────────────────────────────────────────────────────
+
+const MARKET_GROUPS = [
+  { label: 'Equities',             symbols: ['SPY', 'QQQ', 'IWM', '^DJI'] },
+  { label: 'Risk / Vol · Crypto',  symbols: ['^VIX', 'BTC-USD', 'ETH-USD'] },
+  { label: 'Macro',                symbols: ['GLD', 'TLT', 'UUP'] },
+];
+
 function MarketOverview({ data, loading, error, onRefresh }) {
-  const items = data?.items || [];
+  const items   = data?.items || [];
   const summary = data?.summary || {};
-  const validItems = items.filter(item => item.ok && item.change_pct != null);
+  const tone    = summary.tone || 'mixed';
+
+  const itemMap = useMemo(() => {
+    const m = {};
+    items.forEach(i => { m[i.symbol] = i; });
+    return m;
+  }, [items]);
+
+  const extended = useExtendedQuotes(useMemo(() => items.map(i => i.symbol), [items]));
+
+  const validItems  = items.filter(i => i.ok && i.change_pct != null);
   const biggestMove = useMemo(() => {
     if (!validItems.length) return null;
     return [...validItems].sort((a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct))[0];
   }, [validItems]);
-  const tone = summary.tone || 'mixed';
-  const toneLabel = tone === 'risk_on' ? 'Risk-on' : tone === 'risk_off' ? 'Risk-off' : 'Mixed tape';
-  const toneClass = tone === 'risk_on'
-    ? 'text-[var(--accent-success)] bg-[rgba(5,150,105,0.08)] border-[rgba(5,150,105,0.22)]'
+
+  const toneLabel = tone === 'risk_on' ? 'Risk-on ↑' : tone === 'risk_off' ? 'Risk-off ↓' : 'Mixed';
+  const toneBg = tone === 'risk_on'
+    ? 'bg-[rgba(5,150,105,0.1)] text-[var(--accent-success)] border-[rgba(5,150,105,0.25)]'
     : tone === 'risk_off'
-      ? 'text-[var(--accent-danger)] bg-[rgba(220,38,38,0.08)] border-[rgba(220,38,38,0.2)]'
-      : 'text-[var(--accent-amber)] bg-[rgba(217,119,6,0.08)] border-[rgba(217,119,6,0.2)]';
+      ? 'bg-[rgba(220,38,38,0.1)] text-[var(--accent-danger)] border-[rgba(220,38,38,0.25)]'
+      : 'bg-[rgba(217,119,6,0.1)] text-[var(--accent-amber)] border-[rgba(217,119,6,0.25)]';
 
   return (
-    <section className="container rounded-[30px] border border-[var(--glass-border)] bg-[linear-gradient(135deg,#f8fafc_0%,#ffffff_42%,#eef4ff_100%)] p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-7 animate-fade-in-up">
-      <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-[rgba(0,82,255,0.18)] bg-[rgba(0,82,255,0.06)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-            <Activity size={13} />
-            Market pulse
-          </div>
-          <h2 className="text-2xl font-semibold tracking-[-0.02em] text-[var(--text-primary)] sm:text-3xl">
+    <section className="container rounded-[28px] border border-[var(--glass-border)] bg-[linear-gradient(135deg,#f8fafc_0%,#ffffff_60%,#eef4ff_100%)] p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-6">
+      <div className="mb-5 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2 rounded-full border border-[rgba(0,82,255,0.18)] bg-[rgba(0,82,255,0.06)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+            <Activity size={12} />
             大盤狀態
-          </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--text-secondary)]">
-            快速看 SPY、QQQ、IWM、DJI、VIX、BTC、ETH、黃金、長債與美元，判斷今天是風險偏好還是避險盤。
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${toneClass}`}>
-            {tone === 'risk_off' ? <TrendingDown size={14} /> : <TrendingUp size={14} />}
+          </div>
+          <span className={`rounded-full border px-3 py-1 text-xs font-bold ${toneBg}`}>
             {toneLabel}
           </span>
-          <button
-            type="button"
-            onClick={onRefresh}
-            className="btn btn-ghost px-3 py-1.5 text-xs"
-            disabled={loading}
-          >
-            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+          {biggestMove && (
+            <span className="hidden sm:inline text-xs text-[var(--text-muted)]">
+              最大波動：<span className="font-semibold text-[var(--text-primary)]">{biggestMove.label}</span>
+              <span className={`ml-1 font-bold ${biggestMove.change_pct >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+                {fmtPct(biggestMove.change_pct)}
+              </span>
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {data?.fetched_at && (
+            <span className="text-[10px] text-[var(--text-muted)]">{formatFetchedAt(data.fetched_at)}</span>
+          )}
+          <button onClick={onRefresh} disabled={loading} className="btn btn-ghost px-3 py-1.5 text-xs">
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             Refresh
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="mb-4 rounded-2xl border border-[rgba(220,38,38,0.18)] bg-[rgba(220,38,38,0.06)] px-4 py-3 text-sm text-[var(--accent-danger)]">
+        <div className="mb-4 rounded-xl border border-[rgba(220,38,38,0.18)] bg-[rgba(220,38,38,0.06)] px-4 py-2.5 text-sm text-[var(--accent-danger)]">
           {error}
         </div>
       )}
 
-      <div className="grid gap-3 lg:grid-cols-[1.05fr_2fr]">
-        <article className="rounded-3xl bg-[#0a0b0d] p-5 text-white">
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8b93a3]">Session read</p>
-          <p className="mt-3 text-4xl font-semibold tracking-[-0.04em]">
-            {loading ? 'Loading' : toneLabel}
-          </p>
-          <p className="mt-3 text-sm leading-relaxed text-[#b9bec8]">
-            {biggestMove
-              ? `最大波動是 ${biggestMove.label}，今日 ${fmtPct(biggestMove.change_pct)}。`
-              : '等待市場資料回傳。'}
-          </p>
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <MiniStat label="上漲" value={summary.positive_count ?? 0} />
-            <MiniStat label="下跌" value={summary.negative_count ?? 0} />
-          </div>
-          {data?.fetched_at && (
-            <p className="mt-4 text-xs text-[#8b93a3]">Updated {formatFetchedAt(data.fetched_at)}</p>
-          )}
-        </article>
-
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          {loading && !items.length
-            ? Array.from({ length: 10 }).map((_, idx) => <MarketSkeleton key={idx} />)
-            : items.map(item => <MarketCard key={item.symbol} item={item} />)}
-        </div>
+      <div className="space-y-4">
+        {MARKET_GROUPS.map(group => {
+          const groupItems = group.symbols.map(s => itemMap[s]).filter(Boolean);
+          if (!groupItems.length && !loading) return null;
+          const cols = group.symbols.length >= 4
+            ? 'grid-cols-2 sm:grid-cols-4'
+            : 'grid-cols-2 sm:grid-cols-3';
+          return (
+            <div key={group.label}>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)] mb-2">
+                {group.label}
+              </p>
+              <div className={`grid gap-2.5 ${cols}`}>
+                {loading && !items.length
+                  ? group.symbols.map(s => <MarketSkeleton key={s} />)
+                  : groupItems.map(item => (
+                      <MarketCard
+                        key={item.symbol}
+                        item={item}
+                        sparkData={item.sparkline}
+                        extended={extended[item.symbol]}
+                      />
+                    ))
+                }
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-function MarketCard({ item }) {
-  const positive = (item.change_pct || 0) >= 0;
-  const unavailable = !item.ok;
-  const href = `/market/${encodeURIComponent(item.symbol)}`;
+function MarketCard({ item, sparkData, extended }) {
+  const pos      = (item.change_pct || 0) >= 0;
+  const isVix    = item.symbol === '^VIX';
+  const colorPos = isVix ? !pos : pos;
+
   return (
-    <Link href={href} className="block rounded-2xl border border-[var(--glass-border)] bg-white p-4 transition duration-200 hover:-translate-y-0.5 hover:border-[var(--glass-border-hover)] hover:shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
-      <div className="flex items-start justify-between gap-3">
+    <Link
+      href={`/market/${encodeURIComponent(item.symbol)}`}
+      className="block rounded-2xl border border-[var(--glass-border)] bg-white px-4 pt-3.5 pb-2 transition-all duration-200 hover:-translate-y-0.5 hover:border-[rgba(0,82,255,0.2)] hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)]"
+    >
+      <div className="flex items-start justify-between gap-1 mb-2.5">
         <div>
-          <p className="text-sm font-semibold text-[var(--text-primary)]">{item.label}</p>
-          <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">{item.symbol}</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)] leading-tight">{item.label}</p>
+          <p className="font-mono text-[10px] text-[var(--text-muted)] mt-0.5">{item.symbol}</p>
         </div>
-        <span className="rounded-full bg-[var(--bg-secondary)] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+        <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md
+          ${item.asset_type === 'Volatility' ? 'bg-[rgba(217,119,6,0.1)] text-[var(--accent-amber)]'
+          : item.asset_type === 'Crypto'     ? 'bg-[rgba(139,92,246,0.1)] text-[var(--accent-purple)]'
+          : item.asset_type === 'Rates'      ? 'bg-[rgba(0,212,255,0.08)] text-[var(--accent-cyan)]'
+          : item.asset_type === 'Commodity'  ? 'bg-[rgba(251,191,36,0.1)] text-[var(--accent-amber)]'
+          :                                    'bg-[rgba(0,82,255,0.07)] text-[var(--text-muted)]'}`}>
           {item.asset_type}
         </span>
       </div>
 
-      {unavailable ? (
-        <div className="mt-5">
-          <p className="text-sm font-semibold text-[var(--text-muted)]">No data</p>
-          <p className="mt-1 line-clamp-2 text-xs text-[var(--text-muted)]">{item.error || 'Unavailable'}</p>
-        </div>
+      {!item.ok ? (
+        <p className="text-sm text-[var(--text-muted)] pb-2">—</p>
       ) : (
         <>
-          <p className="mt-5 text-2xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
+          <p className="text-2xl font-bold font-mono tabular-nums tracking-tight text-[var(--text-primary)]">
             {formatPrice(item)}
           </p>
-          <div className={`mt-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${
-            positive
-              ? 'bg-[rgba(5,150,105,0.08)] text-[var(--accent-success)]'
-              : 'bg-[rgba(220,38,38,0.08)] text-[var(--accent-danger)]'
-          }`}>
-            {positive ? <TrendingUp size={13} /> : <TrendingDown size={13} />}
-            {fmtPct(item.change_pct)}
+          <div className="mt-1 flex items-center gap-2 flex-wrap">
+            <span className={`inline-flex items-center gap-0.5 text-sm font-bold
+              ${colorPos ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+              {pos ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+              {fmtPct(item.change_pct)}
+            </span>
+            {item.change != null && (
+              <span className={`text-xs font-mono opacity-60 ${colorPos ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+                {item.change >= 0 ? '+' : ''}{Number(item.change).toFixed(2)}
+              </span>
+            )}
+            {item.ytd_return_pct != null && (
+              <span className="ml-auto text-[10px] text-[var(--text-muted)]">
+                YTD <span className={`font-semibold ${item.ytd_return_pct >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+                  {fmtPct(item.ytd_return_pct)}
+                </span>
+              </span>
+            )}
           </div>
-          <p className="mt-3 text-xs text-[var(--text-muted)]">
-            Prev {item.previous_close != null ? formatPrice({ ...item, price: item.previous_close }) : 'N/A'}
-          </p>
-          <div className="mt-4 grid grid-cols-3 gap-1.5">
-            <MarketMetric label="YTD" value={item.ytd_return_pct} />
-            <MarketMetric label="1M" value={item.one_month_return_pct} />
-            <MarketMetric label="MDD" value={item.max_drawdown_pct} />
+          {extended && (
+            <div className="mt-1.5">
+              <ExtendedQuoteBadge
+                quote={extended}
+                invert={isVix}
+                upColor="#059669"
+                downColor="#dc2626"
+              />
+            </div>
+          )}
+          <div className="-mx-2 mt-2 overflow-hidden rounded-b-xl">
+            <Sparkline data={sparkData} positive={colorPos} height={56} />
           </div>
-          <p className="mt-3 text-xs font-semibold text-[var(--accent-cyan)]">View chart →</p>
         </>
       )}
     </Link>
   );
 }
 
-function MarketMetric({ label, value }) {
-  const negative = Number(value) < 0;
-  const positive = Number(value) > 0;
-  return (
-    <div className="rounded-xl bg-[var(--bg-secondary)] px-2 py-1.5">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</p>
-      <p className={`mt-0.5 text-xs font-semibold ${
-        negative ? 'text-[var(--accent-danger)]' : positive ? 'text-[var(--accent-success)]' : 'text-[var(--text-secondary)]'
-      }`}>
-        {fmtPct(value)}
-      </p>
-    </div>
-  );
-}
-
-function MiniStat({ label, value }) {
-  return (
-    <div className="rounded-2xl border border-[rgba(255,255,255,0.1)] bg-[rgba(255,255,255,0.05)] p-3">
-      <p className="text-xs text-[#8b93a3]">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">{value}</p>
-    </div>
-  );
-}
-
 function MarketSkeleton() {
   return (
-    <article className="h-[156px] animate-pulse rounded-2xl border border-[var(--glass-border)] bg-white p-4">
-      <div className="h-4 w-20 rounded bg-[var(--bg-tertiary)]" />
-      <div className="mt-2 h-3 w-12 rounded bg-[var(--bg-tertiary)]" />
-      <div className="mt-8 h-7 w-24 rounded bg-[var(--bg-tertiary)]" />
-      <div className="mt-3 h-6 w-16 rounded-full bg-[var(--bg-tertiary)]" />
-    </article>
+    <div className="h-[116px] animate-pulse rounded-2xl border border-[var(--glass-border)] bg-white p-4">
+      <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
+      <div className="mt-3 h-7 w-24 rounded bg-[var(--bg-tertiary)]" />
+      <div className="mt-2 h-4 w-14 rounded-full bg-[var(--bg-tertiary)]" />
+    </div>
   );
 }
+
+// ── Macro Section ─────────────────────────────────────────────────────────────
+
+function MacroSection({ data, loading }) {
+  const items  = data?.items || [];
+  const yc     = data?.yield_curve;
+  const byType = (type) => items.filter(i => i.type === type && i.ok);
+
+  return (
+    <section className="container space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Globe2 size={14} className="text-[var(--text-muted)]" />
+          <span className="text-sm font-semibold">Macro</span>
+        </div>
+        {yc && (
+          <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold
+            ${yc.inverted_10y_3m
+              ? 'text-[var(--accent-danger)] bg-[rgba(248,113,113,0.08)] border-[rgba(248,113,113,0.25)]'
+              : 'text-[var(--accent-success)] bg-[rgba(52,211,153,0.06)] border-[rgba(52,211,153,0.2)]'}`}
+          >
+            {yc.inverted_10y_3m ? <AlertTriangle size={11} /> : <TrendingUp size={11} />}
+            Yield curve {yc.inverted_10y_3m ? 'inverted' : 'normal'}
+            &nbsp;·&nbsp;10Y–3M&nbsp;
+            <span className="font-mono">{yc.spread_10y_3m >= 0 ? '+' : ''}{yc.spread_10y_3m}%</span>
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div key={i} className="h-[88px] animate-pulse rounded-xl border border-[var(--glass-border)] bg-[rgba(255,255,255,0.04)]" />
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {byType('yield').length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)] mb-2">
+                Treasury Yields
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                {byType('yield').map(item => (
+                  <MacroCard key={item.symbol} item={item} sparkData={item.sparkline} />
+                ))}
+              </div>
+            </div>
+          )}
+          {([...byType('commodity'), ...byType('currency'), ...byType('volatility')].length > 0) && (
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-[var(--text-muted)] mb-2">
+                Commodities · FX · Vol
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                {[...byType('commodity'), ...byType('currency'), ...byType('volatility')].map(item => (
+                  <MacroCard key={item.symbol} item={item} sparkData={item.sparkline} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MacroCard({ item, sparkData }) {
+  const pos     = (item.change_pct || 0) >= 0;
+  const isYield = item.type === 'yield';
+  const isVix   = item.symbol === '^VIX';
+  const showGreen = isVix ? !pos : pos;
+
+  const priceStr = isYield
+    ? `${Number(item.price).toFixed(3)}%`
+    : item.unit?.startsWith('$')
+      ? `$${Number(item.price).toLocaleString(undefined, {
+          minimumFractionDigits: item.price > 100 ? 0 : 2,
+          maximumFractionDigits: item.price > 100 ? 0 : 2,
+        })}`
+      : Number(item.price).toFixed(2);
+
+  return (
+    <div className="glass rounded-xl px-3.5 pt-3 pb-2">
+      <p className="text-[10px] font-medium text-[var(--text-muted)] truncate">{item.label}</p>
+      <p className="mt-1.5 text-lg font-bold font-mono tabular-nums leading-none">{priceStr}</p>
+      <div className="mt-1 flex items-center justify-between">
+        <span className={`text-xs font-semibold ${showGreen ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+          {pos ? '▲' : '▼'} {Math.abs(item.change_pct).toFixed(2)}%
+        </span>
+        {item.change_1m_pct != null && (
+          <span className="text-[10px] text-[var(--text-muted)]">
+            1M {item.change_1m_pct >= 0 ? '+' : ''}{item.change_1m_pct.toFixed(1)}%
+          </span>
+        )}
+      </div>
+      <div className="-mx-2 mt-2 overflow-hidden rounded-b-xl">
+        <Sparkline data={sparkData} positive={showGreen} height={52} />
+      </div>
+    </div>
+  );
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
 function fmtPct(value) {
   if (value == null || Number.isNaN(Number(value))) return 'N/A';
-  const num = Number(value);
-  return `${num > 0 ? '+' : ''}${num.toFixed(2)}%`;
+  const n = Number(value);
+  return `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
 function formatPrice(item) {
@@ -288,34 +395,7 @@ function formatPrice(item) {
 }
 
 function formatFetchedAt(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function FeatureCard({ icon, iconBg, iconColor, title, desc }) {
-  return (
-    <article className="rounded-2xl border border-[rgba(255,255,255,0.12)] bg-[rgba(255,255,255,0.03)] p-5 transition-colors duration-200 hover:bg-[rgba(255,255,255,0.06)]">
-      <div className={`mb-4 flex h-10 w-10 items-center justify-center rounded-xl ${iconBg} ${iconColor}`}>
-        {icon}
-      </div>
-      <h3 className="mb-2 text-[15px] font-semibold text-white">{title}</h3>
-      <p className="text-sm leading-relaxed text-[#b9bec8]">{desc}</p>
-    </article>
-  );
-}
-
-function KpiCard({ label, value, detail }) {
-  return (
-    <article className="rounded-2xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] p-4">
-      <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</p>
-      <p className="mt-1 text-3xl font-semibold leading-none tracking-tight text-[var(--text-primary)]">{value}</p>
-      <p className="mt-2 text-xs text-[var(--text-secondary)]">{detail}</p>
-    </article>
-  );
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }

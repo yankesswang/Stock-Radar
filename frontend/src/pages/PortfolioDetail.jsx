@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useRoute } from 'wouter';
 import axios from 'axios';
 import {
@@ -48,7 +48,8 @@ export default function PortfolioDetail() {
   const [loading, setLoading] = useState(true);
   const [adding,  setAdding]  = useState(false);
   const [editId,  setEditId]  = useState(null);
-  const [selectedSector, setSelectedSector] = useState(null);
+  const [selectedSector,  setSelectedSector]  = useState(null);
+  const [scrapingTickers, setScrapingTickers] = useState(new Set());
 
   // add-holding form
   const [form, setForm] = useState({ ticker: '', shares: '', avg_cost: '', notes: '' });
@@ -57,12 +58,50 @@ export default function PortfolioDetail() {
   // edit-holding form
   const [editForm, setEditForm] = useState({ shares: '', avg_cost: '', notes: '' });
 
+  const loadRef             = useRef(null);
+  const scrapeAttemptedRef  = useRef(new Set());
+
+  const _scrapeMissing = (holdings) => {
+    const SKIP = new Set(['CASH', '']);
+    const toScrape = (holdings || [])
+      .filter(h => !SKIP.has((h.ticker || '').toUpperCase())
+                && h.valuation_status == null
+                && !scrapeAttemptedRef.current.has(h.ticker))
+      .map(h => h.ticker);
+
+    if (toScrape.length === 0) return;
+    toScrape.forEach(t => scrapeAttemptedRef.current.add(t));
+    setScrapingTickers(prev => new Set([...prev, ...toScrape]));
+
+    let done = 0;
+    const onDone = (ticker) => {
+      setScrapingTickers(prev => { const n = new Set(prev); n.delete(ticker); return n; });
+      done++;
+      if (done >= toScrape.length && loadRef.current) setTimeout(loadRef.current, 500);
+    };
+
+    for (const ticker of toScrape) {
+      axios.post('/api/scrape', { ticker, group: '其他' })
+        .then(({ data: job }) => {
+          const poll = setInterval(async () => {
+            try {
+              const { data: s } = await axios.get(`/api/scrape/${job.job_id}`);
+              if (s.status === 'completed' || s.status === 'failed') { clearInterval(poll); onDone(ticker); }
+            } catch { clearInterval(poll); onDone(ticker); }
+          }, 3000);
+        })
+        .catch(() => onDone(ticker));
+    }
+  };
+
   const load = useCallback(() => {
     setLoading(true);
     axios.get(`/api/portfolio/${pid}`)
-      .then(r => setData(r.data))
+      .then(r => { setData(r.data); _scrapeMissing(r.data?.holdings); })
       .finally(() => setLoading(false));
   }, [pid]);
+
+  loadRef.current = load;
 
   useEffect(() => { if (pid) load(); }, [pid, load]);
 
@@ -436,10 +475,14 @@ export default function PortfolioDetail() {
                               </span>
                             )}
                           </div>
+                        ) : scrapingTickers.has(h.ticker) ? (
+                          <RefreshCw size={10} className="animate-spin text-blue-400" />
                         ) : <span className="text-[var(--text-muted)]">—</span>}
                       </td>
                       <td className="px-4 py-3">
-                        <StatusBadge status={h.valuation_status} />
+                        {scrapingTickers.has(h.ticker) && h.valuation_status == null
+                          ? <RefreshCw size={10} className="animate-spin text-blue-400" />
+                          : <StatusBadge status={h.valuation_status} />}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

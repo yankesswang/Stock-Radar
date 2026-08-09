@@ -1,38 +1,140 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRoute } from 'wouter';
 import axios from 'axios';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid } from 'recharts';
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity, RefreshCw, CandlestickChart, Users, Newspaper, Sparkles, FileText } from 'lucide-react';
+import AnalystRevisionPanel from '../components/AnalystRevisionPanel';
 import PriceChartPanel from '../components/PriceChartPanel';
 import KeyMetricsSummary from '../components/KeyMetricsSummary';
+import StockNewsPanel from '../components/StockNewsPanel';
+import GroupSelect from '../components/GroupSelect';
 import { Link } from 'wouter';
+
+// ── Auto-scrape panel shown when no valuation data exists yet ─────────────────
+function ScrapePanel({ ticker, onDone }) {
+    const [jobId, setJobId]     = useState(null);
+    const [steps, setSteps]     = useState([]);
+    const [status, setStatus]   = useState('idle'); // idle | running | completed | failed
+    const [error, setError]     = useState(null);
+    const pollRef               = useRef(null);
+
+    const startScrape = async () => {
+        setStatus('running');
+        setSteps([]);
+        setError(null);
+        try {
+            const { data } = await axios.post('/api/scrape', { ticker, group: '其他' });
+            setJobId(data.job_id);
+        } catch (e) {
+            setStatus('failed');
+            setError(e?.response?.data?.detail ?? e.message);
+        }
+    };
+
+    // Poll job until done
+    useEffect(() => {
+        if (!jobId) return;
+        pollRef.current = setInterval(async () => {
+            try {
+                const { data } = await axios.get(`/api/scrape/${jobId}`);
+                setSteps(data.steps ?? []);
+                if (data.status === 'completed') {
+                    clearInterval(pollRef.current);
+                    setStatus('completed');
+                    setTimeout(onDone, 800);
+                } else if (data.status === 'failed') {
+                    clearInterval(pollRef.current);
+                    setStatus('failed');
+                    setError(data.error);
+                }
+            } catch { clearInterval(pollRef.current); }
+        }, 2000);
+        return () => clearInterval(pollRef.current);
+    }, [jobId]);
+
+    // Auto-start on mount
+    useEffect(() => { startScrape(); }, []);
+
+    return (
+        <div className="container py-16 max-w-lg mx-auto">
+            <div className="rounded-2xl border p-6 space-y-4"
+                style={{ background: 'var(--card-bg)', borderColor: 'var(--border)' }}>
+                <div className="flex items-center gap-3">
+                    <RefreshCw size={16} className={status === 'running' ? 'animate-spin text-blue-400' : status === 'completed' ? 'text-green-400' : 'text-red-400'} />
+                    <div>
+                        <p className="text-sm font-semibold text-[var(--text-primary)]">
+                            {status === 'running' ? `Scraping ${ticker}…` : status === 'completed' ? 'Done — loading data' : `Scrape failed`}
+                        </p>
+                        <p className="text-xs text-[var(--text-muted)]">
+                            {status === 'running' ? 'Fetching ratios, statistics, PE, forecasts…' : status === 'failed' ? error : ''}
+                        </p>
+                    </div>
+                </div>
+
+                {steps.length > 0 && (
+                    <div className="space-y-1 max-h-48 overflow-y-auto">
+                        {steps.map((s, i) => (
+                            <p key={i} className="text-[11px] text-[var(--text-secondary)] font-mono leading-relaxed">
+                                {s}
+                            </p>
+                        ))}
+                    </div>
+                )}
+
+                {status === 'failed' && (
+                    <button
+                        onClick={startScrape}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 border border-white/10 text-[var(--text-secondary)] transition-colors"
+                    >
+                        Retry
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+}
 
 export default function StockDetail() {
     const [match, params] = useRoute("/stock/:ticker");
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [livePrice, setLivePrice] = useState(null);
+    const [groups, setGroups] = useState([]);
+    const [changingGroup, setChangingGroup] = useState(false);
 
     const ticker = params?.ticker;
 
-    useEffect(() => {
-        if (ticker) {
-            axios.get(`/api/valuations/${ticker}/history`)
-                .then(res => {
-                    setData(res.data);
-                    setLoading(false);
-                })
-                .catch(err => {
-                    console.error(err);
-                    setLoading(false);
-                });
+    const loadData = () => {
+        if (!ticker) return;
+        setLoading(true);
+        axios.get(`/api/valuations/${ticker}/history`)
+            .then(res => { setData(res.data); setLoading(false); })
+            .catch(err => { console.error(err); setLoading(false); });
 
-            // Fetch live price
-            axios.get(`/api/stocks/${ticker}/price`)
-                .then(res => setLivePrice(res.data))
-                .catch(err => console.error('Failed to fetch live price:', err));
-        }
-    }, [ticker]);
+        axios.get(`/api/stocks/${ticker}/price`)
+            .then(res => setLivePrice(res.data))
+            .catch(() => {});
+    };
+
+    // Reassign this ticker's sector/group, then reload so badges/valuations refresh.
+    const changeGroup = (newGroup) => {
+        const cur = data[data.length - 1]?.industry;
+        if (!ticker || !newGroup || newGroup === cur) return;
+        setChangingGroup(true);
+        axios.patch(`/api/stocks/${ticker}/industry`, { industry: newGroup })
+            .then(() => {
+                setGroups(prev => prev.includes(newGroup) ? prev : [...prev, newGroup].sort());
+                loadData();
+            })
+            .catch(err => console.error(err))
+            .finally(() => setChangingGroup(false));
+    };
+
+    useEffect(() => { loadData(); }, [ticker]);
+
+    // Available sector/group names for the inline "change group" dropdown.
+    useEffect(() => {
+        axios.get('/api/scrape').then(r => setGroups(r.data.groups || [])).catch(() => {});
+    }, []);
 
     if (loading) {
         return (
@@ -43,11 +145,7 @@ export default function StockDetail() {
     }
 
     if (!data.length) {
-        return (
-            <div className="container py-20 text-center">
-                <p className="text-[var(--text-muted)]">No data found for <span className="font-mono font-bold text-[var(--text-primary)]">{ticker}</span></p>
-            </div>
-        );
+        return <ScrapePanel ticker={ticker} onDone={loadData} />;
     }
 
     const latest = data[data.length - 1];
@@ -76,47 +174,44 @@ export default function StockDetail() {
                     </div>
                     <p className="text-lg text-[var(--text-secondary)] mb-2">{latest.company_name}</p>
                     <div className="flex items-center gap-2 flex-wrap">
-                        <span className="badge badge-neutral">{latest.industry}</span>
+                        <GroupSelect
+                            value={latest.industry}
+                            options={groups}
+                            loading={changingGroup}
+                            onChange={changeGroup}
+                            size="badge"
+                            align="left"
+                            ariaLabel={`Change sector for ${latest.ticker}`}
+                        />
                         {latest.market_cap_display && (
                             <span className="badge badge-neutral">{latest.market_cap_display} Cap</span>
                         )}
-                        <Link
-                            href={`/stock/${ticker}/metrics`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-cyan)] bg-[rgba(0,212,255,0.08)] border border-[rgba(0,212,255,0.15)] hover:bg-[rgba(0,212,255,0.14)] transition-colors"
-                        >
-                            <BarChart3 size={13} /> Metrics Breakdown
-                        </Link>
-                        <Link
-                            href={`/stock/${ticker}/statistics`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-purple)] bg-[rgba(139,92,246,0.08)] border border-[rgba(139,92,246,0.15)] hover:bg-[rgba(139,92,246,0.14)] transition-colors"
-                        >
-                            <TableProperties size={13} /> Key Statistics
-                        </Link>
-                        <Link
-                            href={`/stock/${ticker}/ratios`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-amber)] bg-[rgba(251,191,36,0.08)] border border-[rgba(251,191,36,0.15)] hover:bg-[rgba(251,191,36,0.14)] transition-colors"
-                        >
-                            <Ratio size={13} /> Financial Ratios
-                        </Link>
-                        <Link
-                            href={`/stock/${ticker}/forecast`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-success)] bg-[rgba(52,211,153,0.08)] border border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.14)] transition-colors"
-                        >
-                            <Target size={13} /> Analyst Forecast
-                        </Link>
-                        <Link
-                            href={`/stock/${ticker}/dcf`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-danger)] bg-[rgba(248,113,113,0.08)] border border-[rgba(248,113,113,0.15)] hover:bg-[rgba(248,113,113,0.14)] transition-colors"
-                        >
-                            <DollarSign size={13} /> DCF Valuation
-                        </Link>
-                        <Link
-                            href={`/stock/${ticker}/pe`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-[13px] font-semibold text-[var(--accent-amber)] bg-[rgba(251,191,36,0.08)] border border-[rgba(251,191,36,0.2)] hover:bg-[rgba(251,191,36,0.14)] transition-colors"
-                        >
-                            <Activity size={13} /> PE History
-                        </Link>
                     </div>
+                    <nav className="mt-3 flex items-center gap-1.5 flex-wrap">
+                        <Link
+                            href={`/stock/${ticker}/ai`}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-semibold text-[#0052ff] bg-[rgba(0,82,255,0.08)] border border-[rgba(0,82,255,0.25)] hover:bg-[rgba(0,82,255,0.14)] transition-colors"
+                        >
+                            <Sparkles size={13} /> AI 分析
+                        </Link>
+                        {[
+                            { href: `/stock/${ticker}/metrics`,    icon: BarChart3,        label: 'Metrics' },
+                            { href: `/stock/${ticker}/statistics`, icon: TableProperties,  label: 'Statistics' },
+                            { href: `/stock/${ticker}/ratios`,     icon: Ratio,            label: 'Ratios' },
+                            { href: `/stock/${ticker}/forecast`,   icon: Target,           label: 'Forecast' },
+                            { href: `/stock/${ticker}/dcf`,        icon: DollarSign,       label: 'DCF' },
+                            { href: `/stock/${ticker}/pe`,         icon: Activity,         label: 'PE History' },
+                            { href: `/stock/${ticker}/options`,    icon: CandlestickChart, label: 'Options / IV' },
+                            { href: `/stock/${ticker}/peers`,      icon: Users,            label: 'Peers' },
+                            { href: `/stock/${ticker}/earnings-notes`, icon: FileText,     label: '財報筆記' },
+                            { href: '#news',                       icon: Newspaper,        label: 'News', anchor: true },
+                        ].map(({ href, icon: Icon, label, anchor }) => {
+                            const cls = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium text-[var(--text-secondary)] bg-[var(--bg-secondary)] border border-[var(--glass-border)] hover:text-[#0052ff] hover:border-[rgba(0,82,255,0.35)] hover:bg-[rgba(0,82,255,0.06)] transition-colors';
+                            return anchor
+                                ? <a key={label} href={href} className={cls}><Icon size={13} /> {label}</a>
+                                : <Link key={label} href={href} className={cls}><Icon size={13} /> {label}</Link>;
+                        })}
+                    </nav>
                 </div>
                 <div className="text-left md:text-right">
                     <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">
@@ -186,25 +281,35 @@ export default function StockDetail() {
                             <div className="p-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--glass-border)]">
                                 <div className="flex justify-between items-start mb-3">
                                     <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider">vs Next Year Fair Value</div>
-                                    <div className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                                        isNextYearUndervalued
-                                            ? 'bg-[rgba(52,211,153,0.15)] text-[var(--accent-success)]'
-                                            : 'bg-[rgba(248,113,113,0.15)] text-[var(--accent-danger)]'
-                                    }`}>
-                                        {isNextYearUndervalued ? 'Undervalued' : 'Overvalued'}
+                                    {nextYearDiff != null && (
+                                        <div className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                                            isNextYearUndervalued
+                                                ? 'bg-[rgba(52,211,153,0.15)] text-[var(--accent-success)]'
+                                                : 'bg-[rgba(248,113,113,0.15)] text-[var(--accent-danger)]'
+                                        }`}>
+                                            {isNextYearUndervalued ? 'Undervalued' : 'Overvalued'}
+                                        </div>
+                                    )}
+                                </div>
+                                {nextYearDiff == null ? (
+                                    <div className="text-sm text-[var(--text-muted)] py-2">
+                                        無下一年度 EPS 預估資料
                                     </div>
-                                </div>
-                                <div className="flex items-baseline gap-2">
-                                    <span className="text-2xl font-bold font-mono">${nextYearFairValue}</span>
-                                    <span className={`text-sm font-semibold ${
-                                        isNextYearUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                                    }`}>
-                                        {isNextYearUndervalued ? '' : '+'}{nextYearDiff}%
-                                    </span>
-                                </div>
-                                <div className="text-xs text-[var(--text-muted)] mt-1">
-                                    Based on Next Year EPS: ${latest.next_year_eps}
-                                </div>
+                                ) : (
+                                    <>
+                                        <div className="flex items-baseline gap-2">
+                                            <span className="text-2xl font-bold font-mono">${nextYearFairValue}</span>
+                                            <span className={`text-sm font-semibold ${
+                                                isNextYearUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
+                                            }`}>
+                                                {isNextYearUndervalued ? '' : '+'}{nextYearDiff}%
+                                            </span>
+                                        </div>
+                                        <div className="text-xs text-[var(--text-muted)] mt-1">
+                                            Based on Next Year EPS: ${latest.next_year_eps}
+                                        </div>
+                                    </>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -235,83 +340,15 @@ export default function StockDetail() {
                 />
             </div>
 
-            {/* Valuation History Chart */}
-            <div className="card !p-6">
-                <h3 className="text-base font-semibold mb-6 text-[var(--text-secondary)]">Valuation History</h3>
-                <div className="h-[380px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                            <XAxis
-                                dataKey="snapshot_date"
-                                stroke="var(--text-muted)"
-                                fontSize={11}
-                                tickFormatter={(str) => str.slice(5)}
-                                tick={{ fill: 'var(--text-muted)' }}
-                                axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
-                                tickLine={false}
-                            />
-                            <YAxis
-                                stroke="var(--text-muted)"
-                                fontSize={11}
-                                domain={['auto', 'auto']}
-                                tick={{ fill: 'var(--text-muted)' }}
-                                axisLine={{ stroke: 'rgba(255,255,255,0.06)' }}
-                                tickLine={false}
-                                tickFormatter={(v) => `$${v}`}
-                            />
-                            <Tooltip
-                                contentStyle={{
-                                    backgroundColor: 'var(--bg-secondary)',
-                                    border: '1px solid var(--glass-border)',
-                                    borderRadius: '10px',
-                                    fontSize: '12px',
-                                    boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-                                }}
-                                itemStyle={{ color: '#fff', fontSize: '12px' }}
-                                labelStyle={{ color: 'var(--text-muted)', marginBottom: '4px' }}
-                            />
-                            <Legend
-                                wrapperStyle={{ fontSize: '12px', paddingTop: '16px' }}
-                                iconType="circle"
-                                iconSize={8}
-                            />
-                            <Line
-                                type="monotone"
-                                dataKey="current_price"
-                                stroke="var(--text-primary)"
-                                strokeWidth={2}
-                                name="Price"
-                                dot={false}
-                                activeDot={{ r: 4, fill: 'var(--text-primary)', stroke: 'var(--bg-primary)', strokeWidth: 2 }}
-                            />
-                            <Line
-                                type="monotone"
-                                dataKey="pe_median_price"
-                                stroke="var(--accent-success)"
-                                strokeWidth={2}
-                                name="Fair Value (PE)"
-                                dot={false}
-                                strokeDasharray="5 5"
-                                activeDot={{ r: 4, fill: 'var(--accent-success)', stroke: 'var(--bg-primary)', strokeWidth: 2 }}
-                            />
-                            <Line
-                                type="monotone"
-                                dataKey="current_year_fair_price"
-                                stroke="var(--accent-purple)"
-                                strokeWidth={2}
-                                name="Fair Value (Growth)"
-                                dot={false}
-                                strokeDasharray="5 5"
-                                activeDot={{ r: 4, fill: 'var(--accent-purple)', stroke: 'var(--bg-primary)', strokeWidth: 2 }}
-                            />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-            </div>
+            {/* Analyst revisions — replaces the old price-vs-fair-value history chart,
+                which only restated what the valuation cards above already show. */}
+            <AnalystRevisionPanel key={ticker} ticker={ticker} />
 
             {/* Price Chart */}
             <PriceChartPanel ticker={ticker} />
+
+            {/* Latest News (same source as Stock Digest — Google News RSS) */}
+            <StockNewsPanel ticker={ticker} company={latest.company_name} />
         </div>
     );
 }
