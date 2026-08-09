@@ -3,12 +3,15 @@ import { useRoute, Link } from 'wouter';
 import axios from 'axios';
 import { ArrowLeft, Activity, TrendingDown, TrendingUp } from 'lucide-react';
 import PriceChartPanel from '../components/PriceChartPanel';
+import { useExtendedQuotes } from '../components/useExtendedQuotes';
+import ExtendedQuoteBadge from '../components/ExtendedQuote';
 
 export default function MarketDetail() {
   const [, params] = useRoute('/market/:symbol');
   const symbol = decodeURIComponent(params?.symbol || '').toUpperCase();
   const [item, setItem] = useState(null);
   const [loading, setLoading] = useState(true);
+  const extended = useExtendedQuotes(symbol ? [symbol] : []);
 
   useEffect(() => {
     if (!symbol) return;
@@ -61,6 +64,11 @@ export default function MarketDetail() {
                     {positive ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
                     {fmtPct(item.change_pct)}
                   </p>
+                  {extended[symbol] && (
+                    <div className="mt-2">
+                      <ExtendedQuoteBadge quote={extended[symbol]} showPrice invert={symbol === '^VIX'} />
+                    </div>
+                  )}
                   {item.last_date && <p className="mt-2 text-xs text-[#8b93a3]">Last bar {item.last_date}</p>}
                 </>
               ) : (

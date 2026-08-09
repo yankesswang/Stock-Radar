@@ -4,7 +4,8 @@ import { Link } from 'wouter';
 import {
     ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ChevronsUpDown,
     SlidersHorizontal, X, ChevronDown, Check, Search, RotateCcw, CalendarDays,
-    RefreshCw, Clock,
+    RefreshCw, Clock, Plus, Loader2, CheckCircle2, XCircle, ChevronRight as ChevronRightIcon,
+    Pencil, Tag,
 } from 'lucide-react';
 
 export default function ValuationList() {
@@ -35,6 +36,44 @@ export default function ValuationList() {
     const [schedStatus,    setSchedStatus]    = useState(null);
     const [schedRunning,   setSchedRunning]   = useState(false);
     const debounceRef = useRef(null);
+
+    // Inline add-ticker state
+    const [addOpen, setAddOpen] = useState(false);
+
+    // Selected-category rename state
+    const [editingName, setEditingName] = useState(false);
+    const [nameInput, setNameInput] = useState('');
+    const [renaming, setRenaming] = useState(false);
+    const [renameError, setRenameError] = useState('');
+
+    const selectedCategory = industries.length === 1 ? industries[0] : null;
+
+    const startRename = () => {
+        setNameInput(selectedCategory || '');
+        setRenameError('');
+        setEditingName(true);
+    };
+
+    const submitRename = async () => {
+        const next = nameInput.trim();
+        if (!selectedCategory) return;
+        if (!next || next === selectedCategory) { setEditingName(false); return; }
+        setRenaming(true);
+        setRenameError('');
+        try {
+            await axios.patch('/api/industries/rename', { old_name: selectedCategory, new_name: next });
+            // Refresh industry list, point the filter at the renamed category, reload
+            const res = await axios.get('/api/industries');
+            setIndustryList(res.data.map(i => i.name).sort());
+            setIndustries([next]);
+            setEditingName(false);
+            fetchValuations();
+        } catch (err) {
+            setRenameError(err.response?.data?.detail || 'Rename failed.');
+        } finally {
+            setRenaming(false);
+        }
+    };
 
     useEffect(() => {
         axios.get('/api/industries')
@@ -280,6 +319,16 @@ export default function ValuationList() {
                 </div>
 
                 <div className="flex items-center gap-3">
+                    {/* Add ticker (prefills group with the selected industry) */}
+                    <button
+                        onClick={() => setAddOpen(true)}
+                        className="screener-filter-btn"
+                        title={industries.length === 1 ? `Add a ticker to ${industries[0]}` : 'Add a ticker'}
+                    >
+                        <Plus size={17} />
+                        <span>Add Ticker</span>
+                    </button>
+
                     {/* Filter toggle */}
                     <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
@@ -372,6 +421,65 @@ export default function ValuationList() {
                 </div>
             )}
 
+            {/* Selected category banner (shown when exactly one industry is selected) */}
+            {selectedCategory && (
+                <div className="flex items-center gap-3 mb-4 px-4 py-3 rounded-xl border border-[var(--glass-border)] bg-[rgba(139,92,246,0.04)] animate-fade-in">
+                    <Tag size={15} className="text-[var(--accent-purple)] shrink-0" />
+                    {editingName ? (
+                        <>
+                            <input
+                                type="text"
+                                value={nameInput}
+                                onChange={e => setNameInput(e.target.value)}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter') submitRename();
+                                    if (e.key === 'Escape') setEditingName(false);
+                                }}
+                                maxLength={50}
+                                disabled={renaming}
+                                autoFocus
+                                className="bg-[var(--bg-primary)] border border-[rgba(139,92,246,0.4)] rounded-lg px-3 py-1.5 text-[15px] font-semibold text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-purple)] disabled:opacity-50"
+                            />
+                            <button
+                                onClick={submitRename}
+                                disabled={renaming}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold bg-[var(--accent-purple)] text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
+                            >
+                                {renaming ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                                Save
+                            </button>
+                            <button
+                                onClick={() => setEditingName(false)}
+                                disabled={renaming}
+                                className="px-3 py-1.5 rounded-lg text-[13px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            {renameError && (
+                                <span className="text-[13px] text-red-400 flex items-center gap-1">
+                                    <XCircle size={13} /> {renameError}
+                                </span>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            <span className="text-[12px] uppercase tracking-wider text-[var(--text-muted)]">Category</span>
+                            <span className="text-[15px] font-semibold text-[var(--text-primary)]">{selectedCategory}</span>
+                            <button
+                                onClick={startRename}
+                                title="Rename this category"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[13px] font-medium text-[var(--accent-purple)] hover:bg-[rgba(139,92,246,0.12)] transition-colors"
+                            >
+                                <Pencil size={13} /> Rename
+                            </button>
+                            <span className="text-[13px] text-[var(--text-muted)] ml-auto">
+                                {pag.total ?? '...'} stocks
+                            </span>
+                        </>
+                    )}
+                </div>
+            )}
+
             {/* Data table */}
             <div className="card overflow-hidden !p-0 !hover:transform-none" style={{ transform: 'none' }}>
                 <div className="overflow-x-auto">
@@ -379,7 +487,6 @@ export default function ValuationList() {
                         <thead>
                             <tr className="border-b border-[var(--glass-border)] bg-[rgba(255,255,255,0.02)]">
                                 <Th label="Ticker" field="ticker" onSort={handleSort} active={sortBy} dir={sortDir} />
-                                <Th label="Company" field="company_name" onSort={handleSort} active={sortBy} dir={sortDir} />
                                 <Th label="Industry" field="industry" onSort={handleSort} active={sortBy} dir={sortDir} />
                                 <Th label="Price" field="current_price" onSort={handleSort} active={sortBy} dir={sortDir} align="right" />
                                 <Th label="Fair Value" field="pe_median_price" onSort={handleSort} active={sortBy} dir={sortDir} align="right" />
@@ -390,7 +497,7 @@ export default function ValuationList() {
                         <tbody>
                             {loading ? (
                                 <tr>
-                                    <td colSpan="7" className="py-20 text-center text-[var(--text-muted)]">
+                                    <td colSpan="6" className="py-20 text-center text-[var(--text-muted)]">
                                         <div className="flex flex-col items-center gap-3">
                                             <div className="w-6 h-6 border-2 border-[var(--accent-purple)] border-t-transparent rounded-full animate-spin" />
                                             <span className="text-sm">Loading valuations...</span>
@@ -399,18 +506,29 @@ export default function ValuationList() {
                                 </tr>
                             ) : data.length === 0 ? (
                                 <tr>
-                                    <td colSpan="7" className="py-20 text-center text-[var(--text-muted)]">
+                                    <td colSpan="6" className="py-20 text-center text-[var(--text-muted)]">
                                         <div className="flex flex-col items-center gap-3">
                                             <SlidersHorizontal size={28} className="opacity-30" />
                                             <span className="text-base">No results match your filters</span>
-                                            {hasActiveFilters() && (
+                                            <div className="flex items-center gap-4 mt-1">
                                                 <button
-                                                    onClick={clearAllFilters}
-                                                    className="text-sm text-[var(--accent-purple)] hover:underline underline-offset-2 mt-1"
+                                                    onClick={() => setAddOpen(true)}
+                                                    className="inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent-purple)] hover:underline underline-offset-2"
                                                 >
-                                                    Clear all filters
+                                                    <Plus size={15} />
+                                                    {industries.length === 1
+                                                        ? `Add a ticker to ${industries[0]}`
+                                                        : 'Add a ticker'}
                                                 </button>
-                                            )}
+                                                {hasActiveFilters() && (
+                                                    <button
+                                                        onClick={clearAllFilters}
+                                                        className="text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:underline underline-offset-2"
+                                                    >
+                                                        Clear all filters
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
                                     </td>
                                 </tr>
@@ -422,40 +540,45 @@ export default function ValuationList() {
 
                                     // Recalculate diff: (fairValue - currentPrice) / fairValue * 100
                                     // Positive = undervalued, Negative = overvalued
-                                    const liveDiff = fairValue && currentPrice
-                                        ? ((fairValue - currentPrice) / fairValue * 100).toFixed(1)
-                                        : v.valuation_diff_pct;
-                                    const isUndervalued = parseFloat(liveDiff) >= 0;
+                                    const hasFair = fairValue != null && fairValue > 0;
+                                    const liveDiff = !hasFair ? null
+                                        : currentPrice
+                                            ? ((fairValue - currentPrice) / fairValue * 100).toFixed(1)
+                                            : (v.valuation_diff_pct ?? null);
+                                    const hasDiff = liveDiff != null && liveDiff !== '' && !Number.isNaN(parseFloat(liveDiff));
+                                    const isUndervalued = hasDiff && parseFloat(liveDiff) >= 0;
 
                                     return (
                                     <tr
                                         key={v.ticker}
                                         className="border-b border-[var(--glass-border)] hover:bg-[rgba(139,92,246,0.03)] transition-colors duration-150"
                                     >
-                                        <td className="px-6 py-4">
-                                            <Link
-                                                href={`/stock/${v.ticker}`}
-                                                className="font-mono text-[15px] font-bold text-[var(--accent-cyan)] hover:underline underline-offset-2"
-                                            >
-                                                {v.ticker}
-                                            </Link>
-                                            {earningsDates[v.ticker] && (
-                                                <div className="flex items-center gap-1 mt-0.5">
-                                                    <CalendarDays size={9} className="text-[var(--text-muted)]" />
-                                                    <span className="text-[10px] text-[var(--text-muted)]">
+                                        <td className="px-4 py-2.5">
+                                            <div className="flex items-baseline gap-2">
+                                                <Link
+                                                    href={`/stock/${v.ticker}`}
+                                                    className="font-mono text-[14px] font-bold text-[var(--accent-cyan)] hover:underline underline-offset-2"
+                                                >
+                                                    {v.ticker}
+                                                </Link>
+                                                {earningsDates[v.ticker] && (
+                                                    <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+                                                        <CalendarDays size={9} />
                                                         {new Date(earningsDates[v.ticker] + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                                                     </span>
+                                                )}
+                                            </div>
+                                            {v.company_name && (
+                                                <div className="text-[12px] text-[var(--text-muted)] truncate max-w-[220px]">
+                                                    {v.company_name}
                                                 </div>
                                             )}
                                         </td>
-                                        <td className="px-6 py-4 text-[var(--text-secondary)] text-[14px] truncate max-w-[240px]">
-                                            {v.company_name}
-                                        </td>
-                                        <td className="px-6 py-4 text-[var(--text-muted)] text-[13px]">
+                                        <td className="px-4 py-2.5 text-[var(--text-muted)] text-[13px]">
                                             {v.industry}
                                         </td>
-                                        <td className="px-6 py-4 text-right font-mono text-[15px] tabular-nums">
-                                            <div className="flex flex-col items-end">
+                                        <td className="px-4 py-2.5 text-right font-mono text-[14px] tabular-nums">
+                                            <div className="flex items-baseline justify-end gap-1.5">
                                                 <span>${currentPrice?.toFixed(2)}</span>
                                                 {livePrice && livePrices[v.ticker]?.change !== null && (
                                                     <span className={`text-[11px] ${
@@ -466,20 +589,41 @@ export default function ValuationList() {
                                                 )}
                                             </div>
                                         </td>
-                                        <td className="px-6 py-4 text-right font-mono text-[15px] tabular-nums text-[var(--text-secondary)]">
-                                            ${fairValue?.toFixed(2)}
+                                        <td className="px-4 py-2.5 text-right font-mono text-[14px] tabular-nums text-[var(--text-secondary)]">
+                                            {hasFair ? `$${fairValue.toFixed(2)}` : <span className="text-[var(--text-muted)]">—</span>}
                                         </td>
-                                        <td className={`px-6 py-4 text-right font-mono text-[15px] font-semibold tabular-nums ${
-                                            isUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
+                                        <td className={`px-4 py-2.5 text-right font-mono text-[14px] font-semibold tabular-nums ${
+                                            !hasDiff ? 'text-[var(--text-muted)]'
+                                            : isUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
                                         }`}>
-                                            {isUndervalued ? '+' : ''}{liveDiff}%
+                                            {hasDiff ? `${isUndervalued ? '+' : ''}${liveDiff}%` : '—'}
                                         </td>
-                                        <td className="px-6 py-4 text-center">
-                                            <StatusBadge status={isUndervalued ? 'undervalued' : 'overvalued'} />
+                                        <td className="px-4 py-2.5 text-center">
+                                            {hasDiff
+                                                ? <StatusBadge status={isUndervalued ? 'undervalued' : 'overvalued'} />
+                                                : <span className="text-[12px] text-[var(--text-muted)]">N/A</span>}
                                         </td>
                                     </tr>
                                 );
                                 })
+                            )}
+                            {/* Inline add-ticker row */}
+                            {!loading && (
+                                <tr
+                                    onClick={() => setAddOpen(true)}
+                                    className="cursor-pointer hover:bg-[rgba(139,92,246,0.05)] transition-colors duration-150 group"
+                                >
+                                    <td colSpan="6" className="px-6 py-4">
+                                        <span className="inline-flex items-center gap-2 text-[14px] font-medium text-[var(--text-muted)] group-hover:text-[var(--accent-purple)] transition-colors">
+                                            <span className="flex items-center justify-center w-5 h-5 rounded-full border border-dashed border-current">
+                                                <Plus size={13} />
+                                            </span>
+                                            {industries.length === 1
+                                                ? `Add a ticker to ${industries[0]}`
+                                                : 'Add a ticker'}
+                                        </span>
+                                    </td>
+                                </tr>
                             )}
                         </tbody>
                     </table>
@@ -523,6 +667,203 @@ export default function ValuationList() {
                         Next <ChevronRight size={16} />
                     </button>
                 </div>
+            </div>
+
+            {/* Inline add-ticker modal */}
+            {addOpen && (
+                <AddTickerModal
+                    industryList={industryList}
+                    defaultGroup={industries.length === 1 ? industries[0] : ''}
+                    onClose={() => setAddOpen(false)}
+                    onAdded={fetchValuations}
+                />
+            )}
+        </div>
+    );
+}
+
+/* ─── Inline Add-Ticker Modal ─── */
+function AddTickerModal({ industryList, defaultGroup, onClose, onAdded }) {
+    const [ticker, setTicker] = useState('');
+    const [group, setGroup] = useState(defaultGroup || '');
+    const [submitting, setSubmitting] = useState(false);
+    const [jobId, setJobId] = useState(null);
+    const [job, setJob] = useState(null);
+    const [error, setError] = useState('');
+    const pollRef = useRef(null);
+    const refreshedRef = useRef(false);
+
+    const isDone = job?.status === 'completed';
+    const isFailed = job?.status === 'failed';
+    const isRunning = job?.status === 'running';
+
+    // Poll job status while running
+    useEffect(() => {
+        if (!jobId) return;
+        pollRef.current = setInterval(async () => {
+            try {
+                const res = await axios.get(`/api/scrape/${jobId}`);
+                setJob(res.data);
+                if (res.data.status !== 'running') {
+                    clearInterval(pollRef.current);
+                    if (res.data.status === 'completed' && !refreshedRef.current) {
+                        refreshedRef.current = true;
+                        onAdded?.();
+                    }
+                }
+            } catch {
+                clearInterval(pollRef.current);
+            }
+        }, 2000);
+        return () => clearInterval(pollRef.current);
+    }, [jobId, onAdded]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setJob(null);
+        setJobId(null);
+        refreshedRef.current = false;
+
+        const t = ticker.trim().toUpperCase();
+        const g = group.trim();
+        if (!t) { setError('Ticker is required.'); return; }
+        if (!g) { setError('Please enter a group.'); return; }
+
+        setSubmitting(true);
+        try {
+            const res = await axios.post('/api/scrape', { ticker: t, group: g });
+            setJobId(res.data.job_id);
+            setJob(res.data);
+        } catch (err) {
+            setError(err.response?.data?.detail || 'Failed to start scrape job.');
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    return (
+        <div
+            className="fixed inset-0 z-50 flex items-start justify-center pt-24 px-4 bg-black/60 backdrop-blur-sm animate-fade-in"
+            onMouseDown={(e) => { if (e.target === e.currentTarget && !isRunning) onClose(); }}
+        >
+            <div className="w-full max-w-md bg-[var(--bg-secondary)] border border-[var(--glass-border)] rounded-2xl p-6 shadow-2xl">
+                {/* Header */}
+                <div className="flex items-start justify-between mb-5">
+                    <div>
+                        <h3 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
+                            <Plus className="w-5 h-5 text-[var(--accent-purple)]" />
+                            Add Ticker
+                        </h3>
+                        <p className="text-xs text-[var(--text-muted)] mt-1">
+                            Scrapes the ticker's data and stores it under the chosen group.
+                        </p>
+                    </div>
+                    <button
+                        onClick={onClose}
+                        disabled={isRunning}
+                        className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-30"
+                    >
+                        <X size={18} />
+                    </button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
+                            Ticker Symbol
+                        </label>
+                        <input
+                            type="text"
+                            value={ticker}
+                            onChange={e => setTicker(e.target.value.toUpperCase())}
+                            placeholder="e.g. AAPL, NVDA, TSLA"
+                            maxLength={10}
+                            disabled={isRunning || submitting}
+                            autoFocus
+                            className="w-full bg-[var(--bg-primary)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-[var(--text-primary)] font-mono text-sm focus:outline-none focus:border-[rgba(139,92,246,0.5)] transition-colors disabled:opacity-50 placeholder-[var(--text-muted)]"
+                            autoComplete="off"
+                            spellCheck="false"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1.5">
+                            Industry Group
+                        </label>
+                        <input
+                            list="valuation-industry-groups"
+                            value={group}
+                            onChange={e => setGroup(e.target.value)}
+                            disabled={isRunning || submitting}
+                            placeholder="e.g. 半導體, AI Infrastructure, Banks"
+                            maxLength={50}
+                            className="w-full bg-[var(--bg-primary)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-[var(--text-primary)] text-sm focus:outline-none focus:border-[rgba(139,92,246,0.5)] transition-colors disabled:opacity-50 placeholder-[var(--text-muted)]"
+                            autoComplete="off"
+                        />
+                        <datalist id="valuation-industry-groups">
+                            {industryList.map(g => (
+                                <option key={g} value={g}>{g}</option>
+                            ))}
+                        </datalist>
+                    </div>
+
+                    {error && (
+                        <p className="text-red-400 text-sm flex items-center gap-1.5">
+                            <XCircle className="w-4 h-4 shrink-0" />
+                            {error}
+                        </p>
+                    )}
+
+                    {!isDone && (
+                        <button
+                            type="submit"
+                            disabled={submitting || isRunning}
+                            className="w-full py-3 px-4 bg-gradient-to-r from-[var(--accent-purple)] to-[var(--accent-cyan)] text-white text-sm font-semibold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                        >
+                            {submitting || isRunning
+                                ? <><Loader2 className="w-4 h-4 animate-spin" /> Scraping…</>
+                                : <><Plus className="w-4 h-4" /> Start Scrape</>
+                            }
+                        </button>
+                    )}
+                </form>
+
+                {/* Job status */}
+                {job && (
+                    <div className={`mt-5 rounded-xl border p-4 transition-colors ${
+                        isDone ? 'border-emerald-500/30' :
+                        isFailed ? 'border-red-500/30' :
+                        'border-[var(--glass-border)]'
+                    }`}>
+                        <div className="flex items-center gap-2 mb-3">
+                            {isDone && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                            {isFailed && <XCircle className="w-4 h-4 text-red-400" />}
+                            {isRunning && <Loader2 className="w-4 h-4 text-[var(--accent-purple)] animate-spin" />}
+                            <span className={`font-semibold text-sm ${
+                                isDone ? 'text-emerald-400' : isFailed ? 'text-red-400' : 'text-[var(--accent-purple)]'
+                            }`}>
+                                {isDone ? 'Completed' : isFailed ? 'Failed' : 'Running…'}
+                            </span>
+                        </div>
+                        <ol className="space-y-1.5 max-h-48 overflow-y-auto">
+                            {(job.steps || []).map((s, i) => (
+                                <li key={i} className="flex items-start gap-2 text-[13px] text-[var(--text-secondary)]">
+                                    <ChevronRightIcon className="w-3.5 h-3.5 mt-0.5 shrink-0 text-[var(--text-muted)]" />
+                                    <span className={i === job.steps.length - 1 && isRunning ? 'text-[var(--accent-cyan)]' : ''}>{s}</span>
+                                </li>
+                            ))}
+                        </ol>
+                        {isDone && (
+                            <button
+                                onClick={onClose}
+                                className="mt-4 w-full py-2.5 px-4 bg-[rgba(139,92,246,0.12)] border border-[rgba(139,92,246,0.25)] text-[var(--accent-purple)] text-sm font-medium rounded-xl hover:bg-[rgba(139,92,246,0.2)] transition-colors"
+                            >
+                                Done — {job.ticker} added
+                            </button>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -628,10 +969,12 @@ function MultiSelect({ options, selected, onChange, placeholder }) {
                 onClick={() => setOpen(!open)}
                 className="screener-select-trigger"
             >
-                <span className={selected.length ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}>
-                    {selected.length
-                        ? `${selected.length} ${selected.length === 1 ? 'industry' : 'industries'} selected`
-                        : placeholder}
+                <span className={`truncate ${selected.length ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+                    {selected.length === 0
+                        ? placeholder
+                        : selected.length <= 2
+                            ? selected.join(', ')
+                            : `${selected.slice(0, 2).join(', ')} +${selected.length - 2} more`}
                 </span>
                 <ChevronDown
                     size={16}
