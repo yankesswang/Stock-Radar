@@ -1,12 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRoute } from 'wouter';
 import axios from 'axios';
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity, RefreshCw, CandlestickChart, Users, Newspaper, Sparkles, FileText } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity, RefreshCw, CandlestickChart, Users, Newspaper, Sparkles, FileText, PieChart, Sheet } from 'lucide-react';
 import AnalystRevisionPanel from '../components/AnalystRevisionPanel';
 import PriceChartPanel from '../components/PriceChartPanel';
 import KeyMetricsSummary from '../components/KeyMetricsSummary';
 import StockNewsPanel from '../components/StockNewsPanel';
 import GroupSelect from '../components/GroupSelect';
+import PeerValuationSummary from '../components/PeerValuationSummary';
+import TechStrip from '../components/TechStrip';
 import { Link } from 'wouter';
 
 // ── Auto-scrape panel shown when no valuation data exists yet ─────────────────
@@ -100,6 +102,9 @@ export default function StockDetail() {
     const [livePrice, setLivePrice] = useState(null);
     const [groups, setGroups] = useState([]);
     const [changingGroup, setChangingGroup] = useState(false);
+    // 圖表元件載入完回傳的技術面資料（隨圖表區間切換更新），餵給上方的技術指標速覽
+    const [tech, setTech] = useState(null);
+    const onAnalytics = useCallback((payload) => setTech(payload), []);
 
     const ticker = params?.ticker;
 
@@ -129,7 +134,7 @@ export default function StockDetail() {
             .finally(() => setChangingGroup(false));
     };
 
-    useEffect(() => { loadData(); }, [ticker]);
+    useEffect(() => { setTech(null); loadData(); }, [ticker]);
 
     // Available sector/group names for the inline "change group" dropdown.
     useEffect(() => {
@@ -190,7 +195,7 @@ export default function StockDetail() {
                     <nav className="mt-3 flex items-center gap-1.5 flex-wrap">
                         <Link
                             href={`/stock/${ticker}/ai`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-semibold text-[#0052ff] bg-[rgba(0,82,255,0.08)] border border-[rgba(0,82,255,0.25)] hover:bg-[rgba(0,82,255,0.14)] transition-colors"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-semibold text-[var(--accent-cyan)] bg-[rgba(0,82,255,0.08)] border border-[rgba(0,82,255,0.25)] hover:bg-[rgba(0,82,255,0.14)] transition-colors"
                         >
                             <Sparkles size={13} /> AI 分析
                         </Link>
@@ -202,11 +207,13 @@ export default function StockDetail() {
                             { href: `/stock/${ticker}/dcf`,        icon: DollarSign,       label: 'DCF' },
                             { href: `/stock/${ticker}/pe`,         icon: Activity,         label: 'PE History' },
                             { href: `/stock/${ticker}/options`,    icon: CandlestickChart, label: 'Options / IV' },
-                            { href: `/stock/${ticker}/peers`,      icon: Users,            label: 'Peers' },
+                            { href: `/stock/${ticker}/peers`,      icon: Users,            label: '同業比較' },
+                            { href: `/stock/${ticker}/metrics?tab=income`, icon: Sheet, label: '三大財報' },
+                            { href: `/stock/${ticker}/segments`,   icon: PieChart,         label: '分部門' },
                             { href: `/stock/${ticker}/earnings-notes`, icon: FileText,     label: '財報筆記' },
                             { href: '#news',                       icon: Newspaper,        label: 'News', anchor: true },
                         ].map(({ href, icon: Icon, label, anchor }) => {
-                            const cls = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium text-[var(--text-secondary)] bg-[var(--bg-secondary)] border border-[var(--glass-border)] hover:text-[#0052ff] hover:border-[rgba(0,82,255,0.35)] hover:bg-[rgba(0,82,255,0.06)] transition-colors';
+                            const cls = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium text-[var(--text-secondary)] bg-[var(--bg-secondary)] border border-[var(--glass-border)] hover:text-[var(--accent-cyan)] hover:border-[rgba(0,82,255,0.35)] hover:bg-[rgba(0,82,255,0.06)] transition-colors';
                             return anchor
                                 ? <a key={label} href={href} className={cls}><Icon size={13} /> {label}</a>
                                 : <Link key={label} href={href} className={cls}><Icon size={13} /> {label}</Link>;
@@ -230,6 +237,12 @@ export default function StockDetail() {
                     )}
                 </div>
             </div>
+
+            {/* 技術面呈現沿用指數頁（MarketDetail）那一套：先一列八格的指標速覽，
+                再走勢圖置頂、圖層與完整技術分析收進折疊區。個股頁原本是把四張分析卡
+                全攤開擺在圖前面，第一眼看不到價格 */}
+            <TechStrip tech={tech} />
+            <PriceChartPanel ticker={ticker} chartFirst onAnalytics={onAnalytics} />
 
             {/* Key Metrics Summary */}
             <KeyMetricsSummary ticker={ticker} />
@@ -316,6 +329,10 @@ export default function StockDetail() {
                 );
             })()}
 
+            {/* 同業比較摘要 —— 上面兩張卡是「跟自己的歷史比」，這張是「跟同業比」。
+                完整的十個指標與逐檔明細在 /stock/:ticker/peers，這裡只放結論與入口。 */}
+            <PeerValuationSummary ticker={ticker} />
+
             {/* Stats Grid */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard
@@ -343,9 +360,6 @@ export default function StockDetail() {
             {/* Analyst revisions — replaces the old price-vs-fair-value history chart,
                 which only restated what the valuation cards above already show. */}
             <AnalystRevisionPanel key={ticker} ticker={ticker} />
-
-            {/* Price Chart */}
-            <PriceChartPanel ticker={ticker} />
 
             {/* Latest News (same source as Stock Digest — Google News RSS) */}
             <StockNewsPanel ticker={ticker} company={latest.company_name} />

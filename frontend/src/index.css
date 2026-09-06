@@ -21,6 +21,20 @@
   --text-primary: #0a0b0d;
   --text-secondary: #5b616e;
   --text-muted: #8a919e;
+  /* 長文正文專用：比 primary 柔、比 secondary 實，撐得住 2 萬字的報告 */
+  --text-body: #2b3038;
+
+  /* ── 小字專用的合格對比版 ────────────────────────────────────────────────
+     實測（白底）：--text-muted 3.17:1、--accent-amber 3.19:1、
+     --accent-success 3.77:1、--accent-purple 3.24:1 —— 全部低於 WCAG AA 的
+     4.5:1。這些顏色在日報面板上承載的是 11-13px 的資訊文字，不是裝飾。
+     原色留給色塊底、邊框與大數字（大字只需 3:1），文字改用下面這組。 */
+  --text-meta: #646b78;             /* 5.36:1 */
+  --accent-amber-text: #b45309;     /* 5.02:1 */
+  --accent-success-text: #047857;   /* 5.48:1 */
+  --accent-purple-text: #4f46e5;    /* 6.29:1 */
+  --accent-danger-text: #dc2626;    /* 4.83:1（原色已合格） */
+  --accent-cyan-text: #0052ff;      /* 5.75:1（原色已合格） */
 
   --accent-cyan: #0052ff;
   --accent-purple: #578bfa;
@@ -35,6 +49,30 @@
   --glass-border: rgba(148, 163, 184, 0.35);
   --glass-border-hover: rgba(91, 97, 110, 0.52);
 
+  /* ── 主題化的中性面 ─────────────────────────────────────────────────────
+     原本散落在元件規則裡的 #e2e6eb / #dde1e7 / #fff，抽成 token 讓暗色能覆寫。
+     亮色值與抽出前一模一樣。 */
+  --bg-hover: #e2e6eb;              /* ghost 按鈕、下拉項目 hover、篩選鈕 hover */
+  --bg-active: #dde1e7;             /* 表頭底、區段標題 hover、統計列 hover */
+  --card-bg-top: rgba(255, 255, 255, 0.98);
+  --card-bg-bottom: rgba(247, 248, 250, 0.94);
+  --card-shadow: rgba(10, 11, 13, 0.08);
+  --popover-shadow: rgba(0, 0, 0, 0.12);
+  --body-gradient:
+      radial-gradient(circle at 18% 12%, rgba(0, 82, 255, 0.07), transparent 34%),
+      linear-gradient(180deg, #ffffff 0%, #f7f8fa 100%);
+
+  /* 首頁大盤面板的漸層底、浮層／搜尋框的半透明白 */
+  --panel-gradient: linear-gradient(135deg, #f8fafc 0%, #ffffff 60%, #eef4ff 100%);
+  --overlay-bg: rgba(255, 255, 255, 0.9);
+  --field-bg: rgba(255, 255, 255, 0.6);
+
+  /* K 線圖（lightweight-charts）—— 亮色下維持原本的深色圖面，暗色下跟卡片同色系 */
+  --chart-bg: #0f172a;
+  --chart-grid: rgba(255, 255, 255, 0.04);
+  --chart-border: rgba(255, 255, 255, 0.08);
+  --chart-text: #94a3b8;
+
   --font-family: 'Coinbase Sans', 'CoinbaseSans', 'Coinbase Text', 'Fira Sans', 'Segoe UI', sans-serif;
   --font-mono-family: 'Fira Code', 'SFMono-Regular', monospace;
 }
@@ -45,9 +83,7 @@
     font-family: var(--font-family);
     min-height: 100vh;
     background-color: var(--bg-primary);
-    background-image:
-      radial-gradient(circle at 18% 12%, rgba(0, 82, 255, 0.07), transparent 34%),
-      linear-gradient(180deg, #ffffff 0%, #f7f8fa 100%);
+    background-image: var(--body-gradient);
     color: var(--text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -90,7 +126,7 @@
 
   /* ── Card ── */
   .card {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 248, 250, 0.94));
+    background: linear-gradient(180deg, var(--card-bg-top), var(--card-bg-bottom));
     border: 1px solid var(--glass-border);
     border-radius: 16px;
     padding: 1.5rem;
@@ -98,8 +134,16 @@
   }
   .card:hover {
     border-color: var(--glass-border-hover);
-    box-shadow: 0 16px 34px rgba(10, 11, 13, 0.08);
+    box-shadow: 0 16px 34px var(--card-shadow);
     transform: translateY(-2px);
+  }
+
+  /* 閱讀面：兩萬字的報告不該因為滑鼠經過就整片位移 2px，也不需要浮起來的
+     陰影 —— .card 的 hover 態是給可點的卡片用的，不是給正文容器。 */
+  .card-flat:hover {
+    border-color: var(--glass-border);
+    box-shadow: none;
+    transform: none;
   }
 
   /* ── Glass (navbar) ── */
@@ -138,12 +182,12 @@
   }
 
   .btn-ghost {
-    background: #e2e6eb;
+    background: var(--bg-hover);
     color: var(--text-secondary);
     border: 1px solid var(--glass-border);
   }
   .btn-ghost:hover {
-    background: #e2e5ea;
+    background: var(--bg-hover);
     color: var(--text-primary);
     border-color: var(--glass-border-hover);
   }
@@ -162,7 +206,7 @@
     transition: border-color 0.18s, box-shadow 0.18s;
   }
   .input-field:focus {
-    border-color: #0052ff;
+    border-color: var(--accent-cyan);
     box-shadow: 0 0 0 3px rgba(0, 82, 255, 0.12);
   }
 
@@ -200,7 +244,7 @@
     border: 1px solid rgba(220, 38, 38, 0.18);
   }
   .badge-neutral {
-    background: #e2e6eb;
+    background: var(--bg-hover);
     color: var(--text-secondary);
     border: 1px solid var(--glass-border);
   }
@@ -228,7 +272,7 @@
     transition: border-color 0.18s ease, box-shadow 0.18s ease;
   }
   .screener-search-wrap:focus-within {
-    border-color: #0052ff;
+    border-color: var(--accent-cyan);
     box-shadow: 0 0 0 3px rgba(0, 82, 255, 0.1);
   }
 
@@ -273,11 +317,11 @@
   .screener-filter-btn:hover {
     border-color: var(--glass-border-hover);
     color: var(--text-primary);
-    background: #e2e6eb;
+    background: var(--bg-hover);
   }
   .screener-filter-btn.active {
-    border-color: #0052ff;
-    color: #0052ff;
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
     background: rgba(0, 82, 255, 0.07);
   }
 
@@ -349,7 +393,7 @@
     transition: border-color 0.18s ease, box-shadow 0.18s ease;
   }
   .screener-input-wrap:focus-within {
-    border-color: #0052ff;
+    border-color: var(--accent-cyan);
     box-shadow: 0 0 0 3px rgba(0, 82, 255, 0.1);
   }
 
@@ -405,10 +449,10 @@
   .screener-toggle-item:last-child { border-right: none; }
   .screener-toggle-item:hover:not(.active) {
     color: var(--text-primary);
-    background: #e2e6eb;
+    background: var(--bg-hover);
   }
   .screener-toggle-item.active {
-    color: #0052ff;
+    color: var(--accent-cyan);
     background: rgba(0, 82, 255, 0.07);
   }
 
@@ -430,7 +474,7 @@
     text-align: left;
   }
   .screener-select-trigger:hover,
-  .screener-select-trigger:focus { border-color: #0052ff; }
+  .screener-select-trigger:focus { border-color: var(--accent-cyan); }
 
   .screener-dropdown {
     position: absolute;
@@ -442,7 +486,7 @@
     background: var(--bg-secondary);
     border: 1px solid var(--glass-border);
     border-radius: 16px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 16px 48px var(--popover-shadow);
     overflow: hidden;
   }
 
@@ -463,7 +507,7 @@
     transition: all 0.15s ease;
   }
   .screener-dropdown-item:hover {
-    background: #e2e6eb;
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 
@@ -481,7 +525,7 @@
   }
   .screener-checkbox.checked {
     background: #0052ff;
-    border-color: #0052ff;
+    border-color: var(--accent-cyan);
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -509,7 +553,7 @@
     color: var(--text-primary);
     transition: background 0.15s ease;
   }
-  .metrics-section-header:hover { background: #dde1e7; }
+  .metrics-section-header:hover { background: var(--bg-active); }
 
   .metrics-table {
     width: 100%;
@@ -528,7 +572,7 @@
     text-align: right;
     white-space: nowrap;
     border-bottom: 1px solid var(--glass-border);
-    background: #dde1e7;
+    background: var(--bg-active);
   }
 
   .metrics-th-sticky {
@@ -567,7 +611,235 @@
   .metrics-tr:hover { background: rgba(0, 82, 255, 0.03); }
   .metrics-tr.active { background: rgba(0, 82, 255, 0.06); }
   .metrics-tr.active .metrics-td-sticky {
-    background: color-mix(in srgb, var(--bg-secondary) 92%, #0052ff);
+    background: color-mix(in srgb, var(--bg-secondary) 92%, var(--accent-cyan));
+  }
+
+  /* ── 分項指標頁（StockMetrics）加強 ──────────────────────────────────────
+     只新增、不改上面 Ratios 共用的規則。
+     最新一期那欄加粗＋藍底線：眼睛先落在最新值；成長率併進母指標當第二行；
+     鍵盤選列時焦點環畫在列上（tr 的 outline 各瀏覽器不一，黏住欄再補一條）。 */
+  .metrics-th.is-latest {
+    color: var(--text-primary);
+    box-shadow: inset 0 -2px 0 var(--accent-cyan);
+  }
+  .metrics-td.is-latest { color: var(--text-primary); font-weight: 600; }
+  .metrics-scroller .metrics-td { vertical-align: top; line-height: 1.25; }
+  .metrics-scroller .metrics-td-sticky { vertical-align: middle; }
+  .mb-growth {
+    display: block;
+    font-size: 0.6875rem;
+    line-height: 1.2;
+    margin-top: 2px;
+    font-weight: 500;
+  }
+  .mb-spark { color: var(--accent-cyan); opacity: 0.85; }
+  .mb-spark.is-down { color: var(--accent-danger); }
+  .metrics-scroller .metrics-tr:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: -2px; }
+  .metrics-scroller .metrics-tr:focus-visible .metrics-td-sticky { box-shadow: inset 3px 0 0 var(--accent-cyan); }
+  .metrics-scroller .metrics-tr .metrics-td-sticky { font-weight: 500; }
+
+  /* ── 分項指標頁的圖表面板 ────────────────────────────────────────────────
+     設計取向：讓數字和圖自己說話。標題小、讀數大、圖佔滿寬度、
+     控制列退成一行純文字。刻意不用「卡片裡再放卡片、卡片裡再放膠囊」
+     那套，資料密集的頁面疊三層框只會讓人找不到重點。 */
+  .mb-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--glass-border);
+    border-radius: 16px;
+    padding: 1.25rem 1.25rem 1rem;
+  }
+
+  .mb-eyebrow {
+    margin: 0;
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-meta);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mb-title {
+    margin: 0.125rem 0 0;
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 讀數：一個大數字＋兩個變動，靠基線對齊 */
+  .mb-readout {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.875rem;
+    padding-bottom: 0.875rem;
+    border-bottom: 1px solid var(--glass-border);
+  }
+  .mb-readout-main { min-width: 0; }
+  .mb-readout-value {
+    display: block;
+    font-family: var(--font-mono-family);
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mb-readout-period {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.6875rem;
+    color: var(--text-meta);
+    white-space: nowrap;
+  }
+  .mb-readout-deltas {
+    display: flex;
+    gap: 1rem;
+    margin: 0;
+    flex-shrink: 0;
+    text-align: right;
+  }
+  .mb-readout-deltas dt {
+    font-size: 0.625rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-meta);
+  }
+  .mb-readout-deltas dd {
+    margin: 0.125rem 0 0;
+    font-family: var(--font-mono-family);
+    font-size: 0.875rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* 分類模式的各項清單：沒有外框，靠左邊一條色棒和右邊對齊的數字撐結構 */
+  .mb-series {
+    margin: 0.875rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+  .mb-series li {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    min-width: 0;
+    padding: 0.1875rem 0;
+    font-size: 0.75rem;
+  }
+  .mb-series-bar { width: 3px; height: 14px; border-radius: 2px; flex-shrink: 0; }
+  .mb-series-name {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mb-series-val {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-family: var(--font-mono-family);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  /* 圖：往左右吃掉面板內距，讓它是主角而不是被框住的插圖 */
+  .mb-plot {
+    height: 260px;
+    margin: 1rem -0.5rem 0;
+  }
+
+  /* 控制列：底線標示選中，沒有背景色塊 */
+  .mb-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--glass-border);
+  }
+  .mb-toolgroup { display: inline-flex; align-items: center; gap: 0.25rem; }
+  .mb-tooldiv { width: 1px; height: 14px; background: var(--glass-border); }
+  .mb-tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1875rem 0.375rem;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    font-family: var(--font-family);
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: inset 0 -1.5px 0 transparent;
+    transition: color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .mb-tool:hover:not(:disabled) { color: var(--text-primary); }
+  .mb-tool.is-on {
+    color: var(--accent-cyan-text);
+    box-shadow: inset 0 -1.5px 0 var(--accent-cyan);
+  }
+  .mb-tool:disabled { opacity: 0.35; cursor: not-allowed; }
+  /* 觸控裝置上這些字要點得到 */
+  @media (pointer: coarse) {
+    .mb-tool { min-height: 44px; padding-left: 0.5rem; padding-right: 0.5rem; }
+  }
+
+  .mb-meta {
+    margin: 0.5rem 0 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.6875rem;
+    color: var(--text-meta);
+  }
+  .mb-meta-unit {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    font-family: var(--font-mono-family);
+  }
+
+  /* 可左右捲動的提示：右緣的軟陰影只在「還有沒看到的欄」時出現。
+     純 CSS 的 background-attachment: local/scroll 疊法，不用 JS 量捲動位置。
+     只掛在 .metrics-scroller（本頁專用），Ratios 那頁共用的規則一行沒動。 */
+  .metrics-scroller {
+    background:
+      linear-gradient(to right, var(--bg-secondary) 40%, transparent) left / 32px 100% no-repeat local,
+      linear-gradient(to left, var(--bg-secondary) 40%, transparent) right / 32px 100% no-repeat local,
+      radial-gradient(farthest-side at 100% 50%, var(--card-shadow, rgba(15,23,42,0.16)), transparent) right / 12px 100% no-repeat scroll;
+  }
+  /* 凍結的指標欄要跟捲動區分開，不然數字會像是「壓」在名稱上 */
+  .metrics-scroller .metrics-td-sticky,
+  .metrics-scroller .metrics-th-sticky {
+    box-shadow: 1px 0 0 var(--glass-border);
+  }
+  /* 這頁每格是兩行（數值＋成長率），欄距收窄一點才塞得下八期 */
+  .metrics-scroller .metrics-th,
+  .metrics-scroller .metrics-td { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .metrics-scroller .metrics-th-sticky { min-width: 210px; }
+
+  /* 手機：黏住的指標欄別吃掉一半畫面。
+     選擇器要跟上面那條 .metrics-scroller .metrics-th-sticky 同權重，
+     不然 210px 會贏，390px 寬只剩一欄多一點的數字看得到。 */
+  @media (max-width: 640px) {
+    .metrics-scroller .metrics-th-sticky { min-width: 132px; }
+    .metrics-scroller .metrics-td-sticky { max-width: 140px; }
+    .metrics-scroller .metrics-th,
+    .metrics-scroller .metrics-td { padding-left: 0.625rem; padding-right: 0.625rem; }
   }
 
   /* ─────────────────────────────────────────────────────────────────────────
@@ -602,7 +874,7 @@
     color: var(--text-primary);
     transition: background 0.15s ease;
   }
-  .stat-section-header:hover { background: #dde1e7; }
+  .stat-section-header:hover { background: var(--bg-active); }
 
   .stat-items { padding: 0 0.25rem 0.5rem; }
 
@@ -615,7 +887,7 @@
     border-radius: 8px;
     transition: background 0.1s ease;
   }
-  .stat-row:hover { background: #dde1e7; }
+  .stat-row:hover { background: var(--bg-active); }
 
   .stat-label {
     font-size: 0.875rem;
@@ -640,6 +912,270 @@
   .stat-val-negative { color: var(--accent-danger); }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   .md-prose — 每日報告／財報筆記的長文閱讀排版
+   這些內容一份兩萬多字、四層標題，靠 utility class 排不出階層，集中在這裡管。
+───────────────────────────────────────────────────────────────────────────── */
+.md-prose {
+  font-size: 0.9375rem;      /* 15px：長文的下限，原本 13px 讀不完一份 */
+  line-height: 1.75;
+  color: var(--text-body);
+}
+
+/* 行長上限 —— 1440px 下原本一行 1268px（>150 字元）。表格／程式碼不受限。 */
+.md-prose > p,
+.md-prose > ul,
+.md-prose > ol,
+.md-prose > blockquote,
+.md-prose > h3,
+.md-prose > h4 { max-width: 88ch; }
+
+.md-prose > * + * { margin-top: 0.85em; }
+
+/* 標題階層：每級之間要看得出落差，且「靠近下文、遠離上文」 */
+.md-prose h1,
+.md-prose h2,
+.md-prose h3,
+.md-prose h4 {
+  color: var(--text-primary);
+  /* 目錄跳到小節時，落點要停在固定 navbar 下面 */
+  scroll-margin-top: 5.5rem;
+}
+
+.md-prose h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.25;
+  margin: 2.25rem 0 1rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--glass-border);
+}
+.md-prose > h1:first-child { margin-top: 0; }
+
+.md-prose h2 {
+  font-size: 1.1875rem;
+  font-weight: 700;
+  letter-spacing: -0.018em;
+  line-height: 1.35;
+  margin: 2rem 0 0.75rem;
+  padding-left: 0.7rem;
+  border-left: 3px solid var(--accent-cyan);
+}
+.md-prose > h2:first-child { margin-top: 0; }
+
+.md-prose h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 1.6rem 0 0.45rem;
+  color: var(--text-primary);
+}
+.md-prose h3::before {
+  content: '';
+  display: inline-block;
+  width: 0.3rem;
+  height: 0.3rem;
+  margin-right: 0.45rem;
+  border-radius: 1px;
+  background: var(--accent-cyan);
+  vertical-align: 0.18em;
+}
+.md-prose > h3:first-child { margin-top: 0; }
+
+.md-prose h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 1.1rem 0 0.3rem;
+  color: var(--text-secondary);
+}
+
+.md-prose p { margin: 0.85em 0; }
+.md-prose ul,
+.md-prose ol { margin: 0.7em 0; padding-left: 1.5rem; }
+.md-prose ul { list-style: disc; }
+.md-prose ol { list-style: decimal; }
+.md-prose li { margin: 0.3em 0; padding-left: 0.15rem; }
+.md-prose li::marker { color: var(--text-muted); font-weight: 600; }
+.md-prose li > ul,
+.md-prose li > ol { margin: 0.25em 0; }
+.md-prose li p { margin: 0.25em 0; }
+
+.md-prose strong { font-weight: 650; color: var(--text-primary); }
+.md-prose em { font-style: normal; color: var(--text-secondary); }
+
+.md-prose a {
+  color: var(--accent-cyan);
+  text-decoration: underline;
+  text-decoration-color: rgba(0, 82, 255, 0.35);
+  text-underline-offset: 2px;
+}
+.md-prose a:hover { text-decoration-color: var(--accent-cyan); }
+
+.md-prose hr {
+  border: 0;
+  border-top: 1px solid var(--glass-border);
+  margin: 1.75rem 0;
+}
+
+/* 引言／告警：原本只有一條左線，在白底上跟正文糊在一起 */
+.md-prose blockquote {
+  margin: 1rem 0;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid var(--accent-amber);
+  border-radius: 0 10px 10px 0;
+  background: rgba(217, 119, 6, 0.07);
+  color: var(--text-body);
+}
+.md-prose blockquote p { margin: 0.2em 0; }
+
+/* 程式碼／固定寬度區塊。原本 bg-black/40 在淺色主題上是深底深字。 */
+.md-prose pre,
+.md-prose code.md-block {
+  display: block;
+  margin: 1rem 0;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-family: var(--font-mono-family);
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  white-space: pre;
+  overflow-x: auto;
+}
+.md-prose code.md-inline {
+  padding: 0.1em 0.35em;
+  border-radius: 5px;
+  background: rgba(0, 82, 255, 0.09);
+  color: var(--accent-cyan);
+  font-family: var(--font-mono-family);
+  font-size: 0.85em;
+}
+
+/* 表格：斑馬紋 + 數字對齊，掃描報表用 */
+.md-prose .md-table-wrap {
+  margin: 1.1rem 0;
+  overflow-x: auto;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+}
+.md-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+.md-prose thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  padding: 0.55rem 0.8rem;
+  border-bottom: 1px solid var(--glass-border);
+}
+.md-prose tbody td {
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  color: var(--text-body);
+}
+.md-prose tbody tr:nth-child(even) { background: rgba(148, 163, 184, 0.06); }
+.md-prose tbody tr:last-child td { border-bottom: 0; }
+
+/* 數字：報告裡真正要掃的東西（價位／百分比／金額） */
+.md-prose .md-num {
+  font-family: var(--font-mono-family);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+/* 代號：等寬藥丸，讓「26 條裡哪一檔」一眼掃得到 */
+.md-prose .md-ticker {
+  display: inline-block;
+  padding: 0.05em 0.4em;
+  border-radius: 6px;
+  background: rgba(0, 82, 255, 0.09);
+  color: var(--accent-cyan);
+  font-family: var(--font-mono-family);
+  font-size: 0.875em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+}
+a.md-ticker:hover { background: rgba(0, 82, 255, 0.18); text-decoration: none; }
+
+/* 動作詞：停損／減碼／加倉…在原本的排版裡全是同一種灰色粗體 */
+.md-prose .md-action {
+  display: inline-block;
+  padding: 0.05em 0.45em;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.md-prose img {
+  display: block;
+  margin: 1rem 0;
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: var(--bg-primary);
+}
+
+/* 觸控命中區擴張到 44px —— 只在觸控裝置生效，且用絕對定位的偽元素，
+   視覺大小與版面完全不動。日報面板要維持資訊密度，不能靠加 padding 撐大。 */
+@media (pointer: coarse) {
+  .tap-44 { position: relative; }
+  .tap-44::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* 今日焦點表：資料表要對齊數字，桌機維持密排，觸控裝置才把列高撐到 44px。 */
+.focus-table {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-body);
+}
+.focus-table td { padding-top: 0.35rem; padding-bottom: 0.35rem; }
+@media (pointer: coarse) {
+  .focus-table td { padding-top: 0.7rem; padding-bottom: 0.7rem; }
+}
+
+/* 密排的整列連結（今日焦點的逐檔列）。這裡不能用 .tap-44：44px 的偽元素會
+   從 26px 高的列往上下各溢出 9px，蓋到相鄰兩列 —— 在手機上點列尾會開到下一檔。
+   改成觸控裝置才真的把列撐到 44px，桌機維持原本的資訊密度。 */
+@media (pointer: coarse) {
+  .tap-row {
+    min-height: 44px;
+    align-content: center;
+  }
+}
+
+/* 鍵盤焦點環 —— 面板裡大量 button 只有 hover 態，tab 過去看不出停在哪 */
+.digest-focusable:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* 段落之間留白吃緊時（面板內的小片段）用這個收窄 */
+.md-prose.md-compact { font-size: 0.875rem; line-height: 1.7; }
+.md-prose.md-compact h1 { font-size: 1.25rem; margin-top: 1.5rem; }
+.md-prose.md-compact h2 { font-size: 1.0625rem; margin-top: 1.35rem; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -648,3 +1184,110 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ── 財報結論 / 論點追蹤 / 分部門 三頁共用 ──────────────────────────────────
+   這三頁是資料密集表格，需要的東西跟日報面板不同：鍵盤焦點要看得見、
+   數字要等寬對齊、觸控裝置上的篩選鈕要夠大。 */
+
+/* 鍵盤焦點環。滑鼠點擊不會觸發 focus-visible，所以不會干擾一般操作 */
+.ui-focus:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
+/* 等寬數字：財務數字上下欄要對齊，比例字寬會讓小數點歪掉 */
+.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+
+/* 觸控裝置的最小點擊區 44px。桌機滑鼠維持原本的緊湊尺寸，
+   不然資料密集的儀表板會被撐開一倍高 */
+@media (pointer: coarse) {
+  .tap { min-height: 44px; }
+}
+
+/* 表格橫向捲動時，標題列與第一欄要跟著釘住，不然捲到右邊就不知道在看哪一列 */
+.data-table thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-secondary); }
+.data-table .sticky-col { position: sticky; left: 0; z-index: 1; background: var(--bg-secondary); }
+.data-table thead th.sticky-col { z-index: 3; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   暗色主題 —— 純新增覆寫（做法同 alpha_note）
+   亮色的規則一行都沒改；暗色只重定義 token，所以暗色出問題只會影響暗色。
+   由 <html data-theme="dark"> 觸發（src/theme.js），不寫 @media (prefers-color-scheme)，
+   否則使用者選「亮色」時會被系統設定蓋掉。
+
+   配色沿用 Coinbase 深色面：近黑 #0a0b0d 底、#141518 卡片、#282b31 高階面。
+   品牌藍 #0052ff 在近黑底上只有 2.9:1，當文字用時提亮成 #4f83ff（5.4:1）；
+   實心藍按鈕（.btn-primary / bg-[#0052ff]）維持原色，白字在上面仍有 5.6:1。
+───────────────────────────────────────────────────────────────────────────── */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-primary: #0a0b0d;
+  --bg-secondary: #141518;
+  --bg-tertiary: #1c1e23;
+  --bg-hover: #23262c;
+  --bg-active: #2a2d34;
+
+  --text-primary: #f3f4f6;            /* 17.4:1 */
+  --text-secondary: #a7adb8;          /* 8.4:1 */
+  --text-muted: #7d8494;              /* 5.0:1 */
+  --text-body: #cfd3da;
+  --text-meta: #a7adb8;
+
+  --accent-cyan: #4f83ff;             /* 5.4:1 on #0a0b0d */
+  --accent-purple: #7ba2ff;
+  --accent-success: #10b981;
+  --accent-green: #10b981;
+  --accent-danger: #ef4444;
+  --accent-amber: #f59e0b;
+  --accent-yellow: #f59e0b;
+
+  --accent-amber-text: #fbbf24;       /* 11.0:1 */
+  --accent-success-text: #34d399;     /* 9.9:1 */
+  --accent-purple-text: #a5b4fc;      /* 9.6:1 */
+  --accent-danger-text: #f87171;      /* 6.6:1 */
+  --accent-cyan-text: #6b9bff;        /* 6.9:1 */
+
+  --glass-bg: rgba(20, 21, 24, 0.82);
+  --glass-border: rgba(148, 163, 184, 0.16);
+  --glass-border-hover: rgba(148, 163, 184, 0.34);
+
+  --card-bg-top: rgba(22, 23, 27, 0.98);
+  --card-bg-bottom: rgba(17, 18, 21, 0.96);
+  --card-shadow: rgba(0, 0, 0, 0.45);
+  --popover-shadow: rgba(0, 0, 0, 0.6);
+  --body-gradient:
+      radial-gradient(circle at 18% 12%, rgba(79, 131, 255, 0.10), transparent 34%),
+      linear-gradient(180deg, #0a0b0d 0%, #0e0f12 100%);
+
+  --panel-gradient: linear-gradient(135deg, #141518 0%, #111214 60%, #121620 100%);
+  --overlay-bg: rgba(20, 21, 24, 0.92);
+  --field-bg: rgba(255, 255, 255, 0.05);
+
+  --chart-bg: #101114;
+  --chart-grid: rgba(255, 255, 255, 0.05);
+  --chart-border: rgba(255, 255, 255, 0.10);
+  --chart-text: #8b93a3;
+}
+
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.22); }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.4); }
+
+/* 導覽列的白色投影在暗底上是灰霧，換成黑影 */
+:root[data-theme="dark"] .glass { box-shadow: 0 16px 32px rgba(0, 0, 0, 0.45); }
+
+/* ghost 按鈕 / 中性徽章在亮色是淺灰底深灰字，暗色反過來 */
+:root[data-theme="dark"] .btn-ghost,
+:root[data-theme="dark"] .badge-neutral { background: var(--bg-tertiary); }
+
+/* 引言底：琥珀 7% 在近黑上看不出來，加到 12% */
+:root[data-theme="dark"] .md-prose blockquote { background: rgba(245, 158, 11, 0.12); }
+:root[data-theme="dark"] .md-prose code.md-inline,
+:root[data-theme="dark"] .md-prose .md-ticker { background: rgba(79, 131, 255, 0.16); }
+:root[data-theme="dark"] a.md-ticker:hover { background: rgba(79, 131, 255, 0.28); }
+:root[data-theme="dark"] .md-prose tbody tr:nth-child(even) { background: rgba(148, 163, 184, 0.05); }
+
+/* 原生表單控制項（select / date / checkbox）跟著暗 */
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] textarea { color-scheme: dark; }

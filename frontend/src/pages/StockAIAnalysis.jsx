@@ -35,18 +35,29 @@ function renderMarkdown(md) {
         const h = line.match(/^(#{1,4})\s+(.*)/);
         if (h) return <h4 key={i} className="text-sm font-bold text-[var(--text-primary)] mt-4 mb-1">{h[2]}</h4>;
         const li = line.match(/^\s*[-*]\s+(.*)/);
-        if (li) return <li key={i} className="text-sm text-[var(--text-secondary)] ml-5 list-disc leading-relaxed">{boldify(li[1])}</li>;
+        if (li) return <li key={i} className="text-sm text-[var(--text-secondary)] ml-5 list-disc leading-relaxed">{renderInline(li[1])}</li>;
         if (!line.trim()) return null;
-        return <p key={i} className="text-sm text-[var(--text-secondary)] leading-relaxed mb-1">{boldify(line)}</p>;
+        return <p key={i} className="text-sm text-[var(--text-secondary)] leading-relaxed mb-1">{renderInline(line)}</p>;
     });
 }
-function boldify(text) {
-    const parts = text.split(/(\*\*[^*]+\*\*)/g);
-    return parts.map((p, i) =>
-        p.startsWith('**') && p.endsWith('**')
-            ? <strong key={i} className="text-[var(--text-primary)] font-semibold">{p.slice(2, -2)}</strong>
-            : p
-    );
+// **粗體** 與 [文字](網址) —— 條列末端的來源標註就是靠這裡變成可點連結
+function renderInline(text) {
+    const parts = String(text).split(/(\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g);
+    return parts.map((p, i) => {
+        if (p.startsWith('**') && p.endsWith('**')) {
+            return <strong key={i} className="text-[var(--text-primary)] font-semibold">{p.slice(2, -2)}</strong>;
+        }
+        const link = p.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+        if (link) {
+            return (
+                <a key={i} href={link[2]} target="_blank" rel="noreferrer"
+                   className="text-[var(--accent-cyan)] hover:opacity-70 underline decoration-dotted">
+                    {link[1]}
+                </a>
+            );
+        }
+        return p;
+    });
 }
 
 export default function StockAIAnalysis() {

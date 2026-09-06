@@ -4,8 +4,10 @@
  * Props:
  *   matrix      — { wacc_labels, tg_labels, matrix[][], base_wacc_idx, base_tg_idx }
  *   currentPrice — number | null
+ *   corner       — corner-cell caption; the same grid is reused for the
+ *                  margin-vs-growth matrix, whose axes are not WACC and growth
  */
-export default function SensitivityMatrix({ matrix, currentPrice }) {
+export default function SensitivityMatrix({ matrix, currentPrice, corner = 'WACC \\ Growth' }) {
     if (!matrix || !matrix.matrix?.length) return null;
 
     const { wacc_labels, tg_labels, matrix: grid, base_wacc_idx, base_tg_idx } = matrix;
@@ -31,7 +33,7 @@ export default function SensitivityMatrix({ matrix, currentPrice }) {
                     <thead>
                         <tr>
                             <th className="metrics-th-sticky" style={{ minWidth: '100px' }}>
-                                <span className="text-[11px]">WACC \ Growth</span>
+                                <span className="text-[11px]">{corner}</span>
                             </th>
                             {tg_labels.map((tg) => (
                                 <th key={tg} className="metrics-th">{tg}</th>
@@ -48,6 +50,9 @@ export default function SensitivityMatrix({ matrix, currentPrice }) {
                                 </td>
                                 {row.map((val, ci) => {
                                     const base = isBase(ri, ci);
+                                    if (val == null) {
+                                        return <td key={ci} className="metrics-td text-[var(--text-muted)]">&mdash;</td>;
+                                    }
                                     return (
                                         <td
                                             key={ci}

@@ -5,6 +5,8 @@ import {
   Radar, RefreshCw, TrendingUp, TrendingDown, Minus,
   ChevronRight, Clock, BarChart3, Filter,
 } from 'lucide-react';
+import ClusterTabs from '../components/ClusterTabs';
+import { OPS_TABS } from '../components/clusterTabsDef';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const SEV = {
@@ -182,6 +184,9 @@ export default function SignalWatchlist() {
 
   return (
     <div className="container py-10 space-y-6 animate-fade-in">
+      {/* 決策層的三個切面 —— War Room 的 SIGNAL FEED 是這一頁的摘要版 */}
+      <ClusterTabs items={OPS_TABS} active="/signals" />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

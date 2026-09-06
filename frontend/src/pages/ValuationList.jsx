@@ -1,21 +1,27 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { Link } from 'wouter';
 import {
-    ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ChevronsUpDown,
+    ArrowUp, ArrowDown, ChevronsUpDown,
     SlidersHorizontal, X, ChevronDown, Check, Search, RotateCcw, CalendarDays,
     RefreshCw, Clock, Plus, Loader2, CheckCircle2, XCircle, ChevronRight as ChevronRightIcon,
-    Pencil, Tag,
+    Pencil, Tag, Layers,
 } from 'lucide-react';
+
+// every row is loaded in one shot — the table is grouped by section, not paged
+const PER_PAGE = 500;
+// tickers per batch-quote request; several smaller calls fill the table
+// progressively instead of blocking on one long one
+const PRICE_CHUNK = 80;
 
 export default function ValuationList() {
     const [data, setData] = useState([]);
     const [pag, setPag] = useState({});
-    const [page, setPage] = useState(1);
     const [loading, setLoading] = useState(true);
     const [sortBy, setSortBy] = useState('industry');
     const [sortDir, setSortDir] = useState('asc');
     const [livePrices, setLivePrices] = useState({});
+    const [collapsed, setCollapsed] = useState(() => new Set());
 
     // Filter state
     const [search, setSearch] = useState('');
@@ -85,7 +91,10 @@ export default function ValuationList() {
         axios.get('/api/earnings/calendar')
             .then(res => {
                 const map = {};
-                for (const ev of (res.data.events || [])) map[ev.ticker] = ev.date;
+                for (const ev of (res.data.events || [])) {
+                    if (ev.status === 'reported') continue;   // 已公布的不是「下次財報日」
+                    map[ev.ticker] = ev.date;
+                }
                 setEarningsDates(map);
             })
             .catch(() => {});
@@ -140,7 +149,6 @@ export default function ValuationList() {
         setPeMax('');
         setEpsGrowthMin('');
         setEpsGrowthMax('');
-        setPage(1);
     };
 
     const buildScreenerFilters = () => {
@@ -175,15 +183,15 @@ export default function ValuationList() {
                     search: search || undefined,
                     sort_by: sortBy,
                     sort_dir: sortDir,
-                    page,
-                    per_page: 20,
+                    page: 1,
+                    per_page: PER_PAGE,
                 };
                 const res = await axios.post('/api/screener', body);
                 resData = res.data.data;
                 resPag = res.data.pagination;
             } else {
                 const res = await axios.get('/api/valuations', {
-                    params: { page, per_page: 20, sort_by: sortBy, sort_dir: sortDir, search: search || undefined }
+                    params: { page: 1, per_page: PER_PAGE, sort_by: sortBy, sort_dir: sortDir, search: search || undefined }
                 });
                 resData = res.data.data;
                 resPag = res.data.pagination;
@@ -196,7 +204,7 @@ export default function ValuationList() {
         } finally {
             setLoading(false);
         }
-    }, [page, sortBy, sortDir, search, industries, status,
+    }, [sortBy, sortDir, search, industries, status,
         priceMin, priceMax, diffMin, diffMax, peMin, peMax, epsGrowthMin, epsGrowthMax]);
 
     useEffect(() => {
@@ -207,39 +215,35 @@ export default function ValuationList() {
         return () => clearTimeout(debounceRef.current);
     }, [fetchValuations]);
 
-    // Fetch live prices for all stocks on the current page
+    // Batch-fetch live prices for every loaded row. Chunked so the table fills in
+    // as the responses land rather than waiting on the whole watchlist.
+    const [pricesLoading, setPricesLoading] = useState(false);
     useEffect(() => {
-        if (data.length > 0) {
-            const fetchLivePrices = async () => {
-                const prices = {};
-                await Promise.all(
-                    data.map(async (stock) => {
-                        try {
-                            const res = await axios.get(`/api/stocks/${stock.ticker}/price`);
-                            prices[stock.ticker] = res.data;
-                        } catch (err) {
-                            // Keep null if fetch fails
-                            prices[stock.ticker] = null;
-                        }
-                    })
-                );
-                setLivePrices(prices);
-            };
-            fetchLivePrices();
+        if (!data.length) return;
+        let alive = true;
+        const tickers = data.map(s => s.ticker);
+        const chunks = [];
+        for (let i = 0; i < tickers.length; i += PRICE_CHUNK) {
+            chunks.push(tickers.slice(i, i + PRICE_CHUNK));
         }
+        setPricesLoading(true);
+        (async () => {
+            // Sequential on purpose: concurrent bulk downloads get throttled by
+            // Yahoo and come back with holes, which would skew the section averages.
+            for (const chunk of chunks) {
+                if (!alive) return;
+                try {
+                    const res = await axios.get('/api/stocks/prices', { params: { tickers: chunk.join(',') } });
+                    if (!alive) return;
+                    setLivePrices(prev => ({ ...prev, ...(res.data.prices || {}) }));
+                } catch {
+                    /* leave those rows on their stored price */
+                }
+            }
+            if (alive) setPricesLoading(false);
+        })();
+        return () => { alive = false; };
     }, [data]);
-
-    const prevFiltersRef = useRef('');
-    useEffect(() => {
-        const filterKey = JSON.stringify({
-            search, industries, status,
-            priceMin, priceMax, diffMin, diffMax, peMin, peMax, epsGrowthMin, epsGrowthMax
-        });
-        if (prevFiltersRef.current && prevFiltersRef.current !== filterKey) {
-            setPage(1);
-        }
-        prevFiltersRef.current = filterKey;
-    }, [search, industries, status, priceMin, priceMax, diffMin, diffMax, peMin, peMax, epsGrowthMin, epsGrowthMax]);
 
     const handleSort = (field) => {
         if (sortBy === field) {
@@ -252,6 +256,47 @@ export default function ValuationList() {
 
     const filterCount = activeFilterCount();
 
+    // ── Group rows into sections ────────────────────────────────────────────────
+    // Rows keep whatever order the backend sorted them into; only the sections
+    // themselves are ordered here (by name, flipped by the Section column header).
+    const sections = useMemo(() => {
+        const map = new Map();
+        for (const row of data) {
+            const name = row.industry || 'Uncategorized';
+            if (!map.has(name)) map.set(name, []);
+            map.get(name).push(row);
+        }
+        const list = [...map.entries()].map(([name, rows]) => {
+            const moves = rows
+                .map(r => livePrices[r.ticker]?.change_percent)
+                .filter(v => v != null && !Number.isNaN(v));
+            const avg = moves.length ? moves.reduce((s, v) => s + v, 0) / moves.length : null;
+            return {
+                name,
+                rows,
+                avgChange: avg,
+                up: moves.filter(v => v > 0).length,
+                down: moves.filter(v => v < 0).length,
+                priced: moves.length,
+            };
+        });
+        const dir = sortBy === 'industry' && sortDir === 'desc' ? -1 : 1;
+        list.sort((a, b) => a.name.localeCompare(b.name) * dir);
+        return list;
+    }, [data, livePrices, sortBy, sortDir]);
+
+    const allCollapsed = sections.length > 0 && sections.every(s => collapsed.has(s.name));
+    const toggleSection = (name) => {
+        setCollapsed(prev => {
+            const next = new Set(prev);
+            if (next.has(name)) next.delete(name); else next.add(name);
+            return next;
+        });
+    };
+    const toggleAll = () => {
+        setCollapsed(allCollapsed ? new Set() : new Set(sections.map(s => s.name)));
+    };
+
     return (
         <div className="container py-10 animate-fade-in">
             {/* Page header */}
@@ -259,7 +304,12 @@ export default function ValuationList() {
                 <div>
                     <h2 className="text-3xl font-bold tracking-tight mb-1">Valuations</h2>
                     <p className="text-[15px] text-[var(--text-muted)]">
-                        {pag.total || '...'} stocks across {pag.total_pages || '...'} pages
+                        {pag.total ?? '...'} stocks across {sections.length || '...'} sections
+                        {pricesLoading && (
+                            <span className="ml-2 inline-flex items-center gap-1 text-[13px]">
+                                <Loader2 size={11} className="animate-spin" /> loading quotes…
+                            </span>
+                        )}
                     </p>
                 </div>
 
@@ -480,6 +530,31 @@ export default function ValuationList() {
                 </div>
             )}
 
+            {/* Section controls */}
+            {!loading && sections.length > 0 && (
+                <div className="flex flex-wrap items-center gap-3 mb-3">
+                    <span className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-muted)]">
+                        <Layers size={14} />
+                        Grouped by section
+                    </span>
+                    <button
+                        onClick={() => handleSort('industry')}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[13px] font-medium text-[var(--text-muted)] border border-[var(--glass-border)] hover:text-[var(--text-primary)] transition-colors"
+                        title="Flip section order"
+                    >
+                        {sortBy === 'industry' && sortDir === 'desc' ? <ArrowDown size={12} /> : <ArrowUp size={12} />}
+                        A–Z
+                    </button>
+                    <button
+                        onClick={toggleAll}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[13px] font-medium text-[var(--text-muted)] border border-[var(--glass-border)] hover:text-[var(--text-primary)] transition-colors"
+                    >
+                        <ChevronsUpDown size={12} />
+                        {allCollapsed ? 'Expand all' : 'Collapse all'}
+                    </button>
+                </div>
+            )}
+
             {/* Data table */}
             <div className="card overflow-hidden !p-0 !hover:transform-none" style={{ transform: 'none' }}>
                 <div className="overflow-x-auto">
@@ -487,8 +562,8 @@ export default function ValuationList() {
                         <thead>
                             <tr className="border-b border-[var(--glass-border)] bg-[rgba(255,255,255,0.02)]">
                                 <Th label="Ticker" field="ticker" onSort={handleSort} active={sortBy} dir={sortDir} />
-                                <Th label="Industry" field="industry" onSort={handleSort} active={sortBy} dir={sortDir} />
                                 <Th label="Price" field="current_price" onSort={handleSort} active={sortBy} dir={sortDir} align="right" />
+                                <Th label="Today" field="today" onSort={() => {}} align="right" />
                                 <Th label="Fair Value" field="pe_median_price" onSort={handleSort} active={sortBy} dir={sortDir} align="right" />
                                 <Th label="Diff %" field="valuation_diff_pct" onSort={handleSort} active={sortBy} dir={sortDir} align="right" />
                                 <Th label="Status" field="valuation_status" onSort={() => {}} align="center" />
@@ -532,83 +607,34 @@ export default function ValuationList() {
                                         </div>
                                     </td>
                                 </tr>
-                            ) : (
-                                data.map((v) => {
-                                    const livePrice = livePrices[v.ticker]?.price;
-                                    const currentPrice = livePrice ?? v.current_price;
-                                    const fairValue = v.pe_median_price;
+                            ) : null}
+                        </tbody>
 
-                                    // Recalculate diff: (fairValue - currentPrice) / fairValue * 100
-                                    // Positive = undervalued, Negative = overvalued
-                                    const hasFair = fairValue != null && fairValue > 0;
-                                    const liveDiff = !hasFair ? null
-                                        : currentPrice
-                                            ? ((fairValue - currentPrice) / fairValue * 100).toFixed(1)
-                                            : (v.valuation_diff_pct ?? null);
-                                    const hasDiff = liveDiff != null && liveDiff !== '' && !Number.isNaN(parseFloat(liveDiff));
-                                    const isUndervalued = hasDiff && parseFloat(liveDiff) >= 0;
+                        {/* One tbody per section: header row + its holdings */}
+                        {!loading && sections.map(section => {
+                            const open = !collapsed.has(section.name);
+                            return (
+                                <tbody key={section.name}>
+                                    <SectionHeaderRow
+                                        section={section}
+                                        open={open}
+                                        onToggle={() => toggleSection(section.name)}
+                                    />
+                                    {open && section.rows.map(v => (
+                                        <ValuationRow
+                                            key={v.ticker}
+                                            v={v}
+                                            live={livePrices[v.ticker]}
+                                            earningsDate={earningsDates[v.ticker]}
+                                        />
+                                    ))}
+                                </tbody>
+                            );
+                        })}
 
-                                    return (
-                                    <tr
-                                        key={v.ticker}
-                                        className="border-b border-[var(--glass-border)] hover:bg-[rgba(139,92,246,0.03)] transition-colors duration-150"
-                                    >
-                                        <td className="px-4 py-2.5">
-                                            <div className="flex items-baseline gap-2">
-                                                <Link
-                                                    href={`/stock/${v.ticker}`}
-                                                    className="font-mono text-[14px] font-bold text-[var(--accent-cyan)] hover:underline underline-offset-2"
-                                                >
-                                                    {v.ticker}
-                                                </Link>
-                                                {earningsDates[v.ticker] && (
-                                                    <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
-                                                        <CalendarDays size={9} />
-                                                        {new Date(earningsDates[v.ticker] + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            {v.company_name && (
-                                                <div className="text-[12px] text-[var(--text-muted)] truncate max-w-[220px]">
-                                                    {v.company_name}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-4 py-2.5 text-[var(--text-muted)] text-[13px]">
-                                            {v.industry}
-                                        </td>
-                                        <td className="px-4 py-2.5 text-right font-mono text-[14px] tabular-nums">
-                                            <div className="flex items-baseline justify-end gap-1.5">
-                                                <span>${currentPrice?.toFixed(2)}</span>
-                                                {livePrice && livePrices[v.ticker]?.change !== null && (
-                                                    <span className={`text-[11px] ${
-                                                        livePrices[v.ticker]?.change >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                                                    }`}>
-                                                        {livePrices[v.ticker]?.change >= 0 ? '+' : ''}{livePrices[v.ticker]?.change_percent?.toFixed(1)}%
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-2.5 text-right font-mono text-[14px] tabular-nums text-[var(--text-secondary)]">
-                                            {hasFair ? `$${fairValue.toFixed(2)}` : <span className="text-[var(--text-muted)]">—</span>}
-                                        </td>
-                                        <td className={`px-4 py-2.5 text-right font-mono text-[14px] font-semibold tabular-nums ${
-                                            !hasDiff ? 'text-[var(--text-muted)]'
-                                            : isUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                                        }`}>
-                                            {hasDiff ? `${isUndervalued ? '+' : ''}${liveDiff}%` : '—'}
-                                        </td>
-                                        <td className="px-4 py-2.5 text-center">
-                                            {hasDiff
-                                                ? <StatusBadge status={isUndervalued ? 'undervalued' : 'overvalued'} />
-                                                : <span className="text-[12px] text-[var(--text-muted)]">N/A</span>}
-                                        </td>
-                                    </tr>
-                                );
-                                })
-                            )}
-                            {/* Inline add-ticker row */}
-                            {!loading && (
+                        {/* Inline add-ticker row */}
+                        {!loading && (
+                            <tbody>
                                 <tr
                                     onClick={() => setAddOpen(true)}
                                     className="cursor-pointer hover:bg-[rgba(139,92,246,0.05)] transition-colors duration-150 group"
@@ -624,49 +650,21 @@ export default function ValuationList() {
                                         </span>
                                     </td>
                                 </tr>
-                            )}
-                        </tbody>
+                            </tbody>
+                        )}
                     </table>
                 </div>
 
-                {/* Pagination */}
-                <div className="px-6 py-5 flex items-center justify-between border-t border-[var(--glass-border)] bg-[rgba(255,255,255,0.01)]">
-                    <button
-                        onClick={() => setPage(p => Math.max(1, p - 1))}
-                        disabled={page === 1}
-                        className="btn btn-ghost disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 text-[14px]"
-                    >
-                        <ChevronLeft size={16} /> Prev
-                    </button>
-                    <div className="flex items-center gap-1.5">
-                        {Array.from({ length: Math.min(pag.total_pages || 0, 7) }, (_, i) => {
-                            const pageNum = i + 1;
-                            return (
-                                <button
-                                    key={pageNum}
-                                    onClick={() => setPage(pageNum)}
-                                    className={`w-9 h-9 rounded-lg text-[13px] font-medium transition-colors ${
-                                        page === pageNum
-                                            ? 'bg-[var(--accent-purple)] text-white'
-                                            : 'text-[var(--text-muted)] hover:bg-[var(--glass-bg)] hover:text-[var(--text-primary)]'
-                                    }`}
-                                >
-                                    {pageNum}
-                                </button>
-                            );
-                        })}
-                        {(pag.total_pages || 0) > 7 && (
-                            <span className="text-[var(--text-muted)] text-sm px-1">...</span>
-                        )}
+                {/* Footer summary */}
+                {!loading && data.length > 0 && (
+                    <div className="px-6 py-4 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--glass-border)] bg-[rgba(255,255,255,0.01)] text-[13px] text-[var(--text-muted)]">
+                        <span>
+                            {data.length} holdings in {sections.length} sections
+                            {pag.total > data.length && <span className="ml-1 opacity-70">(of {pag.total})</span>}
+                        </span>
+                        <span className="opacity-70">Today's move via batch quotes · cached 2 min</span>
                     </div>
-                    <button
-                        onClick={() => setPage(p => Math.min(pag.total_pages, p + 1))}
-                        disabled={page === pag.total_pages}
-                        className="btn btn-ghost disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-2 text-[14px]"
-                    >
-                        Next <ChevronRight size={16} />
-                    </button>
-                </div>
+                )}
             </div>
 
             {/* Inline add-ticker modal */}
@@ -679,6 +677,122 @@ export default function ValuationList() {
                 />
             )}
         </div>
+    );
+}
+
+/* ─── Section header row (collapsible, with today's price move) ─── */
+function SectionHeaderRow({ section, open, onToggle }) {
+    const { name, rows, avgChange, up, down, priced } = section;
+    const pos = (avgChange ?? 0) >= 0;
+    const moveColor = avgChange == null
+        ? 'var(--text-muted)'
+        : pos ? 'var(--accent-success)' : 'var(--accent-danger)';
+
+    return (
+        <tr
+            onClick={onToggle}
+            className="cursor-pointer select-none border-y border-[var(--glass-border)] bg-[rgba(139,92,246,0.05)] hover:bg-[rgba(139,92,246,0.09)] transition-colors"
+        >
+            <td colSpan="6" className="px-4 py-2.5">
+                <div className="flex flex-wrap items-center gap-2.5">
+                    <ChevronRightIcon
+                        size={14}
+                        className={`text-[var(--text-muted)] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+                    />
+                    <span className="text-[14px] font-semibold text-[var(--text-primary)]">{name}</span>
+                    <span className="px-1.5 py-0.5 rounded-md text-[11px] font-medium bg-[rgba(139,92,246,0.12)] text-[var(--accent-purple)]">
+                        {rows.length}
+                    </span>
+
+                    <div className="ml-auto flex items-center gap-3">
+                        {priced > 0 && (
+                            <span className="text-[12px] text-[var(--text-muted)] tabular-nums">
+                                <span className="text-[var(--accent-success)] font-semibold">{up}</span> 漲
+                                <span className="mx-1 opacity-40">·</span>
+                                <span className="text-[var(--accent-danger)] font-semibold">{down}</span> 跌
+                                {priced < rows.length && (
+                                    <span className="ml-1 opacity-60">({priced}/{rows.length} 有報價)</span>
+                                )}
+                            </span>
+                        )}
+                        <span
+                            className="min-w-[72px] text-right font-mono text-[14px] font-bold tabular-nums"
+                            style={{ color: moveColor }}
+                            title="Section average of today's move (equal-weighted)"
+                        >
+                            {avgChange == null ? '—' : `${pos ? '+' : ''}${avgChange.toFixed(2)}%`}
+                        </span>
+                    </div>
+                </div>
+            </td>
+        </tr>
+    );
+}
+
+/* ─── One holding row ─── */
+function ValuationRow({ v, live, earningsDate }) {
+    const livePrice = live?.price;
+    const currentPrice = livePrice ?? v.current_price;
+    const fairValue = v.pe_median_price;
+    const change = live?.change_percent;
+
+    // Recalculate diff: (fairValue - currentPrice) / fairValue * 100
+    // Positive = undervalued, Negative = overvalued
+    const hasFair = fairValue != null && fairValue > 0;
+    const liveDiff = !hasFair ? null
+        : currentPrice
+            ? ((fairValue - currentPrice) / fairValue * 100).toFixed(1)
+            : (v.valuation_diff_pct ?? null);
+    const hasDiff = liveDiff != null && liveDiff !== '' && !Number.isNaN(parseFloat(liveDiff));
+    const isUndervalued = hasDiff && parseFloat(liveDiff) >= 0;
+
+    return (
+        <tr className="border-b border-[var(--glass-border)] hover:bg-[rgba(139,92,246,0.03)] transition-colors duration-150">
+            <td className="px-4 py-2.5 pl-10">
+                <div className="flex items-baseline gap-2">
+                    <Link
+                        href={`/stock/${v.ticker}`}
+                        className="font-mono text-[14px] font-bold text-[var(--accent-cyan)] hover:underline underline-offset-2"
+                    >
+                        {v.ticker}
+                    </Link>
+                    {earningsDate && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+                            <CalendarDays size={9} />
+                            {new Date(earningsDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </span>
+                    )}
+                </div>
+                {v.company_name && (
+                    <div className="text-[12px] text-[var(--text-muted)] truncate max-w-[220px]">
+                        {v.company_name}
+                    </div>
+                )}
+            </td>
+            <td className="px-4 py-2.5 text-right font-mono text-[14px] tabular-nums">
+                {currentPrice != null ? `$${currentPrice.toFixed(2)}` : <span className="text-[var(--text-muted)]">—</span>}
+            </td>
+            <td className={`px-4 py-2.5 text-right font-mono text-[13px] font-semibold tabular-nums ${
+                change == null ? 'text-[var(--text-muted)]'
+                : change >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
+            }`}>
+                {change == null ? '—' : `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`}
+            </td>
+            <td className="px-4 py-2.5 text-right font-mono text-[14px] tabular-nums text-[var(--text-secondary)]">
+                {hasFair ? `$${fairValue.toFixed(2)}` : <span className="text-[var(--text-muted)]">—</span>}
+            </td>
+            <td className={`px-4 py-2.5 text-right font-mono text-[14px] font-semibold tabular-nums ${
+                !hasDiff ? 'text-[var(--text-muted)]'
+                : isUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
+            }`}>
+                {hasDiff ? `${isUndervalued ? '+' : ''}${liveDiff}%` : '—'}
+            </td>
+            <td className="px-4 py-2.5 text-center">
+                {hasDiff
+                    ? <StatusBadge status={isUndervalued ? 'undervalued' : 'overvalued'} />
+                    : <span className="text-[12px] text-[var(--text-muted)]">N/A</span>}
+            </td>
+        </tr>
     );
 }
 

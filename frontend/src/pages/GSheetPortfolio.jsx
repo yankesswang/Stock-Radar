@@ -7,6 +7,7 @@ import {
 import GroupSelect from '../components/GroupSelect';
 import { useExtendedQuotes } from '../components/useExtendedQuotes';
 import ExtendedQuoteBadge from '../components/ExtendedQuote';
+import DailyDigestPanel from '../components/DailyDigestPanel';
 import {
   RefreshCw, TrendingUp, TrendingDown, DollarSign,
   BarChart2, Layers, Trash2, Plus, CloudDownload, Check, X,
@@ -113,6 +114,15 @@ function SuggestionList({ text }) {
   );
 }
 
+// 「接近支撐 $986.07」少了距離與強度就只是個價位；那兩個數字本來只出現在風險警示
+// 的句子裡（訊號自己就帶 dist_pct / strength），補進 chip 後兩邊就不必各講一次。
+function chipDetail(s) {
+  const bits = [];
+  if (s.dist_pct != null) bits.push(`${fmt(s.dist_pct, 1)}%`);
+  if (s.strength) bits.push('★'.repeat(Math.min(3, s.strength)));
+  return bits.join(' ');
+}
+
 function SignalChips({ signals, max = 4 }) {
   const ranked = rankSignals(signals);
   const shown = ranked.slice(0, max);
@@ -121,9 +131,11 @@ function SignalChips({ signals, max = 4 }) {
     <div className="flex flex-wrap items-center gap-1">
       {shown.map((s, i) => {
         const d = DIR[toDir(s.tone)];
+        const detail = chipDetail(s);
         return (
           <span key={i} className={`text-[10.5px] font-semibold px-1.5 py-0.5 rounded ${d.text} ${d.chip}`}>
             {s.label ?? s.tag}
+            {detail && <span className="ml-1 font-normal opacity-75">{detail}</span>}
           </span>
         );
       })}
@@ -249,7 +261,6 @@ export default function GSheetPortfolio() {
   const [addSaving,       setAddSaving]       = useState(false);
   // deposit state
   const [depositsOpen,    setDepositsOpen]    = useState(false);
-  const [techOpen,        setTechOpen]        = useState(false);
   const [newDeposit,      setNewDeposit]      = useState({ date: '', amount: '' });
   const [depositSaving,   setDepositSaving]   = useState(false);
   const [depositError,    setDepositError]    = useState('');
@@ -586,7 +597,26 @@ export default function GSheetPortfolio() {
   const perHoldingTech = techSignals.per_holding || {};
   const abnormalStocks = report?.abnormal_stocks;
   const stockInsights = report?.stock_insights || [];
+
+  // 風險警示原本把兩種東西混在一起：組合層級（集中度／現金／市值波動）與個股技術
+  // 訊號。後者跟異常股票雷達吃同一批 list，只是排版成句子 —— 雷達那邊補上距離與
+  // 強度之後就完全涵蓋了，這裡只留組合層級的，外加雷達沒收錄到的個股（理論上沒有，
+  // 但真的有就不能靜靜吞掉）。
+  // （這一段在早退之後，不能用 hook；二十來則的過濾成本可以忽略）
+  const radarTickers = new Set((abnormalStocks?.summary || []).map(x => x.ticker));
+  const portfolioFlags = (report?.risk_flags || []).filter(f => {
+    const t = /^[↑↓〜]\s*([A-Z0-9.]{1,6})\b/.exec(f.message || '')?.[1];
+    return !t || !radarTickers.has(t);
+  });
   const perfRows = perfHistory?.rows || [];
+
+  // AI 卡產生端的 weight_pct 是空的（holdings 只帶 ticker/portfolio），
+  // 但這頁本來就有即時權重 —— 直接餵給日報面板，省得整欄都是「—」。
+  const weightByTicker = Object.fromEntries(
+    holdings
+      .filter(h => h.ticker && h.ticker !== 'CASH')
+      .map(h => [h.ticker, total_value > 0 ? (h.market_value ?? h.cost_basis ?? 0) / total_value * 100 : null])
+  );
 
   return (
     <div className="container py-10 space-y-6 animate-fade-in">
@@ -952,7 +982,12 @@ export default function GSheetPortfolio() {
           <div className="flex items-center gap-2.5">
             <CalendarRange size={15} className="text-[var(--accent-cyan)]" />
             <div>
-              <p className="text-sm font-semibold text-[var(--text-secondary)]">日報 · Portfolio Diagnosis</p>
+              {/* 這張是「組合自己的數字變化」，下面那張「AI 每日報告」是判讀與建議。
+                  兩張都叫「日報」時，光看標題分不出誰是數據、誰是文字。 */}
+              <p className="text-sm font-semibold text-[var(--text-secondary)]">組合體檢 · Portfolio Diagnosis</p>
+              <p className="text-[11px] text-[var(--text-muted)]">
+                純數據 · 跟前一期快照比組合的變化（不含 AI 判讀）
+              </p>
               <p className="text-[11px] text-[var(--text-muted)]">
                 {report?.baseline_date
                   ? `As of ${report.as_of} · compare vs ${report.baseline_date}`
@@ -1042,35 +1077,26 @@ export default function GSheetPortfolio() {
           </div>
         )}
 
+        {/* 組合層級的警示（集中度／現金／市值波動）—— 個股層級的都在下面的雷達裡 */}
+        {portfolioFlags.length > 0 && <RiskAlerts flags={portfolioFlags} />}
+
         {/* Abnormal Stocks */}
         {abnormalStocks?.summary?.length > 0 && (
           <div className="border-t border-[var(--glass-border)] pt-4 space-y-3">
             <div className="flex items-baseline justify-between gap-3 flex-wrap">
               <div>
                 <p className="text-sm font-bold text-[var(--text-primary)]">異常股票 · Breakout / Breakdown Radar</p>
-                <p className="text-[11px] text-[var(--text-muted)]">技術面掃描，依對投組的影響排序</p>
+                <p className="text-[11px] text-[var(--text-muted)]">
+                  技術面掃描，依對投組的影響排序 · 展開看 RSI／量比／操作建議
+                </p>
               </div>
               <span className="font-mono tabular-nums text-[11px] text-[var(--text-muted)]">
                 {abnormalStocks.summary.length} 檔 / {Object.values(abnormalStocks.counts || {}).reduce((s, n) => s + n, 0)} 個訊號
               </span>
             </div>
-            <AbnormalStocksPanel abnormal={abnormalStocks} />
+            <AbnormalStocksPanel abnormal={abnormalStocks} insights={stockInsights} />
           </div>
         )}
-
-        {/* Stock Insights */}
-        {stockInsights.length > 0 && (
-          <div className="border-t border-[var(--glass-border)] pt-4 space-y-4">
-            <div>
-              <p className="text-sm font-bold text-[var(--text-primary)]">個股分析 · Notable Movers</p>
-              <p className="text-[11px] text-[var(--text-muted)]">同一批標的，依處理優先順序分組並附操作建議</p>
-            </div>
-            <StockInsightsGrouped insights={stockInsights} />
-          </div>
-        )}
-
-        {/* Risk Flags */}
-        {report?.risk_flags?.length > 0 && <RiskAlerts flags={report.risk_flags} />}
 
         {report && (
           <div className="space-y-4">
@@ -1089,27 +1115,12 @@ export default function GSheetPortfolio() {
               </div>
             </div>
 
-            {/* Technical Signals by Ticker — the same signals the radar above
-                already ranks, kept as a per-ticker index behind a disclosure so
-                the card is not three copies of one list. */}
-            {Object.keys(techSignals).some(k => k !== 'per_holding' && techSignals[k]?.length > 0) && (
-              <div className="border-t border-[var(--glass-border)] pt-4 space-y-2.5">
-                <button
-                  type="button"
-                  onClick={() => setTechOpen(o => !o)}
-                  aria-expanded={techOpen}
-                  className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
-                >
-                  {techOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                  技術訊號總覽 · Technical Signals by Ticker
-                  <span className="font-normal text-[var(--text-muted)]">（依代號分組）</span>
-                </button>
-                {techOpen && <TechSignalsByTicker techSignals={techSignals} />}
-              </div>
-            )}
           </div>
         )}
       </div>
+
+      {/* 這頁只放一天的總結；逐檔決策卡／兩萬字復盤／全部候選與新聞在 /briefing */}
+      <DailyDigestPanel weights={weightByTicker} variant="summary" />
 
       {/* Deposits panel */}
       <div className="card overflow-hidden">
@@ -1942,9 +1953,16 @@ function RiskAlerts({ flags }) {
   );
 }
 
-function AbnormalStocksPanel({ abnormal }) {
+function AbnormalStocksPanel({ abnormal, insights = [] }) {
   const [activeCat, setActiveCat] = useState(null);
   const categories = abnormal?.categories;
+
+  // 雷達與「個股分析」本來是同一批標的、同一批訊號的兩種畫法。這裡只留雷達這一份
+  // 清單，把個股分析獨有的東西（RSI／量比／距 MA20／操作建議）折進每一列裡。
+  const insightByTicker = useMemo(
+    () => Object.fromEntries((insights || []).map(i => [i.ticker, i])),
+    [insights],
+  );
 
   // ticker → which categories it fired, so the tally can filter the list below
   // instead of just restating it.
@@ -2018,7 +2036,9 @@ function AbnormalStocksPanel({ abnormal }) {
             <span>訊號</span>
           </div>
           <div className="divide-y divide-[rgba(148,163,184,0.22)]">
-            {rows.map(item => <AbnormalStockRow key={item.ticker} item={item} />)}
+            {rows.map(item => (
+              <AbnormalStockRow key={item.ticker} item={item} insight={insightByTicker[item.ticker]} />
+            ))}
           </div>
         </div>
       )}
@@ -2026,8 +2046,15 @@ function AbnormalStocksPanel({ abnormal }) {
   );
 }
 
-function AbnormalStockRow({ item }) {
+function AbnormalStockRow({ item, insight }) {
+  const [open, setOpen] = useState(false);
   const bp = impactBp(item);
+  // 展開才有的細節：原本「個股分析」那張卡在講的東西
+  const detail = insight && (insight.suggestion || insight.rsi != null
+    || insight.vol_ratio != null || insight.price_vs_ma20 != null) ? insight : null;
+  const priority = insight ? classifyInsight(insight) : null;
+  const priorityDir = { critical: 'bear', watch: 'watch', opportunity: 'bull' };
+  const pri = priority ? DIR[priorityDir[priority]] : null;
   const chgDir = item.day_change_pct == null ? 'neutral' : item.day_change_pct >= 0 ? 'bull' : 'bear';
 
   const Ticker = (
@@ -2058,22 +2085,44 @@ function AbnormalStockRow({ item }) {
     </span>
   );
 
+  // 優先級原本是「個股分析」的分組標題，這裡縮成代號前面的一條色條
+  const TickerCell = (
+    <span className="flex items-center gap-1.5 min-w-0">
+      {pri && <span className={`h-3 w-1 shrink-0 rounded-full ${pri.bar}`} title={PRIORITY_LABEL[priority]} />}
+      {Ticker}
+    </span>
+  );
+  const Toggle = detail ? (
+    <button
+      type="button"
+      onClick={() => setOpen(o => !o)}
+      aria-expanded={open}
+      aria-label={`${item.ticker} 細節`}
+      className="shrink-0 rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+    >
+      {open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+    </button>
+  ) : null;
+
   return (
     <div className="px-2 py-2 hover:bg-[var(--bg-secondary)] transition-colors">
       {/* Desktop: aligned columns so prices and percentages read down the page */}
       <div className={`hidden md:grid ${RADAR_COLS} gap-x-3 items-center`}>
-        {Ticker}
+        {TickerCell}
         <div className="text-right">{Price}</div>
         <div className="text-right">{Chg}</div>
         <div className="text-right">{Weight}</div>
         <div className="text-right">{Impact}</div>
-        <SignalChips signals={item.signals} />
+        <div className="flex items-center gap-2 min-w-0">
+          <SignalChips signals={item.signals} />
+          <span className="ml-auto">{Toggle}</span>
+        </div>
       </div>
 
       {/* < 768px: identity line, then signals */}
       <div className="md:hidden space-y-1.5">
         <div className="flex items-baseline gap-2 flex-wrap">
-          {Ticker}
+          {TickerCell}
           {Price}
           {Chg}
           <span className="ml-auto flex items-baseline gap-2">
@@ -2081,13 +2130,33 @@ function AbnormalStockRow({ item }) {
             {Weight}
             <span className="text-[10px] text-[var(--text-muted)]">影響</span>
             {Impact}
+            {Toggle}
           </span>
         </div>
         <SignalChips signals={item.signals} max={3} />
       </div>
+
+      {open && detail && (
+        <div className="mt-2 space-y-2 border-l-2 border-[var(--glass-border)] pl-3">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px] text-[var(--text-muted)]">
+            {detail.rsi != null && (
+              <span>RSI <span className="font-mono tabular-nums text-[var(--text-secondary)]">{fmt(detail.rsi, 0)}</span></span>
+            )}
+            {detail.vol_ratio != null && (
+              <span>量比 <span className="font-mono tabular-nums text-[var(--text-secondary)]">{fmt(detail.vol_ratio, 2)}×</span></span>
+            )}
+            {detail.price_vs_ma20 != null && (
+              <span>距 MA20 <span className="font-mono tabular-nums text-[var(--text-secondary)]">{fmtPct(detail.price_vs_ma20)}</span></span>
+            )}
+          </div>
+          {detail.suggestion && <SuggestionList text={detail.suggestion} />}
+        </div>
+      )}
     </div>
   );
 }
+
+const PRIORITY_LABEL = { critical: '重點關注', watch: '留意觀察', opportunity: '潛在機會' };
 
 function classifyInsight(ins) {
   const rsi = ins.rsi ?? 50;
@@ -2101,154 +2170,6 @@ function classifyInsight(ins) {
   if (isCritical) return 'critical';
   if (ins.direction === 'bull') return 'opportunity';
   return 'watch';
-}
-
-function StockInsightsGrouped({ insights }) {
-  const groups = { critical: [], watch: [], opportunity: [] };
-  insights.forEach(ins => groups[classifyInsight(ins)].push(ins));
-
-  const sections = [
-    { key: 'critical',    label: '重點關注', sub: '需優先處理',     dir: 'bear'  },
-    { key: 'watch',       label: '留意觀察', sub: '訊號偏空或混合', dir: 'watch' },
-    { key: 'opportunity', label: '潛在機會', sub: '技術面偏多',     dir: 'bull'  },
-  ];
-
-  return (
-    <div className="space-y-5">
-      {sections.map(sec => {
-        const items = groups[sec.key];
-        if (items.length === 0) return null;
-        const d = DIR[sec.dir];
-        // Biggest position first — a 7% holding outranks a 1% holding.
-        const ordered = [...items].sort((a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0));
-        return (
-          <div key={sec.key}>
-            <div className="flex items-baseline gap-2 mb-2.5 pb-1.5 border-b border-[var(--glass-border)]">
-              <span className={`self-center h-3.5 w-1 rounded-full ${d.bar}`} />
-              <span className={`text-[13px] font-bold ${d.text}`}>{sec.label}</span>
-              <span className="text-[11px] text-[var(--text-muted)]">{sec.sub}</span>
-              <span className="ml-auto font-mono tabular-nums text-[11px] font-semibold text-[var(--text-secondary)]">
-                {ordered.length} 檔
-              </span>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-              {ordered.map(ins => (
-                <StockInsightCard key={ins.ticker} ins={ins} priority={sec.key} />
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function StockInsightCard({ ins, priority }) {
-  const dirMap = {
-    bull:    { label: '偏多', dir: 'bull' },
-    bear:    { label: '偏空', dir: 'bear' },
-    neutral: { label: '中性', dir: 'neutral' },
-  };
-  const priorityDir = { critical: 'bear', watch: 'watch', opportunity: 'bull' };
-  const d = dirMap[ins.direction] || dirMap.neutral;
-  const dc = DIR[d.dir];
-  const p = DIR[priorityDir[priority] || 'watch'];
-  const chgDir = ins.day_change_pct == null ? 'neutral' : ins.day_change_pct >= 0 ? 'bull' : 'bear';
-  const bp = impactBp(ins);
-
-  return (
-    <div className={`rounded-xl border flex overflow-hidden ${p.ring} ${p.wash}`}>
-      {/* Left rule repeats the group's direction so a card stays readable out of context. */}
-      <div className={`w-1 shrink-0 ${p.bar}`} />
-      <div className="flex-1 p-3.5 space-y-2.5 min-w-0">
-        <div className="flex items-baseline justify-between gap-2 flex-wrap">
-          <div className="flex items-baseline gap-2">
-            <Link href={`/stock/${ins.ticker}`}>
-              <span className="font-mono text-[15px] font-bold text-[var(--accent-cyan)] hover:underline cursor-pointer">{ins.ticker}</span>
-            </Link>
-            <span className="font-mono tabular-nums text-[12px] text-[var(--text-primary)]">
-              {ins.price != null ? `$${fmt(ins.price)}` : '—'}
-            </span>
-            <span className={`font-mono tabular-nums text-[13px] font-bold ${DIR[chgDir].text}`}>
-              {fmtPct(ins.day_change_pct)}
-            </span>
-          </div>
-          <span className={`shrink-0 text-[10.5px] font-semibold px-2 py-0.5 rounded-full ${dc.text} ${dc.chip}`}>
-            {d.label}
-          </span>
-        </div>
-
-        {/* Position context: how much of the portfolio this is, and what it did to it today. */}
-        {ins.weight_pct > 0 && (
-          <div className="flex items-baseline gap-3 text-[11px] text-[var(--text-muted)]">
-            <span>
-              持倉 <span className="font-mono tabular-nums text-[var(--text-secondary)]">{fmt(ins.weight_pct, 1)}%</span>
-            </span>
-            {bp != null && (
-              <span>
-                今日影響{' '}
-                <span className={`font-mono tabular-nums font-semibold ${DIR[bp >= 0 ? 'bull' : 'bear'].text}`}>{fmtBp(bp)} bp</span>
-              </span>
-            )}
-          </div>
-        )}
-
-        <SignalChips signals={(ins.signals || []).map(s => ({ label: s.tag, tone: s.tone }))} max={4} />
-
-        {ins.suggestion && <SuggestionList text={ins.suggestion} />}
-      </div>
-    </div>
-  );
-}
-
-function TechSignalsByTicker({ techSignals }) {
-  const tickerMap = {};
-  const add = (list, label, tone, detail) => {
-    (list || []).forEach(x => {
-      if (!tickerMap[x.ticker]) tickerMap[x.ticker] = [];
-      tickerMap[x.ticker].push({ label, tone, detail: detail ? detail(x) : null });
-    });
-  };
-  add(techSignals.golden_cross,    '↑ 黃金交叉', 'cyan');
-  add(techSignals.death_cross,     '↓ 死亡交叉', 'red');
-  add(techSignals.breakouts,        '↑ 突破壓力', 'cyan',   x => `$${x.price}`);
-  add(techSignals.breakdowns,       '↓ 跌破支撐', 'red',    x => `$${x.price}`);
-  add(techSignals.rsi_oversold,    '↑ RSI 超賣', 'green',  x => `RSI ${x.rsi}`);
-  add(techSignals.rsi_overbought,  '↓ RSI 超買', 'orange', x => `RSI ${x.rsi}`);
-  add(techSignals.near_support,    '↑ 近支撐',   'green',  x => `$${x.price} ↓${x.dist_pct}%`);
-  add(techSignals.near_resistance, '↓ 近壓力',   'orange', x => `$${x.price} ↑${x.dist_pct}%`);
-  add(techSignals.volume_anomalies,'量能異常',   'yellow', x => `${x.volume_ratio}×`);
-
-  const toneMap = {
-    cyan:   { text: 'text-[var(--accent-cyan)]',   bg: 'bg-[rgba(6,182,212,0.12)]',   border: 'border-[rgba(6,182,212,0.20)]' },
-    green:  { text: 'text-[var(--accent-green)]',  bg: 'bg-[rgba(16,185,129,0.12)]',  border: 'border-[rgba(16,185,129,0.20)]' },
-    orange: { text: 'text-[var(--accent-yellow)]', bg: 'bg-[rgba(249,115,22,0.12)]',  border: 'border-[rgba(249,115,22,0.20)]' },
-    red:    { text: 'text-[var(--accent-danger)]', bg: 'bg-[rgba(248,113,113,0.12)]', border: 'border-[rgba(248,113,113,0.20)]' },
-    yellow: { text: 'text-[var(--accent-yellow)]', bg: 'bg-[rgba(245,158,11,0.12)]',  border: 'border-[rgba(245,158,11,0.20)]' },
-  };
-
-  const tickers = Object.keys(tickerMap).sort();
-  return (
-    <div className="flex flex-wrap gap-2">
-      {tickers.map(ticker => (
-        <div key={ticker} className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] px-3 py-2.5 min-w-[130px]">
-          <p className="text-xs font-bold text-[var(--accent-cyan)] mb-2">
-            <Link href={`/stock/${ticker}`}><span className="hover:underline cursor-pointer">{ticker}</span></Link>
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {tickerMap[ticker].map((sig, i) => {
-              const t = toneMap[sig.tone] || toneMap.yellow;
-              return (
-                <span key={i} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${t.text} ${t.bg}`}>
-                  {sig.label}{sig.detail ? ` ${sig.detail}` : ''}
-                </span>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function TechSignalGroup({ label, tone, items }) {

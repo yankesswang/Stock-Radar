@@ -4,6 +4,7 @@ import { TrendingUp, TrendingDown, Activity, RefreshCw, AlertTriangle, Globe2 } 
 import { Link } from 'wouter';
 import { useExtendedQuotes } from '../components/useExtendedQuotes';
 import ExtendedQuoteBadge from '../components/ExtendedQuote';
+import SectorPulse from '../components/SectorPulse';
 
 // ── SVG Sparkline (inline, no ResizeObserver dependency) ─────────────────────
 function Sparkline({ data, positive, height = 56 }) {
@@ -85,6 +86,7 @@ export default function Home() {
         data={market} loading={marketLoading} error={marketError}
         onRefresh={() => loadAll(true)}
       />
+      <SectorPulse />
       <MacroSection data={macro} loading={macroLoading} />
     </div>
   );
@@ -125,7 +127,7 @@ function MarketOverview({ data, loading, error, onRefresh }) {
       : 'bg-[rgba(217,119,6,0.1)] text-[var(--accent-amber)] border-[rgba(217,119,6,0.25)]';
 
   return (
-    <section className="container rounded-[28px] border border-[var(--glass-border)] bg-[linear-gradient(135deg,#f8fafc_0%,#ffffff_60%,#eef4ff_100%)] p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-6">
+    <section className="container rounded-[28px] border border-[var(--glass-border)] bg-[image:var(--panel-gradient)] p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)] sm:p-6">
       <div className="mb-5 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2.5">
           <div className="flex items-center gap-2 rounded-full border border-[rgba(0,82,255,0.18)] bg-[rgba(0,82,255,0.06)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
@@ -202,7 +204,7 @@ function MarketCard({ item, sparkData, extended }) {
   return (
     <Link
       href={`/market/${encodeURIComponent(item.symbol)}`}
-      className="block rounded-2xl border border-[var(--glass-border)] bg-white px-4 pt-3.5 pb-2 transition-all duration-200 hover:-translate-y-0.5 hover:border-[rgba(0,82,255,0.2)] hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)]"
+      className="block rounded-2xl border border-[var(--glass-border)] bg-[var(--bg-primary)] px-4 pt-3.5 pb-2 transition-all duration-200 hover:-translate-y-0.5 hover:border-[rgba(0,82,255,0.2)] hover:shadow-[0_12px_28px_rgba(15,23,42,0.09)]"
     >
       <div className="flex items-start justify-between gap-1 mb-2.5">
         <div>
@@ -266,7 +268,7 @@ function MarketCard({ item, sparkData, extended }) {
 
 function MarketSkeleton() {
   return (
-    <div className="h-[116px] animate-pulse rounded-2xl border border-[var(--glass-border)] bg-white p-4">
+    <div className="h-[116px] animate-pulse rounded-2xl border border-[var(--glass-border)] bg-[var(--bg-primary)] p-4">
       <div className="h-3 w-16 rounded bg-[var(--bg-tertiary)]" />
       <div className="mt-3 h-7 w-24 rounded bg-[var(--bg-tertiary)]" />
       <div className="mt-2 h-4 w-14 rounded-full bg-[var(--bg-tertiary)]" />
