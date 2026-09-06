@@ -39,6 +39,9 @@ data/statistics/
 data/dcf/
 data/telegram_notifications_seen.json
 
+data/market-news/
+data/_archive/
+
 # ── Generated reports ─────────────────────────────────────────────────────────
 valuation/*.xlsx
 valuation/~$*.xlsx
@@ -86,3 +89,6 @@ data/finance-digest/
 
 # ── DB backups ────────────────────────────────────────────────────────────────
 *.db.bak-*
+
+# 發現層 universe 快取（可重建，7 天過期自己重抓）
+data/universe/
