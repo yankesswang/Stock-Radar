@@ -1,3 +1,5 @@
+import time as _time
+
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -9,6 +11,10 @@ from ..models import Stock, Industry, Metric, Forecast, Valuation, PeMedian
 from ..schemas import StockBrief, StockDetail, MetricOut, ForecastOut, ValuationOut
 
 router = APIRouter()
+
+# batch-quote cache for /prices, keyed by ticker
+_PRICE_CACHE: dict[str, dict] = {}
+_PRICE_TTL = 120  # seconds
 
 
 class IndustryUpdate(BaseModel):
@@ -86,6 +92,97 @@ def list_stocks(
             "total_pages": (total + per_page - 1) // per_page,
         },
     }
+
+
+# NOTE: must stay above `/{ticker}` — FastAPI matches routes in declaration
+# order and the path parameter would otherwise swallow "prices".
+@router.get("/prices")
+def get_stock_prices(tickers: str = Query(..., description="Comma-separated tickers")):
+    """Batch daily quotes for many tickers in one yfinance download.
+
+    The per-ticker `/{ticker}/price` endpoint calls `.info`, which costs one HTTP
+    round-trip each — unusable for a whole watchlist. This pulls every symbol in a
+    single request and caches for 2 minutes. Taiwan (.TW) prices are converted
+    TWD→USD, matching `/{ticker}/price`.
+    """
+    requested = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not requested:
+        return {"prices": {}}
+
+    now = _time.time()
+    prices: dict[str, dict] = {}
+    to_fetch: list[str] = []
+    for t in requested:
+        cached = _PRICE_CACHE.get(t)
+        if cached and now - cached["ts"] < _PRICE_TTL:
+            prices[t] = cached["data"]
+        else:
+            to_fetch.append(t)
+
+    if to_fetch:
+        prices.update(_download_quotes(to_fetch, now))
+
+    return {"prices": prices, "fetched_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())}
+
+
+def _download_quotes(symbols: list[str], now: float) -> dict[str, dict]:
+    """Last close + previous close for `symbols`, from one bulk yfinance call."""
+    out: dict[str, dict] = {}
+    try:
+        raw = yf.download(
+            symbols,
+            period="5d",
+            interval="1d",
+            auto_adjust=True,
+            group_by="ticker",
+            threads=True,
+            progress=False,
+        )
+    except Exception:
+        return out
+    if raw is None or raw.empty:
+        return out
+
+    usd_twd = _usd_twd_rate() if any(s.endswith(".TW") for s in symbols) else None
+
+    for sym in symbols:
+        try:
+            # single-symbol downloads come back without the ticker column level
+            frame = raw[sym] if len(symbols) > 1 else raw
+            closes = frame["Close"].dropna()
+            if closes.empty:
+                continue
+            price = float(closes.iloc[-1])
+            prev = float(closes.iloc[-2]) if len(closes) >= 2 else None
+            currency = "USD"
+            if sym.endswith(".TW") and usd_twd:
+                price /= usd_twd
+                if prev is not None:
+                    prev /= usd_twd
+            change = round(price - prev, 4) if prev else None
+            data = {
+                "ticker": sym,
+                "price": round(price, 4),
+                "currency": currency,
+                "previous_close": round(prev, 4) if prev else None,
+                "change": change,
+                "change_percent": round(change / prev * 100, 2) if (change and prev) else None,
+                "last_date": str(closes.index[-1])[:10],
+            }
+            out[sym] = data
+            _PRICE_CACHE[sym] = {"data": data, "ts": now}
+        except Exception:
+            continue
+    return out
+
+
+def _usd_twd_rate() -> float | None:
+    try:
+        hist = yf.Ticker("TWD=X").history(period="1d", auto_adjust=True)
+        close = hist["Close"].dropna()
+        return float(close.iloc[-1]) if not close.empty else None
+    except Exception:
+        return None
 
 
 @router.get("/{ticker}", response_model=StockDetail)

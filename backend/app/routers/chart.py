@@ -11,6 +11,7 @@ import numpy as np
 import requests
 
 from ..indicators import compute_indicator_frame, compute_analytics
+from ..trendlines import regression_channel_frame, compute_trend_structure
 
 router = APIRouter()
 
@@ -474,6 +475,16 @@ def get_chart(
     except Exception:
         extra = pd.DataFrame(index=df.index)
 
+    # Linear-regression channel rides along as per-bar series so the frontend can
+    # draw it with the same overlay machinery as Bollinger/Keltner.
+    reg_stats = None
+    try:
+        reg_frame, reg_stats = regression_channel_frame(
+            df, lookback=max(ppy, 60), periods_per_year=ppy)
+        extra = extra.join(reg_frame, how="left") if not extra.empty else reg_frame
+    except Exception:
+        pass
+
     bars = _compute_indicators(df, extra)
     sr   = _find_sr_levels(df)
 
@@ -497,6 +508,15 @@ def get_chart(
                                       periods_per_year=ppy, ma=ma_series)
     except Exception as exc:  # analytics are additive — never break the chart
         analytics = {"error": str(exc)}
+
+    # Trend structure (diagonal trendlines / channel / patterns) is the one part
+    # of the chart that is drawn rather than plotted per bar.
+    try:
+        analytics["trend"] = compute_trend_structure(df, periods_per_year=ppy,
+                                                     reg_stats=reg_stats)
+        analytics["trend"]["regression"] = reg_stats
+    except Exception as exc:
+        analytics["trend"] = {"error": str(exc)}
 
     result = {
         "ticker": ticker.upper(), "period": period, "interval": yf_interval,

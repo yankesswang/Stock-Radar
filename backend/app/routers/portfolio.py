@@ -199,6 +199,44 @@ def _fetch_technicals(ticker: str) -> dict | None:
                      float(volumes[:-1].mean()) if len(volumes) > 1 else None)
         vol_ratio  = round(today_vol / avg_vol_20, 2) if (today_vol and avg_vol_20 and avg_vol_20 > 0) else None
 
+        # 多期間報酬。一年的歷史本來就抓下來了，這裡順手算 —— 相對強弱（RS）與強弱榜
+        # 靠這幾個數字，不必為了它們再打一輪 yfinance。
+        # 分割（split）當天 Yahoo 常常還沒把歷史回溯調整完，未調整的序列會生出
+        # 「APH 一個月 -48%」這種假崩跌 —— 它其實是 2:1 分割。history() 本來就帶
+        # Stock Splits 欄，區間內有分割就把那一段的報酬判為不可信（None）。
+        splits = hist["Stock Splits"] if "Stock Splits" in hist.columns else None
+        # 備援路徑（_fetch_yahoo_chart_df）不帶 Stock Splits 欄，只能從價格自己認：
+        # 單日跳動剛好落在常見分割比例附近（2、3、4、5、10、1.5 或其倒數），那不是行情。
+        _SPLIT_RATIOS = (2.0, 3.0, 4.0, 5.0, 10.0, 1.5)
+
+        def _looks_like_split(ratio: float) -> bool:
+            # 分割當天股價本身也會動，2:1 的實測比例是 1.91 而不是 2.00 —— 容忍 8%。
+            # 只在跳動 >25% 時才套用，正常行情不會誤傷；真有單日 -47% 的股票被濾掉，
+            # 也好過在榜上掛一個假的 -48%。
+            if 0.75 < ratio < 1.33:
+                return False
+            for r in _SPLIT_RATIOS:
+                if abs(ratio - r) / r < 0.08 or abs(1 / ratio - r) / r < 0.08:
+                    return True
+            return False
+
+        step = closes / closes.shift(1)
+
+        def _split_in(bars: int) -> bool:
+            if splits is not None:
+                if bool((splits.iloc[-(bars + 1):].fillna(0) != 0).any()):
+                    return True
+            window = step.iloc[-bars:].dropna()
+            return any(_looks_like_split(float(r)) for r in window if r > 0)
+
+        def _ret(bars: int) -> float | None:
+            if len(closes) <= bars or _split_in(bars):
+                return None
+            past = float(closes.iloc[-1 - bars])
+            return round((price - past) / past * 100, 2) if past > 0 else None
+
+        returns = {"1d": _ret(1), "1w": _ret(5), "1m": _ret(21), "3m": _ret(63)}
+
         # Moving averages
         ma5  = round(float(closes.iloc[-5:].mean()),  2) if len(closes) >= 5  else None
         ma20 = round(float(closes.iloc[-20:].mean()), 2) if len(closes) >= 20 else None
@@ -308,6 +346,7 @@ def _fetch_technicals(ticker: str) -> dict | None:
         return {
             "price":              round(price, 2),
             "prev_close":         round(prev_close, 2) if prev_close else None,
+            "returns":            returns,
             "volume":             int(today_vol)  if today_vol  else None,
             "avg_volume_20":      int(avg_vol_20) if avg_vol_20 else None,
             "volume_ratio":       vol_ratio,
