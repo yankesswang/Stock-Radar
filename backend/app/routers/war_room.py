@@ -6,9 +6,11 @@ moves, live holdings and 30-day sparklines so the frontend can render the
 whole ops-center in a single request.
 """
 import json
+import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -17,6 +19,12 @@ from ..config import settings
 router = APIRouter()
 
 JOURNAL_DIR = settings.DATA_DIR / "agent" / "journal"
+LEDGER_DIR = settings.DATA_DIR / "agent" / "ledger"
+OPP_DIR = settings.DATA_DIR / "agent" / "opportunities"
+# 05:00 預產的逐檔 AI 決策卡彙整（ai_report.py 寫）—— 復盤的逐檔證據層
+AI_REPORT_DIR = settings.DATA_DIR / "ai_reports"
+# 完整六區塊復盤的鏡像（war_room.py save_mirror_note 落地處；launchd 讀不了 ~/Documents）
+MIRROR_STOCK_DIR = Path(os.environ.get("STOCK_DIGEST_DIR", "~/.arthur-digest/stock")).expanduser()
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # ── Sparkline cache (10 min TTL) — avoids hammering yfinance on re-fetch ────────
@@ -282,4 +290,149 @@ def overview():
         "sectors": sectors,
         "holdings": holdings_list,
         "sparklines": spark,
+    }
+
+
+# ── 盤後復盤（review）— 純讀檔，零 yfinance，給前端圖表化復盤頁 ──────────────────
+
+def _read_json_for(date: str, base: Path) -> dict | None:
+    if not _valid_date(date):
+        return None
+    path = base / f"{date}.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _read_report_md(date: str) -> str | None:
+    """war_room.py 鏡像落地的六區塊完整復盤 markdown。"""
+    if not _valid_date(date):
+        return None
+    path = MIRROR_STOCK_DIR / date / "🎖️ War Room.md"
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        return None
+
+
+# 每張卡只帶前端會畫的欄位。整份 ai_reports/{date}.json 還包含 markdown 全文、
+# 每檔 10 則原始新聞與 analysis 長文 —— 那些是 war_room 簡報的素材，不是復盤頁要讀的。
+_AI_CARD_FIELDS = (
+    "ticker", "company_name", "generated_at", "price", "score", "rating", "action",
+    "trend", "summary", "buy_zone", "target", "stop_loss", "risks", "catalysts",
+    "analysis_bullets",
+)
+
+
+def _read_ai_cards(date: str) -> dict | None:
+    """05:00 預產的逐檔 AI 決策卡（data/ai_reports/{date}.json）—— 復盤的「逐檔證據層」。
+
+    2026-09-03 起 AI 卡不再有自己的日報分頁：它是 war_room 的備料，讀者在復盤頁
+    對照「War Room 決策 vs AI 卡看法」，分歧的才值得多看一眼。
+    """
+    raw = _read_json_for(date, AI_REPORT_DIR)
+    if not raw:
+        return None
+    cards = [
+        {k: c.get(k) for k in _AI_CARD_FIELDS}
+        for c in (raw.get("cards") or []) if isinstance(c, dict) and c.get("ticker")
+    ]
+    return {
+        "generated_at": raw.get("generated_at"),
+        "total": raw.get("total"),
+        "ok": raw.get("ok", len(cards)),
+        "errors": raw.get("errors") or [],
+        "holdings": raw.get("holdings") or [],
+        "cards": cards,
+    }
+
+
+def _review_dates() -> list[str]:
+    """有任何復盤產物（journal / 完整報告 / 帳本 / AI 卡）的日期，新到舊。
+
+    只有 AI 卡、復盤本身沒跑的日子也要列 —— 那天不是「沒事」，是復盤缺件；
+    前端會把它寫明，而不是讓那天從日曆上消失。
+    """
+    dates: set[str] = set(_list_dates())
+    for base in (LEDGER_DIR, AI_REPORT_DIR):
+        if base.is_dir():
+            dates |= {p.stem for p in base.glob("*.json") if _valid_date(p.stem)}
+    try:
+        if MIRROR_STOCK_DIR.is_dir():
+            dates |= {
+                p.name for p in MIRROR_STOCK_DIR.iterdir()
+                if p.is_dir() and _valid_date(p.name) and (p / "🎖️ War Room.md").is_file()
+            }
+    except OSError:
+        pass
+    return sorted(dates, reverse=True)
+
+
+@router.get("/review")
+def review_index():
+    """與 /review/dates 相同；每日報告面板對每個分頁都用 GET {api} 取日期清單。"""
+    return {"dates": _review_dates()}
+
+
+@router.get("/review/dates")
+def review_dates():
+    return {"dates": _review_dates()}
+
+
+@router.get("/review/trend")
+def review_trend():
+    """跨日決策品質曲線：每份 journal 的 scoring_of_previous 聚合成時間序列。
+
+    欄位：n_decisions / triggered / trigger_rate（%）/ avg_change_pct（決策期間標的平均漲跌）
+    ＋當日 market_regime。前端畫「復盤品質曲線」用。
+    """
+    rows: list[dict] = []
+    for d in sorted(_list_dates()):
+        j = _load_journal(d) or {}
+        sc = j.get("scoring_of_previous") or {}
+        results = [r for r in (sc.get("results") or []) if isinstance(r, dict)]
+        row: dict = {
+            "date": d,
+            "market_regime": j.get("market_regime"),
+            "n_decisions": len(j.get("decisions") or []),
+        }
+        if results:
+            trig = sum(1 for r in results if r.get("status") == "triggered")
+            scored = [r["change_pct"] for r in results
+                      if isinstance(r.get("change_pct"), (int, float))]
+            row["scored_n"] = len(results)
+            row["triggered"] = trig
+            row["trigger_rate"] = round(trig / len(results) * 100, 1)
+            row["avg_change_pct"] = (
+                round(sum(scored) / len(scored), 2) if scored else None
+            )
+        rows.append(row)
+    return {"trend": rows}
+
+
+@router.get("/review/{date}")
+def review(date: str):
+    """單日復盤完整包：journal 決策 + 決策帳本 + 六區塊報告 md + 當日機會掃描 + 逐檔 AI 卡。"""
+    if not _valid_date(date):
+        raise HTTPException(status_code=400, detail="Invalid date format, expected YYYY-MM-DD")
+    journal = _load_journal(date)
+    ledger = _read_json_for(date, LEDGER_DIR)
+    report_md = _read_report_md(date)
+    opportunities = _read_json_for(date, OPP_DIR)
+    ai_cards = _read_ai_cards(date)
+    if not any([journal, ledger, report_md, opportunities, ai_cards]):
+        raise HTTPException(status_code=404, detail=f"No review artifacts for {date}")
+    # 面板頂端「產生於」：復盤本身的時間優先；復盤沒跑就退回 AI 卡的時間
+    generated_at = (journal or {}).get("generated_at") or (ai_cards or {}).get("generated_at")
+    return {
+        "date": date,
+        "generated_at": generated_at,
+        "journal": journal,
+        "ledger": ledger,
+        "report_md": report_md,
+        "opportunities": opportunities,
+        "ai_cards": ai_cards,
     }

@@ -3,6 +3,7 @@ import asyncio
 import csv
 import json
 import os
+import sys
 import time
 from datetime import date, datetime, time as dt_time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,6 +16,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..config import settings
+
+# 全系統共用的 claude 額度守門員（Arthur_App/scripts/lib/claude_guard.py）
+_GUARD_LIB = Path(__file__).resolve().parents[4] / "scripts" / "lib"
+if str(_GUARD_LIB) not in sys.path:
+    sys.path.insert(0, str(_GUARD_LIB))
+import claude_guard as _guard  # noqa: E402
 from ..database import SessionLocal, get_db
 from ..models import Stock
 from .earnings import get_earnings_calendar
@@ -327,6 +334,10 @@ def _collect_due_earnings(db: Session, seen: dict[str, float], portfolio_tickers
         ticker = str(event.get("ticker") or "").upper()
         if ticker not in portfolio_tickers:
             continue
+        # /api/earnings/calendar also carries already-reported events for the
+        # calendar UI — only the scheduled ones are a reminder.
+        if event.get("status") == "reported":
+            continue
 
         try:
             earnings_date = date.fromisoformat(event["date"])
@@ -342,6 +353,9 @@ def _collect_due_earnings(db: Session, seen: dict[str, float], portfolio_tickers
             continue
 
         when_text = "今天" if diff_days == 0 else "明天" if diff_days == 1 else f"{diff_days} 天後"
+        session = {"BMO": "盤前", "AMC": "盤後"}.get(event.get("time_of_day") or "")
+        if session:
+            when_text = f"{when_text}{session}"
         due.append({**event, "event_id": event_id, "when_text": when_text, "diff_days": diff_days})
 
     due.sort(key=lambda item: (item["diff_days"], item["ticker"]))
@@ -1208,15 +1222,159 @@ def _mark_digest_seen(
 
 CLAUDE_ANALYSIS_EVENT_PREFIX = "telegram:claude-analysis:"
 
+# 依賴式工作流的狀態機（scripts/pipeline_state.py，純標準函式庫）。
+# 固定時間只當「最晚啟動時間」：前置階段一完成就立刻接著跑，不用空等到整點，
+# 也不會出現 A 還在跑、B 已到點的搶資源情況。
+_SCRIPTS_ROOT = Path(__file__).resolve().parents[3]
+if str(_SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_ROOT))
+try:
+    from scripts import pipeline_state
+except Exception as _exc:      # pragma: no cover - 匯入失敗時退回純時間排程
+    pipeline_state = None
+    print(f"[pipeline] 狀態機不可用，退回固定時間排程：{_exc}")
+
+
+# 戰情官復盤要覆蓋全部 5 個美股交易日：台北週二～週五對應美股週一～週四收盤，
+# 台北週六（weekday 5）補上美股週五收盤——否則週五收盤（週末跳空風險最高的一天）永遠沒人復盤。
+CLAUDE_ANALYSIS_WEEKDAYS = DAILY_PORTFOLIO_REPORT_WEEKDAYS | {5}
+# ⚠️ 這幾個時間常數自 2026-08-24 起只保留給既有引用與說明用；
+# 真正的排程權威在 scripts/pipeline_state.STAGES（那裡的 latest_start 是「最晚啟動時間」，
+# 前置階段一完成就會提早起跑）。要改排程請改那裡，不要改這裡。
+MARKET_SCAN_TIME = dt_time(6, 0)   # ＝ pipeline_state 的 market_scan.latest_start
+MARKET_SCAN_EVENT_PREFIX = "telegram:market-scan:"
+MARKET_NEWS_TIME = dt_time(6, 40)  # ＝ pipeline_state 的 market_news.latest_start
+MARKET_NEWS_EVENT_PREFIX = "telegram:market-news:"
+
 
 def _should_send_claude_analysis(now: datetime, seen: dict) -> bool:
-    """Run once on weekdays at/after DAILY_PORTFOLIO_REPORT_TIME (same window as daily report)."""
-    if now.weekday() not in DAILY_PORTFOLIO_REPORT_WEEKDAYS:
+    """Run once per US trading day at/after DAILY_PORTFOLIO_REPORT_TIME."""
+    if now.weekday() not in CLAUDE_ANALYSIS_WEEKDAYS:
         return False
     if now.time() < DAILY_PORTFOLIO_REPORT_TIME:
         return False
     event_id = f"{CLAUDE_ANALYSIS_EVENT_PREFIX}{now.date().isoformat()}"
     return not _seen_recently(seen, event_id, TELEGRAM_NOTIFICATION_COOLDOWN_SECONDS)
+
+
+def _alert_pipeline_failure(stage: str, detail: str, *, retry_hint: str = "",
+                            manual_cmd: str = "uv run python scripts/war_room.py") -> None:
+    """復盤/掃描管線掛掉時發 Telegram 告警——失敗絕不可靜默，否則整天沒復盤也沒人知道。"""
+    try:
+        _send_telegram_message(
+            f"⚠️ {stage} 失敗（{_taipei_now().strftime('%m/%d %H:%M')}）\n\n"
+            f"{detail[:600]}\n\n"
+            + (retry_hint + "\n\n" if retry_hint else "")
+            + "手動補跑：\n"
+            f"cd ~/Projects/Arthur_App/stock-radar && {manual_cmd}"
+        )
+    except Exception as exc:
+        print(f"[alert] 告警發送也失敗：{exc}")
+
+
+def _sync_external_stages(today: date) -> None:
+    """launchd 擁有的階段（AI 持倉卡）不會自己回報，靠產物存在與否補登。
+
+    沒有這一步，war_room 的前置永遠不會滿足，就退化成純時間排程（05:30 才起跑）。
+    """
+    if pipeline_state is None:
+        return
+    try:
+        if pipeline_state.is_done(today, "ai_cards"):
+            return
+        card = settings.DATA_DIR / "ai_reports" / f"{today.isoformat()}.json"
+        if card.exists():
+            pipeline_state.mark_result(today, "ai_cards", pipeline_state.STATUS_SUCCESS,
+                                       f"launchd 產物存在：{card.name}")
+    except Exception as exc:
+        print(f"[pipeline] 外部階段補登失敗（略過）：{exc}")
+
+
+def _run_pipeline_stage(stage_key: str, *, script: str, args: list[str],
+                        timeout: int, label: str,
+                        manual_cmd: str | None = None) -> str | None:
+    """依賴式工作流的統一 runner。
+
+    gating 交給 scripts/pipeline_state（前置完成 or 到最晚啟動時間；含重試次數與冷卻），
+    這裡只負責跑腳本並回報結果。回傳 event_id（供既有 seen 去重沿用），沒跑就 None。
+    """
+    import subprocess
+
+    now = _taipei_now()
+    today = now.date()
+
+    if pipeline_state is not None:
+        ok, why = pipeline_state.should_run(today, stage_key, now=now)
+        if not ok:
+            return None
+        print(f"[pipeline] {label} 起跑：{why}")
+
+    # claude 額度守門：鎖著就先不起跑，也不動用重試次數 —— 這個 loop 本來就會反覆呼叫，
+    # 等額度 reset 之後的某一輪自然會通過。避免在死區裡把 max_attempts 燒光。
+    if (until := _guard.blocked_until()):
+        from datetime import datetime as _dt
+        print(f"[{stage_key}] claude 額度未恢復（{_dt.fromtimestamp(until):%m-%d %H:%M} reset），本輪跳過")
+        return None
+
+    scripts_dir = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
+    script_path = scripts_dir / script
+    if not script_path.exists():
+        print(f"[{stage_key}] Script not found: {script_path}")
+        if pipeline_state is not None:
+            pipeline_state.mark_result(today, stage_key, pipeline_state.STATUS_FAILED,
+                                       f"找不到腳本 {script_path}")
+        return None
+
+    if pipeline_state is not None:
+        pipeline_state.mark_start(today, stage_key)
+    attempts = 0
+    max_attempts = 1
+    if pipeline_state is not None:
+        stage = pipeline_state.STAGE_BY_KEY.get(stage_key)
+        max_attempts = stage.max_attempts if stage else 1
+        attempts = (pipeline_state.load(today)["stages"].get(stage_key) or {}).get("attempts", 1)
+
+    event_id = f"telegram:{stage_key}:{today.isoformat()}"
+    status = pipeline_state.STATUS_SUCCESS if pipeline_state else None
+    detail = None
+    try:
+        result = subprocess.run(
+            ["uv", "run", "python", str(script_path), *args],
+            cwd=str(script_path.parent.parent),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode != 0:
+            detail = ((result.stderr or result.stdout or "無輸出").strip().splitlines() or ["無輸出"])[-1]
+            print(f"[{stage_key}] Non-zero exit:\n{(result.stderr or '')[:2000]}")
+            status = pipeline_state.STATUS_FAILED if pipeline_state else None
+            try:
+                # 把 reset 時間回填共用 state，下一輪的 gate 就會擋住，不會空轉重試
+                _guard.check((result.stdout or "") + (result.stderr or ""), job=stage_key)
+            except _guard.QuotaExceeded as qexc:
+                detail = f"claude 額度用罄，{qexc.resets_at_dt:%m-%d %H:%M} reset 後自動重試" \
+                    if qexc.resets_at_dt else "claude 額度用罄，reset 時間未知"
+                print(f"[{stage_key}] {detail}")
+        else:
+            print(f"[{stage_key}] Completed successfully")
+    except subprocess.TimeoutExpired:
+        detail = f"執行超時（>{timeout // 60} 分鐘）"
+        print(f"[{stage_key}] {detail}")
+        status = pipeline_state.STATUS_FAILED if pipeline_state else None
+    except Exception as exc:
+        detail = f"啟動失敗：{exc}"
+        print(f"[{stage_key}] {detail}")
+        status = pipeline_state.STATUS_FAILED if pipeline_state else None
+
+    if pipeline_state is not None:
+        pipeline_state.mark_result(today, stage_key, status, detail)
+
+    if detail:
+        remaining = max(0, max_attempts - attempts)
+        hint = (f"還會自動重試 {remaining} 次（冷卻後）。" if remaining
+                else "重試次數已用完，今天不會再自動跑。")
+        _alert_pipeline_failure(label, detail, retry_hint=hint,
+                                manual_cmd=manual_cmd or f"uv run python scripts/{script}")
+    return event_id
 
 
 def _extract_mimi_sections(tickers: list[str]) -> str:
@@ -1446,50 +1604,59 @@ def _generate_claude_daily_analysis(db: Session, seen: dict) -> str | None:
 
 
 def _trigger_daily_analysis_script(seen: dict) -> str | None:
+    """Run scripts/war_room.py（戰情中心，claude -p 自主蒐集情報）once per trading day.
+
+    排程由 scripts/pipeline_state 的依賴式工作流決定：AI 持倉卡（launchd）一完成就可起跑，
+    最遲 05:30 無論如何都會開始；失敗會依 max_attempts 自動重試（冷卻 20 分鐘），
+    不再「當天永久放棄」。腳本自己處理 Telegram/LINE 發送。
     """
-    Run scripts/war_room.py（戰情中心，claude -p 自主蒐集情報）once per trading day.
-    war_room.py 不在時 fallback 回 scripts/daily_analysis.py（舊版一次性大 prompt）。
-    The script handles its own Telegram/LINE sending; we just gate on the seen-event key.
-    Returns the event_id if triggered, None if skipped.
+    return _run_pipeline_stage(
+        "war_room", script="war_room.py", args=["--no-obsidian"],
+        # war_room 的 claude 自主蒐集情報（tool-use 多輪）比舊版一次性 prompt 慢，放寬到 40 分鐘
+        timeout=2400, label="盤後復盤（war_room）",
+    )
+
+
+def _trigger_market_scan_script(seen: dict) -> str | None:
+    """每個美股交易日收盤後跑一次 scripts/market_scan.py（機會獵手）。
+
+    復盤顧持倉，這支顧「新機會」——**依賴 war_room 完成才起跑**（不再兩條一起搶 claude／
+    yfinance；復盤 06:10 才結束時掃描就 06:10 接著跑，而不是 06:00 硬闖）。
+    掃描腳本自己發 Telegram 精華（含 🆕 首次入圍）並落地 opportunities journal，
+    隔天 war_room 簡報的「🔭 機會掃描回顧」會回頭追這些機會。
+    ⚠️ 掃描產出的是**研究候選**，不是交易指令——買賣結論只由 war_room 給。
     """
-    import subprocess
+    return _run_pipeline_stage(
+        "market_scan", script="market_scan.py", args=[],
+        timeout=2400, label="機會掃描（market_scan）",
+    )
 
-    now = _taipei_now()
-    if not _should_send_claude_analysis(now, seen):
-        return None
 
-    event_id = f"{CLAUDE_ANALYSIS_EVENT_PREFIX}{now.date().isoformat()}"
-    scripts_dir = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
-    script_path = scripts_dir / "war_room.py"
-    if not script_path.exists():
-        script_path = scripts_dir / "daily_analysis.py"
+def _trigger_market_news_script(seen: dict) -> str | None:
+    """每個美股交易日早上跑一次 scripts/market_news.py（當日市場新聞策展）。
 
-    if not script_path.exists():
-        print(f"[daily_analysis] Script not found: {script_path}")
-        return None
+    復盤看持倉、掃描看機會，這支只回答「今天發生了什麼我該知道的事」：大盤/宏觀 +
+    持倉與觀察名單的當日新聞，claude 策展後落地 data/market-news/{date}.json，
+    portal 每日報告的「市場新聞」分頁直接讀。**只給事實與來源，不給持倉操作建議。**
+    不推 Telegram（要推加 --telegram）。依賴 market_scan 完成，最遲 06:40 起跑。
+    """
+    return _run_pipeline_stage(
+        "market_news", script="market_news.py", args=[],
+        timeout=1500, label="市場新聞（market_news）",
+    )
 
-    print(f"[daily_analysis] Triggering {script_path.name} ...")
-    try:
-        result = subprocess.run(
-            ["uv", "run", "python", str(script_path), "--no-obsidian"],
-            cwd=str(script_path.parent.parent),
-            capture_output=True,
-            text=True,
-            # war_room 的 claude 自主蒐集情報（tool-use 多輪）比舊版一次性 prompt 慢，放寬到 40 分鐘
-            timeout=2400,
-        )
-        if result.returncode != 0:
-            print(f"[daily_analysis] Non-zero exit:\n{result.stderr[:500]}")
-        else:
-            print("[daily_analysis] Completed successfully")
-    except subprocess.TimeoutExpired:
-        print("[daily_analysis] Timed out after 40 minutes")
-        return None
-    except Exception as exc:
-        print(f"[daily_analysis] Failed to launch: {exc}")
-        return None
 
-    return event_id
+def _trigger_completeness_check(seen: dict) -> str | None:
+    """管線收尾：算當日完整性 manifest，缺件就推 Telegram。
+
+    這是「不能讓使用者自己從畫面猜今天缺什麼」的落實：manifest 同時寫進
+    data/agent/manifest/{date}.json 與鏡像目錄 _manifest.json（portal 讀後者）。
+    """
+    return _run_pipeline_stage(
+        "completeness", script="daily_manifest.py", args=["--telegram"],
+        timeout=300, label="完整性檢查（daily_manifest）",
+        manual_cmd="uv run python scripts/daily_manifest.py --telegram",
+    )
 
 
 async def telegram_notification_loop() -> None:
@@ -1497,6 +1664,7 @@ async def telegram_notification_loop() -> None:
         db = SessionLocal()
         try:
             seen = _load_seen()
+            _sync_external_stages(_taipei_now().date())
             portfolio_tickers = _portfolio_tickers()
             earnings = _collect_due_earnings(db, seen, portfolio_tickers)
             portfolio_movers, valuation_movers = _collect_market_movers(db, seen, portfolio_tickers)
@@ -1522,6 +1690,21 @@ async def telegram_notification_loop() -> None:
             claude_event_id = _trigger_daily_analysis_script(seen)
             if claude_event_id:
                 _mark_seen(seen, claude_event_id)
+                _save_seen(seen)
+
+            scan_event_id = _trigger_market_scan_script(seen)
+            if scan_event_id:
+                _mark_seen(seen, scan_event_id)
+                _save_seen(seen)
+
+            news_event_id = _trigger_market_news_script(seen)
+            if news_event_id:
+                _mark_seen(seen, news_event_id)
+                _save_seen(seen)
+
+            manifest_event_id = _trigger_completeness_check(seen)
+            if manifest_event_id:
+                _mark_seen(seen, manifest_event_id)
                 _save_seen(seen)
 
         except Exception as exc:
