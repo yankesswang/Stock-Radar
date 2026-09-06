@@ -1,9 +1,24 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <!-- 防閃白：在任何 CSS/JS 載入前先套主題。邏輯與 src/theme.js 的 read/resolve 相同，改一邊要改另一邊。 -->
+    <script>
+      (function () {
+        var pref = 'light';
+        try { var v = localStorage.getItem('stockradar.theme'); if (v === 'dark' || v === 'system') pref = v; } catch (e) {}
+        var actual = pref === 'system'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : pref;
+        document.documentElement.setAttribute('data-theme', actual);
+        document.documentElement.style.colorScheme = actual;
+        var m = document.querySelector('meta[name="theme-color"]');
+        if (m) m.setAttribute('content', actual === 'dark' ? '#0a0b0d' : '#ffffff');
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />

@@ -26,3 +26,17 @@ export const chartTooltipLabelStyle = {
     color: 'var(--text-muted)',
     marginBottom: '4px',
 };
+
+/**
+ * 類別色（同一個部門在摘要色點、堆疊圖、成長圖、利潤率線上都是同一個顏色）。
+ *
+ * 挑法跟 Macro 那頁同一套標準：對 --bg-primary 與 --bg-secondary 都 ≥3:1
+ * （圖形元素的 WCAG 門檻），並用 Viénot 矩陣模擬 deuteranopia / protanopia 後
+ * 檢查兩兩 ΔE —— 最小值 13.1（protanopia 下的藍/紫），還分得開。
+ *
+ * 固定順序、不循環：超過 6 個部門的公司在圖上併成「其他」，
+ * 顏色不夠用就別再發一輪同色，那會讓兩個部門長得一樣。
+ * 每條線／每塊面積在圖例與表格裡都有文字標籤，識別不靠顏色。
+ */
+export const SEGMENT_SERIES = ['#0052ff', '#d97706', '#0d9488', '#be185d', '#9333ea', '#4d7c0f'];
+export const SEGMENT_OTHER = '#64748b';   // 併起來的尾巴，刻意是中性灰
