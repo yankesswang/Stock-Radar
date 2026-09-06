@@ -40,9 +40,12 @@ import requests
 from scripts.daily_analysis import send_telegram, send_line
 # Stage-1 預篩（直接 import，不打自己的 HTTP）
 from src.analysis.opportunity_scanner import prescreen
+from src.analysis.opportunity_tracker import upsert as tracker_upsert
 from backend.app.config import settings
 # 財經 digest（每日 Substack 投資筆記）— 直接 import 讀檔，不打自己的 HTTP
 from backend.app.routers.finance_digest import load_recent_items
+# 我自己在 Obsidian 寫的投資筆記（觀點層）— 讀鏡像索引，讀不到就 degrade 成空
+from src.analysis.vault_notes import build_thesis_section
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 AGENT_DIR = PROJECT_ROOT / "agent"
@@ -55,7 +58,11 @@ SETUP_ZH = {
     "momentum_breakout": "動能突破",
     "mimi_entry": "Mimi進場區",
     "breakdown_short": "破位做空",
+    "rs_leader": "強勢回檔",
 }
+
+# 「今天能不能動手」的順序，跟前端機會清單一致
+ACTION_ORDER = {"buy": 0, "accumulate": 1, "sell_short": 2, "watch": 3, "avoid": 4}
 
 
 def _backend_alive() -> bool:
@@ -147,6 +154,67 @@ def build_digest_section(items: list[dict], tickers: set[str]) -> list[str]:
     return lines
 
 
+def _fmt_pct(v) -> str:
+    return f"{v:+.1f}%" if isinstance(v, (int, float)) else "—"
+
+
+def build_strength_section(board: dict, top: int = 6) -> list[str]:
+    """強弱榜段落（當天 + 一段區間）。榜是空的就只留一行說明，不要留白。"""
+    lines = ["## 💪 強弱榜（相對 SPY；當天看情緒，1M/3M 看趨勢）"]
+    if not board:
+        lines += ["- （本次未產出強弱榜）", ""]
+        return lines
+
+    bench = board.get("benchmark_returns") or {}
+    lines.append(f"> 基準 SPY：1D {_fmt_pct(bench.get('1d'))}｜1W {_fmt_pct(bench.get('1w'))}"
+                 f"｜1M {_fmt_pct(bench.get('1m'))}｜3M {_fmt_pct(bench.get('3m'))}")
+
+    # 自訂主題桶與發現層的 GICS 板塊桶要分開列。混在一起排的話，發現層那種
+    # 兩三百檔的大板塊（平均後波動小、檔數又壓倒性）會把「ai半導體」「機器人」
+    # 這類十幾檔的自訂主題整批擠出前三名 —— 那才是這張榜真正的差異化資訊。
+    all_themes = board.get("themes") or []
+    themes = [t for t in all_themes if t.get("tier") != "discovery"] or all_themes
+    if themes:
+        lines.append("**主題（自訂桶，桶內等權）**")
+        for t in themes[:3]:
+            lines.append(f"- 🟢 {t['theme']}（{t['count']} 檔）1D {_fmt_pct(t['returns'].get('1d'))}"
+                         f"｜1M {_fmt_pct(t['returns'].get('1m'))}｜3M {_fmt_pct(t['returns'].get('3m'))}"
+                         f"｜領漲 {'、'.join(t.get('top') or [])}")
+        for t in themes[-2:]:
+            lines.append(f"- 🔴 {t['theme']}（{t['count']} 檔）1D {_fmt_pct(t['returns'].get('1d'))}"
+                         f"｜1M {_fmt_pct(t['returns'].get('1m'))}｜3M {_fmt_pct(t['returns'].get('3m'))}"
+                         f"｜領跌 {'、'.join(t.get('bottom') or [])}")
+
+    wide = [t for t in all_themes if t.get("tier") == "discovery"]
+    if wide:
+        def _w(t):
+            return f"{t['theme'].lstrip('＊')} {_fmt_pct(t['returns'].get('1m'))}"
+        head, tail = wide[:3], wide[max(3, len(wide) - 2):]   # 榜太短時不要頭尾重複
+        line = f"**全市場板塊（發現層 {sum(t['count'] for t in wide)} 檔，1M）**：強 " + "、".join(_w(t) for t in head)
+        if tail:
+            line += "｜弱 " + "、".join(_w(t) for t in tail)
+        lines.append(line)
+
+    sectors = board.get("sectors") or []
+    if sectors:
+        strong = "、".join(f"{s['symbol']} {_fmt_pct((s.get('returns') or {}).get('1m'))}" for s in sectors[:3])
+        weak = "、".join(f"{s['symbol']} {_fmt_pct((s.get('returns') or {}).get('1m'))}" for s in sectors[-2:])
+        lines.append(f"**SPDR 板塊（1M）**：強 {strong}｜弱 {weak}")
+
+    stocks = board.get("stocks") or {}
+    def _row(r):
+        return (f"{r['ticker']}({r.get('theme') or '—'}) 1D {_fmt_pct(r['returns'].get('1d'))}"
+                f"/1M {_fmt_pct(r['returns'].get('1m'))}/3M {_fmt_pct(r['returns'].get('3m'))}")
+    if stocks.get("leaders"):
+        lines.append("**個股 強勢**：" + "｜".join(_row(r) for r in stocks["leaders"][:top]))
+    if stocks.get("laggards"):
+        lines.append("**個股 弱勢**：" + "｜".join(_row(r) for r in stocks["laggards"][:top]))
+    lines.append("> 用法：強勢主題裡的回檔（setup 標「強勢回檔」）優先；弱勢主題裡的「低估」"
+                 "先當價值陷阱處理，要有明確催化才翻案。")
+    lines.append("")
+    return lines
+
+
 # ── 簡報組裝（目標 <8k chars）──────────────────────────────────────────────────
 
 def build_briefing(scan_date: date, prescreen_result: dict, regime: dict, backend_ok: bool) -> str:
@@ -161,7 +229,11 @@ def build_briefing(scan_date: date, prescreen_result: dict, regime: dict, backen
     L(f"> {now_str}")
     if not backend_ok:
         L("> ⚠️ backend :6000 離線——curl 工具可能不可用，請改用 WebSearch 補技術面/新聞/催化劑。")
-    L(f"> Stage-1 量化預篩：universe {prescreen_result.get('universe_size')} 檔 → "
+    tiers = prescreen_result.get("universe_tiers") or {}
+    tier_str = ""
+    if tiers.get("discovery"):
+        tier_str = (f"（研究過 {tiers.get('curated')} 檔 ＋ 發現層 {tiers.get('discovery')} 檔）")
+    L(f"> Stage-1 量化預篩：universe {prescreen_result.get('universe_size')} 檔{tier_str} → "
       f"命中 {prescreen_result.get('total_candidates')} 檔 → 本次入圍 {len(opps)} 檔")
     L()
 
@@ -170,12 +242,19 @@ def build_briefing(scan_date: date, prescreen_result: dict, regime: dict, backen
     L(f"定性：{regime.get('regime')}｜快照：{regime.get('snapshot')}")
     L()
 
+    # 強弱榜：獵手原本只看得到逐檔訊號，看不到「這檔站在強勢還是弱勢的隊伍裡」。
+    # 順風的產業裡回檔的龍頭，跟逆風產業裡便宜的落後股，是兩回事。
+    for line in build_strength_section(prescreen_result.get("strength") or {}):
+        L(line)
+
     # 財經 digest 索引（哪些入圍標的有近期新聞）
     digest_items, digest_counts = load_digest_index()
 
     # 入圍機會一行式摘要
     L("## 🎯 入圍機會（Stage-1 量化排名；你的任務是逐檔定性盡調）")
     L("> 欄位：# ticker（公司）｜setup｜signal_score｜方向｜關鍵量化訊號｜是否持有")
+    L("> 🔍未研究 = 發現層（全市場自動撈進來、過了市值/成交額/分析師門檻）而不是我的名單，")
+    L(">   對這種標的盡調要更嚴：先確認它到底在做什麼生意、為什麼現在會出現這個訊號。")
     L()
     for i, o in enumerate(opps, 1):
         kn = o.get("key_numbers", {})
@@ -198,7 +277,9 @@ def build_briefing(scan_date: date, prescreen_result: dict, regime: dict, backen
         mimi_str = f"｜Mimi進場 {mimi[:24]}" if mimi else ""
         n_news = digest_counts.get(str(o.get("ticker", "")).upper(), 0)
         news_str = f"｜📰 有近期新聞({n_news})" if n_news else ""
-        L(f"{i}. {o['ticker']}（{o.get('company') or '—'}）｜{setups}｜"
+        # 🆕 已經是 tracker 的「首次入圍」，這裡用 🔍 才不會兩個意思撞在一起
+        new_str = "🔍未研究 " if o.get("tier") == "discovery" else ""
+        L(f"{i}. {new_str}{o['ticker']}（{o.get('company') or '—'}）｜{setups}｜"
           f"score {o['signal_score']:.2f}｜{o.get('direction')}｜{p_str} {rsi_str}{earn_str}{mimi_str}{held}{news_str}")
         if ev:
             L(f"   └ 訊號：{ev}")
@@ -207,6 +288,15 @@ def build_briefing(scan_date: date, prescreen_result: dict, regime: dict, backen
     # 近期財經 digest（只列與入圍標的相關的）
     opp_tickers = {str(o.get("ticker", "")).upper() for o in opps if o.get("ticker")}
     for line in build_digest_section(digest_items, opp_tickers):
+        L(line)
+
+    # 我自己的筆記。digest 是別人寫的，這一段是我寫的——如果我研究過這檔還沒買，
+    # 獵手該知道我當時卡在哪，而不是從零開始給一個我三週前就否決過的建議。
+    for line in build_thesis_section(
+        opp_tickers,
+        header="## 🧠 我的觀點庫（我自己的 Obsidian 投資筆記；不是外部研報）",
+        empty_hint="- （近 90 天我的筆記沒寫到任何入圍標的——這批全是我沒研究過的新名字）",
+    ):
         L(line)
 
     # 任務指令
@@ -224,6 +314,9 @@ def build_briefing(scan_date: date, prescreen_result: dict, regime: dict, backen
     L("   `\"http://127.0.0.1:6000/api/finance-digest/by-ticker?tickers=X,Y&days=21\"` 讀 TLDR，")
     L("   把新聞/敘事脈絡納入 thesis / catalyst（引用註明日期）。digest 是質化補充，")
     L("   digest 沒提到的標的不代表沒機會。")
+    L("6. 標有 🧠 觀點庫的標的：我先前已經研究過。**thesis 必須明講跟我的舊論點是一致、")
+    L("   還是有東西變了**（催化劑兌現／破功、估值變化、我當時的疑慮解除了沒）。一致就說")
+    L("   一致並補上新證據；不一致就指出哪一條假設被推翻。不准無視、也不准硬套我的舊結論。")
     L("完成後**嚴格輸出機會 JSON**（schema 見 agent/CLAUDE.md「輸出契約」），並在 JSON 前附一段")
     L("`<<<BRIEF>>>` 標記的 Telegram 精華文字（top 機會摘要）。")
 
@@ -309,6 +402,44 @@ def extract_brief(text: str) -> str:
     return text[:600].strip()
 
 
+def annotate_new_opportunities(scan_date: date, record: dict) -> list[str]:
+    """與最近 10 份歷史掃描比對，標記首次入圍的 ticker（is_new）。
+
+    「提醒新機會」的關鍵不是每天丟 20 檔名單，而是指出哪幾檔是**新面孔**——
+    老面孔重複刷存在感，新面孔才值得優先看。回傳新面孔 ticker list。
+    """
+    prev_files: list[Path] = []
+    prev_tickers: set[str] = set()
+    try:
+        prev_files = [
+            p for p in sorted(OPP_DIR.glob("*.json"))
+            if p.stem < scan_date.isoformat()
+        ][-10:]
+        for p in prev_files:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            prev_tickers |= {
+                str(o.get("ticker", "")).upper()
+                for o in data.get("opportunities", [])
+                if isinstance(o, dict)
+            }
+    except Exception:
+        pass
+
+    new_tickers: list[str] = []
+    for o in record.get("opportunities", []):
+        if not isinstance(o, dict):
+            continue
+        t = str(o.get("ticker", "")).upper()
+        is_new = t not in prev_tickers      # 首次掃描（無歷史檔）時所有標的都算新
+        o["is_new"] = is_new
+        if is_new and t:
+            new_tickers.append(t)
+    return new_tickers
+
+
 def write_opportunity_journal(scan_date: date, record: dict) -> Path | None:
     try:
         OPP_DIR.mkdir(parents=True, exist_ok=True)
@@ -381,8 +512,10 @@ def main() -> None:
             "generated_at": generated_at,
             "session_id": session_id,
             "universe_size": prescreen_result.get("universe_size"),
+            "universe_tiers": prescreen_result.get("universe_tiers") or {},
             "screened": n_in,
             "market_context": opp_json.get("market_context", {"regime": regime.get("regime"), "note": regime.get("snapshot")}),
+            "strength": prescreen_result.get("strength"),
             "opportunities": opp_json.get("opportunities", []),
         }
     else:
@@ -392,35 +525,148 @@ def main() -> None:
             "generated_at": generated_at,
             "session_id": session_id,
             "universe_size": prescreen_result.get("universe_size"),
+            "universe_tiers": prescreen_result.get("universe_tiers") or {},
             "screened": n_in,
             "market_context": {"regime": regime.get("regime"), "note": regime.get("snapshot")},
+            "strength": prescreen_result.get("strength"),
             "opportunities": [],
             "raw": analysis[:4000],
         }
+    # tier 由 Stage-1 認定，不靠 claude 自己填 —— 「這檔我研究過沒有」是事實不是判斷
+    tier_map = {
+        str(o.get("ticker", "")).upper(): o.get("tier")
+        for o in prescreen_result.get("opportunities", [])
+    }
+    for o in record.get("opportunities", []):
+        if isinstance(o, dict):
+            o["tier"] = tier_map.get(str(o.get("ticker", "")).upper(), "curated")
+
+    new_tickers = annotate_new_opportunities(scan_date, record)
+    if new_tickers:
+        print(f"[opportunities] 🆕 首次入圍：{', '.join(new_tickers)}")
+    unstudied = [str(o.get("ticker")) for o in record.get("opportunities", [])
+                 if isinstance(o, dict) and o.get("tier") == "discovery"]
+    if unstudied:
+        print(f"[opportunities] 🔍 發現層（未研究過）：{', '.join(unstudied)}")
     write_opportunity_journal(scan_date, record)
 
-    # Telegram：發 BRIEF 精華
+    # 併進跨日追蹤表。Stage-2 的機會 JSON 只有計畫（進場/目標/停損），當日價要從
+    # Stage-1 補回去，不然「從發現到現在漲多少」只能拿進場區中值當基準。
+    px = {
+        str(o.get("ticker", "")).upper(): (o.get("key_numbers") or {}).get("price")
+        for o in prescreen_result.get("opportunities", [])
+    }
+    for o in record.get("opportunities", []):
+        o.setdefault("price", px.get(str(o.get("ticker", "")).upper()))
+    try:
+        stat = tracker_upsert(scan_date, record.get("opportunities", []))
+        print(f"[tracker] 追蹤表 {stat['total']} 檔（新增 {len(stat['new'])}、更新 {len(stat['updated'])}）")
+    except Exception as exc:      # 追蹤表寫失敗不該讓整次掃描算失敗
+        print(f"[tracker] 寫入失敗：{exc}")
+
+    # Telegram：發 BRIEF 精華（🆕 新面孔置頂提醒）
     if not args.no_telegram:
         brief = extract_brief(analysis)
-        telegram_text = f"🔭 市場機會掃描｜{scan_date.isoformat()}\n\n{brief}"
+        new_line = f"🆕 首次入圍：{'、'.join(new_tickers)}\n\n" if new_tickers else ""
+        # 這條管線只產研究候選；持倉的 buy/add/trim/stop 只有 War Room 能給。
+        # 沒有這行，Telegram 上三條管線的語氣看起來一樣權威，使用者會直接照著下單。
+        disclaimer = "🔬 研究候選，非交易指令（實際買賣結論以隔日 War Room 復盤為準）\n\n"
+        telegram_text = (f"🔭 市場機會掃描｜{scan_date.isoformat()}\n\n"
+                         f"{disclaimer}{new_line}{brief}")
         print("[telegram/line] 發送機會精華...")
         send_telegram(telegram_text)
         send_line(telegram_text)
 
-    # Obsidian（可選，簡單存機會 JSON 摘要）
-    if not args.no_obsidian:
-        try:
-            _save_obsidian(scan_date, record, extract_brief(analysis))
-        except Exception as e:
-            print(f"[obsidian] 存檔失敗（略過）：{e}")
+    # 鏡像落地（永遠執行；portal 市場日報分頁讀這裡）＋ vault（可選、best-effort）
+    try:
+        _save_note(scan_date, record, extract_brief(analysis), vault=not args.no_obsidian)
+    except Exception as e:
+        print(f"[note] 存檔失敗（略過）：{e}")
 
     print("\n✅ Market Scan 完成！")
 
 
-def _save_obsidian(scan_date: date, record: dict, brief: str) -> None:
-    obs_dir = Path("/Users/yankesswang/Documents/arthurwang_DB/投資/Stock Digest") / scan_date.isoformat()
-    obs_dir.mkdir(parents=True, exist_ok=True)
-    path = obs_dir / "🔭 Market Scan.md"
+MIRROR_DIR = Path.home() / ".arthur-digest" / "stock"
+VAULT_DIR = Path("/Users/yankesswang/Documents/arthurwang_DB/投資/Stock Digest")
+
+
+def _save_note(scan_date: date, record: dict, brief: str, vault: bool) -> None:
+    """機會掃描筆記：鏡像目錄永遠寫（launchd 下 vault 被 TCC 擋），vault best-effort。"""
+    content = _render_note(scan_date, record, brief)
+    mirror_path = MIRROR_DIR / scan_date.isoformat() / "🔭 Market Scan.md"
+    try:
+        mirror_path.parent.mkdir(parents=True, exist_ok=True)
+        mirror_path.write_text(content, encoding="utf-8")
+        print(f"[mirror] Saved: {mirror_path}")
+    except Exception as e:
+        print(f"[mirror] 鏡像寫入失敗（略過）：{e}")
+    if vault:
+        try:
+            vault_path = VAULT_DIR / scan_date.isoformat() / "🔭 Market Scan.md"
+            vault_path.parent.mkdir(parents=True, exist_ok=True)
+            vault_path.write_text(content, encoding="utf-8")
+            print(f"[obsidian] Saved: {vault_path}")
+        except Exception as e:
+            print(f"[obsidian] vault 寫入失敗（TCC？略過，鏡像仍在）：{e}")
+
+
+def _split_brief(brief: str) -> tuple[str, str]:
+    """把 Telegram 精華切成「🎯 top 機會之前」與「⚠️ 警惕之後」兩段。
+
+    中間那段 top 機會在筆記裡改用表格呈現（LLM 每天寫法不一，散文串五檔要讀到底才
+    知道有幾檔）。Telegram 仍然發原文 —— 那裡的表格只會變成一團破掉的直線。
+    """
+    head: list[str] = []
+    tail: list[str] = []
+    state = "head"
+    for line in (brief or "").splitlines():
+        s = line.lstrip()
+        if state == "head" and s.startswith("🎯"):
+            state = "skip"
+            continue
+        if state == "head" and s.startswith("⚠️"):
+            state = "tail"          # 當天沒寫 🎯 段，警惕仍要留在表格下面
+        if state == "skip":
+            if s.startswith("⚠️") or s.startswith("#"):
+                state = "tail"
+            else:
+                continue          # 一檔一行的續行，一併吃掉
+        (tail if state == "tail" else head).append(line)
+    return "\n".join(head).strip(), "\n".join(tail).strip()
+
+
+def _top_table(opps: list[dict], limit: int = 5) -> list[str]:
+    """top 機會表格：代號｜型態｜動作｜為什麼，可動手的（buy/加碼/放空）優先。"""
+    def rank(o: dict) -> tuple:
+        return (
+            ACTION_ORDER.get(str(o.get("action") or ""), 3),
+            -(o.get("conviction") or 0),
+            -(o.get("signal_score") or 0),
+        )
+
+    ranked = sorted(opps, key=rank)
+    top = [o for o in ranked if o.get("action") in ("buy", "accumulate", "sell_short")][:limit]
+    if not top:
+        top = ranked[:limit]
+    if not top:
+        return []
+
+    def cell(s: object) -> str:
+        return (str(s).replace("|", "\\|").replace("\n", " ").strip()) or "—"
+
+    rows = ["| 代號 | 型態 | 動作 | 為什麼 |", "| --- | --- | --- | --- |"]
+    for o in top:
+        # 催化是「今天為什麼是它」，論點是備援；多則只取第一則，其餘在機會清單裡
+        why = str(o.get("catalyst") or o.get("thesis") or "").split("；")[0]
+        setup = str(o.get("setup") or "")
+        rows.append(
+            f"| **{cell(o.get('ticker'))}** | {cell(SETUP_ZH.get(setup, setup))} | "
+            f"**{cell(o.get('action') or 'watch')}** | {cell(why)} |"
+        )
+    return rows
+
+
+def _render_note(scan_date: date, record: dict, brief: str) -> str:
     opps = record.get("opportunities", [])
     tickers = [o.get("ticker") for o in opps if o.get("ticker")]
     lines = [
@@ -437,21 +683,33 @@ def _save_obsidian(scan_date: date, record: dict, brief: str) -> None:
         "",
         f"# 🔭 市場機會掃描 — {scan_date.isoformat()}",
         "",
-        f"> Stage-1 universe {record.get('universe_size')} 檔 → 入圍 {record.get('screened')} 檔｜"
-        f"regime: {record.get('market_context', {}).get('regime', '—')}",
-        "",
         "## 精華",
         "",
-        brief,
-        "",
+    ]
+    # 精華＝大盤定性（散文）→ top 機會（表格）→ ⚠️ 值得警惕（散文）。
+    # 表格由 JSON 產生而不是解析 brief，這樣不管當天 LLM 怎麼寫都排得出來。
+    brief_head, brief_tail = _split_brief(brief)
+    table = _top_table(opps)
+    if not table:                      # 排不出表格就退回原本的整段精華，不能少東西
+        lines += [brief.strip(), ""]
+    else:
+        for block in (brief_head, "\n".join(table), brief_tail):
+            if block:
+                lines += [block, ""]
+    board = record.get("strength") or {}
+    if board:
+        lines += build_strength_section(board) + [""]
+
+    lines += [
         "## 機會清單",
         "",
     ]
     for o in opps:
         ez = o.get("entry_zone")
         ez_str = f"${ez[0]}-{ez[1]}" if isinstance(ez, list) and len(ez) == 2 else "—"
+        new_tag = "🆕 " if o.get("is_new") else ""
         lines.append(
-            f"### {o.get('ticker')}（{o.get('company', '')}）— {SETUP_ZH.get(o.get('setup'), o.get('setup'))}"
+            f"### {new_tag}{o.get('ticker')}（{o.get('company', '')}）— {SETUP_ZH.get(o.get('setup'), o.get('setup'))}"
         )
         lines.append(
             f"- **{o.get('action', '—')}**｜方向 {o.get('direction', '—')}｜信心 {o.get('conviction', '—')}｜"
@@ -461,9 +719,16 @@ def _save_obsidian(scan_date: date, record: dict, brief: str) -> None:
         lines.append(f"- 論點：{o.get('thesis', '—')}")
         if o.get("catalyst"):
             lines.append(f"- 催化：{o['catalyst']}")
+        # 來源與催化同序：前端把兩邊都用「；」切開後一一對上，讀者能逐則複驗。
+        # 沒有 url 的（本地 API 推導）只寫 label，不生連結。
+        srcs = [s for s in (o.get("sources") or []) if isinstance(s, dict) and s.get("label")]
+        if srcs:
+            rendered = "；".join(
+                f"[{s['label']}]({s['url']})" if s.get("url") else s["label"] for s in srcs
+            )
+            lines.append(f"- 來源：{rendered}")
         lines.append("")
-    path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[obsidian] Saved: {path}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

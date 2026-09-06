@@ -44,6 +44,7 @@ from scripts.daily_analysis import (
 
 # universe 來源
 from src.config import STOCK_LIST
+from src.analysis.strength import BENCHMARK, build_strength_board
 
 
 SETUP_TYPES = (
@@ -52,6 +53,7 @@ SETUP_TYPES = (
     "momentum_breakout",
     "mimi_entry",
     "breakdown_short",
+    "rs_leader",
 )
 
 DCF_DIR = settings.DATA_DIR / "dcf"
@@ -75,16 +77,85 @@ def _round(v, n=2):
 
 # ── universe 組裝 ─────────────────────────────────────────────────────────────
 
-def build_universe(mimi_sections: dict[str, str] | None = None) -> list[str]:
-    """追蹤股 ∪ Mimi 名單，去重、去 ETF 雜訊，回排序後的 ticker list。"""
+VAULT_UNIVERSE_DAYS = 60   # 筆記多舊還算「我現在在關注」
+
+
+def _clean(tickers) -> set[str]:
+    """去掉明顯非個股的殼（純數字或過短雜訊）。"""
+    return {t.upper() for t in tickers if re.match(r"^[A-Z][A-Z0-9\.\-]{0,9}$", t.upper())}
+
+
+def build_curated_universe(mimi_sections: dict[str, str] | None = None) -> set[str]:
+    """第一層：追蹤股 ∪ Mimi 名單 ∪ 近期 Obsidian 筆記提到的標的 —— 我研究過的。
+
+    第三份來源是「我自己寫過的東西」：研究過但還沒買、也不在 Mimi 名單裡的標的
+    本來完全掃不到。讀的是鏡像索引，讀不到就當沒有。
+    """
     tracked: set[str] = set()
     for bucket, tickers in STOCK_LIST.items():
         tracked |= set(tickers)
     mimi = set((mimi_sections or {}).keys())
-    universe = tracked | mimi
-    # 去掉明顯非個股的殼（純數字或過短雜訊）
-    cleaned = {t.upper() for t in universe if re.match(r"^[A-Z][A-Z0-9\.\-]{0,9}$", t.upper())}
-    return sorted(cleaned)
+    try:
+        from src.analysis.vault_notes import vault_tickers
+        vault = vault_tickers(VAULT_UNIVERSE_DAYS)
+    except Exception:
+        vault = set()
+    return _clean(tracked | mimi | vault)
+
+
+_DISCOVERY_META: dict[str, dict] | None = None
+
+
+def _discovery_meta() -> dict[str, dict]:
+    """發現層的 {ticker: meta}，同一次掃描只讀一次快取。"""
+    global _DISCOVERY_META
+    if _DISCOVERY_META is None:
+        try:
+            from src.analysis import discovery_universe
+            _DISCOVERY_META = discovery_universe.load()
+        except Exception:
+            _DISCOVERY_META = {}
+    return _DISCOVERY_META
+
+
+def _discovery_name(ticker: str) -> str | None:
+    """發現層個股不在 DB 裡，公司名只能從快取拿 —— 榜上只有代號沒有名字，
+    對「我沒研究過的股票」等於什麼都沒說。"""
+    meta = _discovery_meta().get(ticker.upper()) or {}
+    name = (meta.get("name") or "").strip()
+    # Nasdaq 的 name 帶 "Common Stock" / "Class A Common Stock" 這種尾巴，砍掉才讀得下去
+    for suffix in (" Common Stock", " Ordinary Shares", " Class A", " Class B",
+                   " American Depositary Shares", " Common Shares"):
+        name = name.replace(suffix, "")
+    return name.strip(" ,") or None
+
+
+def build_discovery_universe() -> set[str]:
+    """第二層：全市場過三道品質門檻的個股 —— 我沒研究過的。
+
+    這一層才是「不會錯過機會」的關鍵：只掃手寫名單，永遠只會掃到自己已經想到的。
+    抓不到就回空集合，主掃描照跑（見 discovery_universe 模組頭的說明）。
+    """
+    try:
+        from src.analysis import discovery_universe
+        return _clean(discovery_universe.tickers())
+    except Exception as exc:
+        print(f"[scanner] 發現層載入失敗（{type(exc).__name__}: {exc}），只掃 curated")
+        return set()
+
+
+def build_universe(mimi_sections: dict[str, str] | None = None,
+                   include_discovery: bool = True) -> tuple[list[str], dict[str, str]]:
+    """回 (全 universe, {ticker: tier})。tier 是 "curated" 或 "discovery"。
+
+    tier 只影響榜上的標記與排序決勝，訊號計算兩層完全一樣 —— 發現層股票該進榜就
+    進榜，只是提醒你那是還沒做過功課的名字。
+    """
+    curated = build_curated_universe(mimi_sections)
+    discovery = build_discovery_universe() - curated if include_discovery else set()
+    tiers = {t: "curated" for t in curated}
+    tiers.update({t: "discovery" for t in discovery})
+    return sorted(curated | discovery), tiers
 
 
 # ── DB 估值/財報快照（一次查全 universe）───────────────────────────────────────
@@ -335,6 +406,20 @@ def _score_undervalued_catalyst(tech, db, mimi_section, days_to_earn, dcf_disc):
         score += 0.12   # PE 中位法 + DCF 兩套估值同時看便宜 → 加分
     score = min(0.85, score)   # 純基本面單 bucket 封頂 0.85，留空間給技術面共振
     ev = "；".join(val_bits + cat_bits)
+
+    # 價值陷阱降權：報告裡一再出現「低估訊號被基本面惡化打臉」的那些（NXPI、ENTG、
+    # PVH…），共同點是個股與所屬主題雙雙落在相對強度後段。便宜而且沒人要，多半是
+    # 市場已經先知道了 —— 不刪掉它，但要排在真正的機會後面，並把理由寫在證據裡。
+    rank = tech.get("rs_rank")
+    theme_rank = tech.get("theme_rs_rank")
+    if rank is not None and rank <= 25:
+        theme = tech.get("theme")
+        theme_weak = theme_rank is not None and theme_rank <= 40
+        score *= 0.6 if theme_weak else 0.75      # 個股弱就打折，連主題也弱再打一次
+        ev += f"；⚠️ 相對強弱百分位僅 {rank:.0f}"
+        ev += f"、{theme}主題同樣弱勢" if theme_weak else ""
+        ev += "（價值陷阱風險）"
+
     return score, ev
 
 
@@ -395,12 +480,46 @@ def _score_breakdown_short(tech, *_):
     return score, ev
 
 
+def _score_rs_leader(tech, *_):
+    """強勢產業裡的回檔龍頭。
+
+    前五種 setup 都只看個股自己（超賣、低估、突破…），完全不知道它站在哪個產業裡、
+    相對大盤是強是弱 —— 掃出來的「低估」很容易是弱勢股的價值陷阱。這一種反過來：
+    先要求相對強度（個股 vs SPY 的 1 個月超額報酬排前 20%、所屬主題桶中上），
+    再要求它現在是**回檔**而不是追高（貼近 MA20、且沒跌破 MA50）。
+    """
+    rank = tech.get("rs_rank")
+    theme_rank = tech.get("theme_rs_rank")
+    if rank is None or rank < 80:
+        return None
+    if theme_rank is not None and theme_rank < 50:
+        return None
+    price, ma20, ma50 = tech.get("price"), tech.get("ma20"), tech.get("ma50")
+    if not (price and ma20 and ma50) or price < ma50:
+        return None            # 跌破季線就不是回檔，是趨勢壞掉
+    gap = tech.get("price_vs_ma20_pct")
+    if gap is None or gap > 6 or gap < -10:
+        return None            # 追高（離月線太遠）或已經摔下來的都不算
+
+    rs_1m = (tech.get("rs") or {}).get("1m")
+    # 相對強度越極端、離月線越近，分數越高
+    rank_sub = min(1.0, (rank - 80) / 20 * 0.6 + 0.4)
+    pull_sub = 1.0 - min(1.0, abs(gap) / 10)
+    score = min(1.0, 0.65 * rank_sub + 0.35 * pull_sub)
+    theme = tech.get("theme")
+    theme_txt = f"，{theme}主題強弱百分位 {theme_rank:.0f}" if theme and theme_rank is not None else ""
+    rs_txt = f"相對 SPY 一個月超額 {rs_1m:+.1f}%（強弱百分位 {rank:.0f}）" if rs_1m is not None \
+        else f"相對強弱百分位 {rank:.0f}"
+    return score, f"{rs_txt}{theme_txt}，現價距 MA20 {gap:+.1f}%（回檔不破季線）"
+
+
 _SCORERS = {
     "oversold_bounce": _score_oversold_bounce,
     "undervalued_catalyst": _score_undervalued_catalyst,
     "momentum_breakout": _score_momentum_breakout,
     "mimi_entry": _score_mimi_entry,
     "breakdown_short": _score_breakdown_short,
+    "rs_leader": _score_rs_leader,
 }
 
 # 綜合排名時各 bucket 的權重（同分時偏好基本面+動能，超賣次之）
@@ -410,10 +529,13 @@ _BUCKET_WEIGHT = {
     "mimi_entry": 1.0,
     "oversold_bounce": 0.95,
     "breakdown_short": 0.9,
+    # 相對強度是「別跟趨勢作對」的那一票，權重比照動能
+    "rs_leader": 1.05,
 }
 
 
-def _evaluate_ticker(ticker, tech, db, mimi_section, days_to_earn, dcf_disc) -> dict | None:
+def _evaluate_ticker(ticker, tech, db, mimi_section, days_to_earn, dcf_disc,
+                     tier: str = "curated") -> dict | None:
     """對單一 ticker 跑五個 scorer，回一筆機會記錄（未命中任何 bucket 回 None）。"""
     if not tech:
         return None
@@ -446,8 +568,9 @@ def _evaluate_ticker(ticker, tech, db, mimi_section, days_to_earn, dcf_disc) -> 
     mimi_entry = extract_mimi_entry_zone(mimi_section) if mimi_section else None
     return {
         "ticker": ticker,
-        "company": db.get("company"),
+        "company": db.get("company") or _discovery_name(ticker),
         "industry": db.get("industry"),
+        "tier": tier,
         "direction": direction,
         "signal_score": signal_score,
         "setups": sorted(buckets.keys(), key=lambda b: -buckets[b]["sub_score"]),
@@ -471,6 +594,11 @@ def _evaluate_ticker(ticker, tech, db, mimi_section, days_to_earn, dcf_disc) -> 
             "dcf_discount_pct": dcf_disc,
             "days_to_earnings": days_to_earn,
             "mimi_entry_zone": mimi_entry if mimi_entry not in ("—", "") else None,
+            "rs_rank": tech.get("rs_rank"),
+            "rs_1m": (tech.get("rs") or {}).get("1m"),
+            "rs_3m": (tech.get("rs") or {}).get("3m"),
+            "theme": tech.get("theme"),
+            "theme_rs_rank": tech.get("theme_rs_rank"),
         },
     }
 
@@ -496,12 +624,27 @@ def prescreen(limit: int = 20, setup: str = "all", use_cache: bool = True) -> di
     except Exception:
         mimi_sections = {}
 
-    universe = build_universe(mimi_sections)
+    universe, tiers = build_universe(mimi_sections)
 
     # 一次撈 DB 估值/財報
     db_snap = _load_db_snapshot(universe)
     # 並行抓技術面（復用 portfolio._fetch_technicals_batch，6mo，含支撐壓力/突破/破位）
-    tech_map = _fetch_technicals_batch(universe)
+    # SPY 一起抓：相對強度要有基準，多這一檔比為了它另外打一輪 yfinance 便宜。
+    tech_map = _fetch_technicals_batch(universe + [BENCHMARK])
+
+    # 強弱榜。算完把每檔的 RS 掛回 tech，scorer 才看得到「它站在哪個產業裡、
+    # 相對大盤是強是弱」—— rs_leader 靠這個成立，價值陷阱降權也靠這個。
+    board = build_strength_board(tech_map, with_sectors=False)
+    theme_rank = {t["theme"]: t.get("rs_rank") for t in board["themes"]}
+    for t, meta in board["stocks"]["by_ticker"].items():
+        tech = tech_map.get(t)
+        if not tech:
+            continue
+        tech["rs"] = meta["rs"]
+        tech["rs_rank"] = meta["rs_rank"]
+        tech["theme"] = meta["theme"]
+        tech["theme_rs_rank"] = theme_rank.get(meta["theme"])
+    tech_map.pop(BENCHMARK, None)          # 基準本身不是機會
     # 並行抓財報日
     earn_map = _earnings_map(universe)
     held = _held_map()
@@ -515,20 +658,31 @@ def prescreen(limit: int = 20, setup: str = "all", use_cache: bool = True) -> di
         mimi_section = mimi_sections.get(t)
         days_to_earn = earn_map.get(t)
         dcf_disc = _dcf_discount_pct(t)
-        rec = _evaluate_ticker(t, tech, db, mimi_section, days_to_earn, dcf_disc)
+        rec = _evaluate_ticker(t, tech, db, mimi_section, days_to_earn, dcf_disc,
+                               tier=tiers.get(t, "curated"))
         if rec is None:
             continue
         rec["in_portfolio"] = t in held
         rec["held_portfolios"] = held.get(t, [])
         opportunities.append(rec)
 
-    opportunities.sort(key=lambda x: -x["signal_score"])
+    # signal_score 天生會撞頂（低估 0.85 + 任一 bucket 疊加就滿分），一堆並列時
+    # 原本等於按字母排 —— 同分改用相對強弱決勝，強勢的排前面。
+    # 同分時研究過的排前面：發現層是還沒做功課的名字，要更強才該擠掉手上的標的
+    opportunities.sort(key=lambda x: (-x["signal_score"],
+                                      0 if x.get("tier") == "curated" else 1,
+                                      -(x["key_numbers"].get("rs_rank") or 0)))
 
     full = {
         "generated_at": datetime.now().astimezone().isoformat(),
         "universe_size": len(universe),
+        "universe_tiers": {
+            "curated": sum(1 for v in tiers.values() if v == "curated"),
+            "discovery": sum(1 for v in tiers.values() if v == "discovery"),
+        },
         "evaluated": len(tech_map),
         "opportunities": opportunities,
+        "strength": board,
     }
     # 只快取「健康」的掃描結果：yfinance 偶爾整批被限流（evaluated 遠低於 universe），
     # 若把這種退化結果寫進快取會毒化後續 10 分鐘查詢，故低於 30% 覆蓋率就不寫快取。
@@ -538,20 +692,46 @@ def prescreen(limit: int = 20, setup: str = "all", use_cache: bool = True) -> di
     return _slice(full, limit, setup)
 
 
+# 發現層在 top N 裡的保障名額。signal_score 會在 1.0 撞頂，滿分並列動輒二三十檔，
+# 純按排名切的話「同分 curated 優先」會把發現層整批擠出去 —— 掃了一千多檔沒研究過的
+# 股票，卻一檔都送不進 Stage-2，等於白掃。所以保障一部分席次給發現層最強的幾檔。
+DISCOVERY_QUOTA = 0.25
+
+
 def _slice(full: dict, limit: int, setup: str) -> dict:
     opps = full["opportunities"]
     if setup and setup != "all":
         opps = [o for o in opps if setup in o["setups"]]
-    returned = opps[: max(1, limit)]
+    limit = max(1, limit)
+    returned = opps[:limit]
+
+    quota = int(limit * DISCOVERY_QUOTA)
+    if quota and len(opps) > limit:
+        short_by = quota - sum(1 for o in returned if o.get("tier") == "discovery")
+        if short_by > 0:
+            extra = [o for o in opps[limit:] if o.get("tier") == "discovery"][:short_by]
+            if extra:
+                # 換掉排名最後的 curated，名次高的不動
+                keep = [o for o in returned if o.get("tier") == "discovery"]
+                curated = [o for o in returned if o.get("tier") != "discovery"]
+                curated = curated[: max(0, limit - len(keep) - len(extra))]
+                returned = sorted(
+                    keep + curated + extra,
+                    key=lambda x: (-x["signal_score"],
+                                   0 if x.get("tier") == "curated" else 1,
+                                   -(x["key_numbers"].get("rs_rank") or 0)),
+                )
     return {
         "generated_at": full["generated_at"],
         "universe_size": full["universe_size"],
+        "universe_tiers": full.get("universe_tiers") or {},
         "evaluated": full["evaluated"],
         "screened": len(returned),
         "total_candidates": len(full["opportunities"]),
         "setup": setup,
         "setup_types": list(SETUP_TYPES),
         "opportunities": returned,
+        "strength": full.get("strength"),
     }
 
 
