@@ -53,7 +53,7 @@ export default function StockEarningsNotes() {
     return (
         <div className="max-w-4xl mx-auto px-4 py-6">
             <Link href={`/stock/${ticker}`}
-                  className="inline-flex items-center gap-1.5 text-sm text-[var(--text-secondary)] hover:text-[#0052ff] mb-4">
+                  className="inline-flex items-center gap-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] mb-4">
                 <ArrowLeft size={15} /> 回 {ticker}
             </Link>
 
@@ -81,7 +81,7 @@ export default function StockEarningsNotes() {
                                 onClick={() => setActive(q.quarter)}
                                 className={`px-3 py-1.5 rounded-full text-[13px] font-medium border transition-colors ${
                                     on
-                                        ? 'text-[#0052ff] bg-[rgba(0,82,255,0.10)] border-[rgba(0,82,255,0.35)]'
+                                        ? 'text-[var(--accent-cyan)] bg-[rgba(0,82,255,0.10)] border-[rgba(0,82,255,0.35)]'
                                         : 'text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-[var(--glass-border)] hover:border-[rgba(0,82,255,0.35)]'
                                 }`}
                             >
@@ -128,7 +128,7 @@ export default function StockEarningsNotes() {
                                             className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[12px] border transition-colors ${
                                                 l.kind === 'blog'
                                                     ? 'text-[var(--accent-amber)] border-[rgba(245,158,11,0.35)] bg-[rgba(245,158,11,0.08)] hover:bg-[rgba(245,158,11,0.14)]'
-                                                    : 'text-[var(--text-secondary)] border-[var(--glass-border)] bg-[var(--bg-primary)] hover:text-[#0052ff] hover:border-[rgba(0,82,255,0.35)]'
+                                                    : 'text-[var(--text-secondary)] border-[var(--glass-border)] bg-[var(--bg-primary)] hover:text-[var(--accent-cyan)] hover:border-[rgba(0,82,255,0.35)]'
                                             }`}
                                         >
                                             {l.label}<ExternalLink size={11} />

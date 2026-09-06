@@ -8,6 +8,8 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { CHART_GRID, CHART_REFERENCE } from '../components/chartTheme';
+import ClusterTabs from '../components/ClusterTabs';
+import { MARKET_TABS } from '../components/clusterTabsDef';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -290,6 +292,7 @@ export default function Sectors() {
 
   return (
     <div className="container py-6 space-y-6">
+      <ClusterTabs items={MARKET_TABS} active="/sectors" />
 
       {/* Header */}
       <div className="flex items-center justify-between">
