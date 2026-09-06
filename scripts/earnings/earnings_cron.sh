@@ -112,8 +112,20 @@ $HEADLESS_NOTE"
       rm -f "$LOCKDIR/${entry%% *}_${entry##* }"
     done
     echo "[$(date '+%F %T')] ${NAMES} failed; markers cleared" >> "$LOG"
-    grep -q "hit your limit" "$CHUNK_LOG" 2>/dev/null && {
-      echo "[$(date '+%F %T')] usage limit, aborting batch" >> "$LOG"; break; }
+    # Usage limit aborts the batch — but instead of just dropping it, register a
+    # rerun for after the quota resets. claude_guard reads the reset time from the
+    # `resets ...` line claude prints; claude-retry (every 10 min) picks it up.
+    if grep -qiE "hit your .{0,24}limit" "$CHUNK_LOG" 2>/dev/null; then
+      echo "[$(date '+%F %T')] usage limit, aborting batch" >> "$LOG"
+      GUARD="$HOME/Projects/Arthur_App/scripts/lib/claude_guard.py"
+      if [[ -f "$GUARD" && -z "${CLAUDE_GUARD_RETRY:-}" ]]; then
+        python3 "$GUARD" note-limit --text-file "$CHUNK_LOG" >> "$LOG" 2>&1 || true
+        python3 "$GUARD" defer --job earnings-notes --cwd "$HOME" \
+          -- /bin/zsh -lc "exec \"$ER/earnings_cron.sh\"" >> "$LOG" 2>&1 || true
+        echo "[$(date '+%F %T')] rerun queued for after quota reset" >> "$LOG"
+      fi
+      break
+    fi
   fi
 done
 

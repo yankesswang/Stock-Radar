@@ -26,6 +26,7 @@ import pathlib
 import re
 import sys
 import urllib.request
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import registry
@@ -53,6 +54,44 @@ def watched_tickers():
         return [r["ticker"] for r in con.execute("SELECT ticker FROM companies ORDER BY ticker")]
 
 
+def next_report_date(yf, ticker, today):
+    """Next scheduled report date (US Eastern), or None.
+
+    Uses get_earnings_dates(), whose index is the tz-aware timestamp of the call.
+    Ticker.calendar is only a fallback: its date is UTC-rounded, so after-close
+    reporters come back a day late, and it keeps showing the last report's date
+    for weeks after the fact.
+    """
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=12)
+        if df is not None and not df.empty:
+            future = [idx for idx in df.index if idx.date().isoformat() >= today]
+            if future:
+                return min(future).date().isoformat()
+    except Exception as e:
+        print(f"{ticker}: get_earnings_dates error {e}", file=sys.stderr)
+    # Yahoo's calendarEvents epochs, converted in US/Eastern. yfinance 0.2.x
+    # parses them with fromtimestamp() in the host timezone, which on a Taipei
+    # box (UTC+8) pushes every after-close report to the next calendar day.
+    try:
+        raw = yf.Ticker(ticker)._quote._fetch(modules=["calendarEvents"])
+        epochs = raw["quoteSummary"]["result"][0]["calendarEvents"]["earnings"]["earningsDate"]
+        et = ZoneInfo("America/New_York")
+        future = sorted(d for d in (dt.datetime.fromtimestamp(int(e), et).date().isoformat()
+                                    for e in epochs) if d >= today)
+        if future:
+            return future[0]
+    except Exception as e:
+        print(f"{ticker}: calendarEvents error {e}", file=sys.stderr)
+    try:
+        dates = (yf.Ticker(ticker).calendar or {}).get("Earnings Date") or []
+        future = [d for d in dates if str(d) >= today]
+        return str(min(future)) if future else None
+    except Exception as e:
+        print(f"{ticker}: yfinance error {e}", file=sys.stderr)
+        return None
+
+
 def update():
     try:
         import yfinance as yf
@@ -60,14 +99,7 @@ def update():
         sys.exit("yfinance not installed")
     today = dt.date.today().isoformat()
     for t in watched_tickers():
-        nxt = None
-        try:
-            cal = yf.Ticker(t).calendar or {}
-            dates = cal.get("Earnings Date") or []
-            future = [d for d in dates if str(d) >= today]
-            nxt = str(min(future)) if future else (str(max(dates)) if dates else None)
-        except Exception as e:
-            print(f"{t}: yfinance error {e}", file=sys.stderr)
+        nxt = next_report_date(yf, t, today)
         with connect() as con:
             con.execute(
                 "INSERT INTO earnings_calendar (ticker, next_report_date, source, updated_at) "

@@ -22,6 +22,12 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import registry
 
+# 清單常被系統清成 dataless 佔位檔，背景行程讀它會回 EDEADLK。裸 read_text()
+# 會整支 traceback，害 sync_staged.sh 後面的 mirror 也跟著不跑。改走共用模組的
+# 重試讀寫，讀不到就安靜退場——本支每天跑，明天會再補。
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "scripts" / "lib"))
+from article_list import read_text, write_text  # noqa: E402
+
 LIST = pathlib.Path.home() / "Documents/arthurwang_DB/待閱讀清單.md"
 SECTION = "### 投資"
 
@@ -112,14 +118,22 @@ def main():
     else:
         sys.exit(__doc__)
 
-    text = LIST.read_text()
+    try:
+        text = read_text(LIST)
+    except OSError as e:
+        print(f"reading list unavailable, skipping this run: {e}")
+        return
     added = []
     for stem, suffix in items:
         text, ok = add_entry(text, stem, suffix)
         if ok:
             added.append(stem)
     if added:
-        LIST.write_text(text)
+        try:
+            write_text(LIST, text)
+        except OSError as e:
+            print(f"reading list not writable, skipping this run: {e}")
+            return
     print(f"added {len(added)}: {added}" if added else "nothing new to add")
 
 
