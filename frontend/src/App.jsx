@@ -1,7 +1,8 @@
 import { lazy, Suspense } from 'react';
-import { Route, Switch } from 'wouter';
+import { Route, Switch, Redirect } from 'wouter';
 import Navbar from './components/Navbar';
 import MacNotifier from './components/MacNotifier';
+import StockChatDock from './components/StockChatDock';
 import Home from './pages/Home';
 
 const ValuationList = lazy(() => import('./pages/ValuationList'));
@@ -18,6 +19,9 @@ const PortfolioList = lazy(() => import('./pages/PortfolioList'));
 const PortfolioDetail = lazy(() => import('./pages/PortfolioDetail'));
 const GSheetPortfolio = lazy(() => import('./pages/GSheetPortfolio'));
 const EarningsCalendar = lazy(() => import('./pages/EarningsCalendar'));
+const EarningsConclusions = lazy(() => import('./pages/EarningsConclusions'));
+const EarningsTheses = lazy(() => import('./pages/EarningsTheses'));
+const StockSegments = lazy(() => import('./pages/StockSegments'));
 const Compare = lazy(() => import('./pages/Compare'));
 const PriceAlerts = lazy(() => import('./pages/PriceAlerts'));
 const Watchlists = lazy(() => import('./pages/Watchlists'));
@@ -25,14 +29,14 @@ const MarketDetail = lazy(() => import('./pages/MarketDetail'));
 const MimiWatchlist = lazy(() => import('./pages/MimiWatchlist'));
 const Macro = lazy(() => import('./pages/Macro'));
 const Sectors = lazy(() => import('./pages/Sectors'));
-const FinanceDigest = lazy(() => import('./pages/FinanceDigest'));
-const MarketDigest = lazy(() => import('./pages/MarketDigest'));
 const StockOptions = lazy(() => import('./pages/StockOptions'));
-const StockPeers = lazy(() => import('./pages/StockPeers'));
 const StockAIAnalysis = lazy(() => import('./pages/StockAIAnalysis'));
+const StockPeers = lazy(() => import('./pages/StockPeers'));
 import StockEarningsNotes from './pages/StockEarningsNotes';
-const AIPortfolioReport = lazy(() => import('./pages/AIPortfolioReport'));
 const WarRoom = lazy(() => import('./pages/WarRoom'));
+const PostMarketReview = lazy(() => import('./pages/PostMarketReview'));
+const Briefing = lazy(() => import('./pages/Briefing'));
+const QaLog = lazy(() => import('./pages/QaLog'));
 
 function PageLoader() {
   return (
@@ -51,6 +55,7 @@ function App() {
       </div>
       <Navbar />
       <MacNotifier />
+      <StockChatDock />
       <main className="pt-20 pb-8 lg:pt-24">
         <Suspense fallback={<PageLoader />}>
           <Switch>
@@ -67,9 +72,17 @@ function App() {
             <Route path="/stock/:ticker/peers" component={StockPeers} />
             <Route path="/stock/:ticker/ai" component={StockAIAnalysis} />
             <Route path="/stock/:ticker/earnings-notes" component={StockEarningsNotes} />
+            <Route path="/stock/:ticker/segments" component={StockSegments} />
+            {/* 三大表已併進 metrics 頁的「財務報表與基本面」區塊，舊書籤直接落到損益表分頁 */}
+            <Route path="/stock/:ticker/financials">
+                {(p) => <Redirect to={`/stock/${p.ticker}/metrics?tab=income`} replace />}
+            </Route>
+            <Route path="/qa" component={QaLog} />
             <Route path="/macro" component={Macro} />
             <Route path="/sectors" component={Sectors} />
             <Route path="/earnings" component={EarningsCalendar} />
+            <Route path="/earnings-conclusions" component={EarningsConclusions} />
+            <Route path="/earnings-theses" component={EarningsTheses} />
             <Route path="/compare" component={Compare} />
             <Route path="/alerts" component={PriceAlerts} />
             <Route path="/watchlists" component={Watchlists} />
@@ -78,10 +91,14 @@ function App() {
             <Route path="/portfolio/gsheet" component={GSheetPortfolio} />
             <Route path="/portfolio/:id" component={PortfolioDetail} />
             <Route path="/portfolio" component={PortfolioList} />
-            <Route path="/market-digest" component={MarketDigest} />
-            <Route path="/finance-digest" component={FinanceDigest} />
-            <Route path="/ai-report" component={AIPortfolioReport} />
+            <Route path="/briefing" component={Briefing} />
+            {/* 舊書籤：直接進完整版的對應分頁，不再繞經 Portfolio 頁 */}
+            <Route path="/market-digest"><Redirect to="/briefing?tab=market" /></Route>
+            <Route path="/finance-digest"><Redirect to="/briefing?tab=notes" /></Route>
+            {/* 復盤的完整畫面只有一份，在 /review —— 每日報告不再重畫一次 */}
+            <Route path="/ai-report"><Redirect to="/review" /></Route>
             <Route path="/war-room" component={WarRoom} />
+            <Route path="/review" component={PostMarketReview} />
             <Route path="/mimi-watchlist" component={MimiWatchlist} />
             <Route path="/add-stock" component={AddStock} />
             <Route>
