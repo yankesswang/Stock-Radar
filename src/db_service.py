@@ -578,6 +578,7 @@ def save_statistics(ticker: str, data: dict, snapshot_date: date):
                         snapshot_date=snapshot_date,
                         section=section_name,
                         label=label,
+                        metric_id=item.get("id"),   # JSON 端點才有；爬 HTML 的是 None
                         value=numeric_value,
                         display=display,
                     ))
