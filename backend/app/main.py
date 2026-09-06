@@ -7,7 +7,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from .config import settings
 from .database import engine, Base
-from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio, earnings, scheduler, summary, industry_compare, alerts, watchlists, notifications, market, mimi, options, macro, finance_digest, stock_digest, news, ai_analysis, ai_report, sectors, war_room, opportunities, earnings_notes
+from .routers import stocks, valuations, industries, search, compare, screener, data, metrics_breakdown, statistics, ratios, forecast, dcf, scrape, pe, chart, signals, portfolio, earnings, scheduler, summary, industry_compare, alerts, watchlists, notifications, market, mimi, options, macro, finance_digest, stock_digest, market_news, news, ai_analysis, ai_report, sectors, war_room, opportunities, earnings_notes, segments, financials, stock_chat
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,12 +64,16 @@ app.include_router(macro.router,           prefix="/api/macro",             tags
 app.include_router(sectors.router,         prefix="/api/sectors",           tags=["sectors"])
 app.include_router(finance_digest.router,  prefix="/api/finance-digest",    tags=["finance-digest"])
 app.include_router(stock_digest.router,     prefix="/api/stock-digest",      tags=["stock-digest"])
+app.include_router(market_news.router,      prefix="/api/market-news",       tags=["market-news"])
 app.include_router(earnings_notes.router, prefix="/api/earnings-notes", tags=["earnings-notes"])
+app.include_router(segments.router,     prefix="/api/segments",       tags=["segments"])
+app.include_router(financials.router,   prefix="/api/financials",     tags=["financials"])
 app.include_router(news.router,             prefix="/api/stocks",            tags=["news"])
 app.include_router(ai_analysis.router,      prefix="/api/stocks",            tags=["ai-analysis"])
 app.include_router(ai_report.router,        prefix="/api/ai-report",         tags=["ai-report"])
 app.include_router(war_room.router,         prefix="/api/war-room",          tags=["war-room"])
 app.include_router(opportunities.router,    prefix="/api/opportunities",     tags=["opportunities"])
+app.include_router(stock_chat.router,       prefix="/api/stock-chat",        tags=["stock-chat"])
 
 
 @app.api_route("/api/health", methods=["GET", "HEAD"])
