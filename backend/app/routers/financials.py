@@ -15,13 +15,15 @@ Endpoints:
   GET /api/financials/{ticker}                — 三張表的結構與可用期間
   GET /api/financials/{ticker}/metrics        — 基本面指標時間序列（見下）
   GET /api/financials/{ticker}/supplement     — SEC 給不了的欄位＋對帳結果
+  GET /api/financials/{ticker}/nongaap        — GAAP → Non-GAAP 對帳（見下）
   GET /api/financials/{ticker}/{statement}    — 單張表的矩陣（科目 × 期間）
 """
-import sqlite3
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from ..dbro import ro_rows
 from ..fiscal import calendar_label, fiscal_label, fiscal_year_end_month
 from ..xbrl_labels import zh
 
@@ -41,17 +43,32 @@ def _fye(ticker: str) -> int | None:
     return fiscal_year_end_month(str(DB), ticker)
 
 
+def _fy_ends(ticker: str) -> set[str]:
+    """該公司的會計年度結束日。年度視圖用它挑期間，光看 period_months=12 不夠。
+
+    要排掉兩種同樣是 12 個月、但不是會計年度的期間，判準看申報表別：
+
+    10-Q —— 滾動十二個月。AMZN 的 10-Q 現金流量表是用「過去十二個月」呈現的，
+    每個季末都留下一組 12 個月的事實。放進來的話同一年會冒出四欄，而且那三欄
+    只帶得動現金流那 24 個科目，損益表其餘科目整排變成「—」。
+
+    DEF 14A —— 委任書裡給高管薪酬用的單筆淨利，期間常標成日曆年底。ONTO 的
+    會計年度收在 12/28 或 1/3，那筆 12/31 會多長出一根只有一格數字的欄位。
+
+    判表別而不是判 fp='FY'：同一個 (concept, period_end, period_months) 只存
+    得下一筆，整個年度都可能是沒有 fp 的申報寫進來的——INTU 最近三年來自 8-K
+    財報發布、MSFT 的 FY22 也是——逐筆篩 fp 會把真年度整年丟掉。
+    """
+    return {r["period_end"] for r in _rows(
+        "SELECT DISTINCT period_end FROM financial_facts "
+        "WHERE ticker=? AND period_months=12 "
+        "AND form NOT LIKE '10-Q%' AND form NOT LIKE 'DEF %'", (ticker,))}
+
+
 def _rows(sql: str, args: tuple) -> list[dict]:
-    if not DB.exists():
-        return []
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    try:
-        return [dict(r) for r in con.execute(sql, args)]
-    except sqlite3.Error:
-        return []
-    finally:
-        con.close()
+    # 背景寫入拿著鎖時要等、等不到丟 503，不能回空——回空會讓「資料庫正在忙」
+    # 跟「這檔沒有財報」長得一樣，三大表整區憑空消失。理由寫在 app/dbro.py。
+    return ro_rows(DB, sql, args)
 
 
 @router.get("/{ticker}")
@@ -224,13 +241,72 @@ def supplement(ticker: str):
     }
 
 
+@router.get("/{ticker}/nongaap")
+def nongaap(ticker: str, months: int = 3, limit: int = 8):
+    """公司自訂的 Non-GAAP，以及它跟 GAAP 的差距。
+
+    來源是財報新聞稿（8-K Item 2.02 / 外國發行人的 6-K）裡的對帳表——
+    SEC 的 XBRL 只標記 GAAP，stockanalysis 給的是 S&P 正規化值，
+    公司自己定義的 Non-GAAP 只有新聞稿裡有。
+
+    每一列都帶三段：GAAP 起點、逐項調整、Non-GAAP 結果，外加 residual
+    （GAAP + 調整 − Non-GAAP，理論上是 0，不是 0 代表有調整項沒被解析到）。
+
+    要注意 Non-GAAP 跨公司不可比：同樣叫 Adjusted EBITDA，各家剔除的項目不同。
+    它適合看同一家公司的趨勢，不適合拿來排序。
+    """
+    t = ticker.upper()
+    rows = _rows(
+        "SELECT * FROM nongaap_reconciliation WHERE ticker=? AND period_months=? "
+        "ORDER BY period_end DESC", (t, months))
+    if not rows:
+        return {"ticker": t, "months": months, "periods": [], "measures": [],
+                "note": "這檔沒有解析到 Non-GAAP 對帳表（有些公司只報 GAAP）"}
+
+    periods = sorted({r["period_end"] for r in rows}, reverse=True)[:limit]
+    keep = set(periods)
+    by_measure: dict[str, dict] = {}
+    for r in rows:
+        if r["period_end"] not in keep:
+            continue
+        m = by_measure.setdefault(r["nongaap_label"], {
+            "label": r["nongaap_label"], "gaap_label": r["gaap_label"],
+            "unit": r["unit"], "values": {}})
+        try:
+            adjustments = json.loads(r["adjustments"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            adjustments = []
+        m["values"][r["period_end"]] = {
+            "gaap": r["gaap_value"], "nongaap": r["nongaap_value"],
+            "gap": (r["nongaap_value"] - r["gaap_value"])
+                   if r["nongaap_value"] is not None and r["gaap_value"] is not None else None,
+            "adjustments": adjustments,
+            "residual": r["residual"],
+        }
+    # 金額排前面、百分比在後；同類照最新一期的差距由大到小——差距大的最值得看
+    def _key(m):
+        v = m["values"].get(periods[0]) or {}
+        return (m["unit"] != "amount", -abs(v.get("gap") or 0))
+
+    return {
+        "ticker": t, "months": months, "periods": periods,
+        "source": "財報新聞稿（8-K / 6-K）",
+        "filed": rows[0]["filed"], "source_url": rows[0]["source_url"],
+        "period_labels": {p: calendar_label(p, months) for p in periods},
+        "measures": sorted(by_measure.values(), key=_key),
+    }
+
+
 @router.get("/{ticker}/{statement}")
 def statement(ticker: str, statement: str, freq: str = "annual", limit: int = 12):
     """一張表的「科目 × 期間」矩陣，期間新到舊。
 
-    freq=annual 取 12 個月的期間，quarterly 取 3 個月。資產負債表沒有期間長度
-    （存的是時點值），所以兩種 freq 都回同一組時點，只是取樣密度不同：年度只留
-    每個會計年度的最後一個時點，季度全留。
+    freq=annual 取會計年度（period_months=12 且 fp='FY'），quarterly 取 3 個月。
+    年度一定要連 fp 一起篩：季報也會揭露滾動 12 個月，期間長度同樣是 12 個月，
+    混進來的話 AMZN 會冒出 40 個「年度」（同 /metrics 的註解）。
+
+    資產負債表沒有期間長度（存的是時點值），所以兩種 freq 都回同一組時點，只是
+    取樣密度不同：年度只留每個會計年度的最後一個時點，季度全留。
     """
     t = ticker.upper()
     if statement not in STATEMENTS:
@@ -246,10 +322,16 @@ def statement(ticker: str, statement: str, freq: str = "annual", limit: int = 12
     if statement == "balance":
         facts = _rows(f"SELECT * FROM financial_facts WHERE ticker=? AND period_months=0 "
                       f"AND concept IN ({qs})", (t, *concepts))
+    elif freq == "annual":
+        fy = sorted(_fy_ends(t))              # 只留會計年度末，理由見 _fy_ends
+        ps = ",".join("?" * len(fy))
+        facts = _rows(
+            f"SELECT * FROM financial_facts WHERE ticker=? AND period_months=12 "
+            + (f"AND period_end IN ({ps}) " if fy else "")
+            + f"AND concept IN ({qs})", (t, *fy, *concepts))
     else:
-        months = 12 if freq == "annual" else 3
-        facts = _rows(f"SELECT * FROM financial_facts WHERE ticker=? AND period_months=? "
-                      f"AND concept IN ({qs})", (t, months, *concepts))
+        facts = _rows(f"SELECT * FROM financial_facts WHERE ticker=? AND period_months=3 "
+                      f"AND concept IN ({qs})", (t, *concepts))
 
     by_period: dict[str, dict[str, float]] = {}
     units: dict[str, str] = {}
@@ -267,9 +349,7 @@ def statement(ticker: str, statement: str, freq: str = "annual", limit: int = 12
         # 資產負債表存的是時點值、每季都有。年度視圖不能用「每個日曆年最後一個」
         # 去挑——AAPL 會計年度 9 月底，那樣會挑到 12 月的季末（Q1）而不是年度數字。
         # 正解是對齊損益表 12 個月期間的結束日，那就是各公司自己的會計年度末。
-        fy_ends = {r["period_end"] for r in _rows(
-            "SELECT DISTINCT period_end FROM financial_facts "
-            "WHERE ticker=? AND period_months=12", (t,))}
+        fy_ends = _fy_ends(t)
         aligned = [p for p in periods if p in fy_ends]
         periods = aligned or periods          # 對不到就退回原本的時點序列
     periods = periods[:limit]

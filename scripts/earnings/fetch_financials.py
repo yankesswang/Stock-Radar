@@ -21,6 +21,7 @@
 用法:
   fetch_financials.py                  registry 裡有 CIK 的公司
   fetch_financials.py --ticker MSFT    單檔
+  fetch_financials.py --missing        只抓 financial_facts 裡還沒有的（新加進清單的股票）
   fetch_financials.py --dry-run --show 只印不寫
 """
 import argparse
@@ -292,16 +293,27 @@ def main():
                     help="只保留近幾年的期間（預設 10）")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--show", action="store_true")
+    ap.add_argument("--missing", action="store_true",
+                    help="跳過 financial_facts 已經有資料的 ticker")
     a = ap.parse_args()
 
     tgts = targets(a.ticker)
+    if a.missing:
+        con = sqlite3.connect(f"file:{VALUATION_DB}?mode=ro", uri=True)
+        try:
+            have = {r[0] for r in con.execute("SELECT DISTINCT ticker FROM financial_facts")}
+        except sqlite3.Error:
+            have = set()
+        con.close()
+        tgts = [(t, c) for t, c in tgts if t not in have]
+        print(f"--missing: {len(tgts)} 檔待抓")
     if not tgts:
         print("no targets with CIK")
         return
 
     con = None
     if not a.dry_run:
-        con = sqlite3.connect(VALUATION_DB)
+        con = sqlite3.connect(VALUATION_DB, timeout=120)
         con.executescript(SCHEMA)
 
     now = dt.datetime.now().isoformat(timespec="seconds")

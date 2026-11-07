@@ -40,6 +40,8 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.zh_terms import zh_action  # noqa: E402  （報告一律印中文動作）
+
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 DATA_DIR = PROJECT_ROOT / "data" / "agent"
 POSITIONS_DIR = DATA_DIR / "positions"
@@ -377,16 +379,17 @@ def render_exec_section(entries: list[dict]) -> list[str]:
     if n_snaps < 2:
         warmup = [
             f"> ⚠️ 目前只有 {n_snaps} 份持倉快照，**還無法做成交對帳**（差分至少需要兩份）。",
-            "> 在累積足夠快照之前，所有決策最多只會停在 `triggered`——"
+            "> 在累積足夠快照之前，所有決策最多只會停在「條件已觸發」——"
             "那代表「沒有證據」，不代表「確定沒成交」。要提前確認可用：",
             "> `uv run python scripts/exec_state.py --confirm TICKER --date YYYY-MM-DD --state executed`",
         ]
     lines = [
         "## 🔐 決策執行狀態（唯一可宣稱「已執行」的依據）",
-        "> 狀態機：recommended → triggered → acknowledged → executed → reconciled。",
-        "> **只有 executed / reconciled（有持倉變化對帳）才能寫「已執行」**；",
-        "> triggered / acknowledged 一律寫「條件已觸發，待確認」。違反此規則的句子會被程式攔下改寫。",
-        "> 你必須在 DECISIONS 的 `ack_prev` 欄位逐筆回應（verdict: executed / abandoned / pending）。",
+        "> 狀態機：已建議 → 條件已觸發 → 已回應 → 已執行 → 已對帳。",
+        "> **只有「已執行／已對帳」（有持倉變化對帳）才能寫「已執行」**；",
+        "> 「條件已觸發／已回應」一律寫「條件已觸發，待確認」。違反此規則的句子會被程式攔下改寫。",
+        "> 你必須在 DECISIONS 的 `ack_prev` 欄位逐筆回應"
+        "（`verdict` 只能填 `executed`（已執行）/ `abandoned`（已放棄）/ `pending`（待確認））。",
         *warmup,
         "",
     ]
@@ -407,8 +410,8 @@ def render_exec_section(entries: list[dict]) -> list[str]:
         if e.get("ack_note"):
             tail += f"｜前次回應：{e['ack_note'][:40]}"
         lines.append(
-            f"- {icon} {e['ticker']}｜{e['action']}｜{cond}（{pd_.month}/{pd_.day} 提出）"
-            f"｜狀態 **{st}**（{STATE_ZH.get(st, st)}）{tail}"
+            f"- {icon} {e['ticker']}｜{zh_action(e['action'])}｜{cond}（{pd_.month}/{pd_.day} 提出）"
+            f"｜狀態 **{STATE_ZH.get(st, st)}**{tail}"
         )
     lines.append("")
     return lines

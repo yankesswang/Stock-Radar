@@ -1,5 +1,5 @@
 """
-Market News — 每日市場新聞策展（portal 每日報告「市場新聞」分頁的來源）。
+Market News — 每日市場新聞策展（stock-radar 戰情室「新聞線」面板的來源；2026-09-07 前是每日報告頁的「市場新聞」分頁）。
 
 讀 scripts/market_news.py 產出的 data/market-news/{date}.json：
 大盤/宏觀要點 + 我的持倉與觀察名單當日必讀新聞，每則都附回原始出處。

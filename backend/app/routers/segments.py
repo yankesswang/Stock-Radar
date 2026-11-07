@@ -21,12 +21,12 @@ Endpoints:
   GET /api/segments/{ticker}/latest   — 最新一期，附 YoY（去年同期）
 """
 import re
-import sqlite3
 from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from ..dbro import ro_rows
 from ..fiscal import calendar_label, fiscal_label, fiscal_year_end_month
 from ..xbrl_labels import zh
 
@@ -243,16 +243,10 @@ def _merge_by_segments(axes: list[dict]) -> list[dict]:
 
 
 def _rows(sql: str, args: tuple) -> list[dict]:
-    if not DB.exists():
-        return []
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
-    try:
-        return [dict(r) for r in con.execute(sql, args)]
-    except sqlite3.Error:
-        return []
-    finally:
-        con.close()
+    # 撞到背景寫入的鎖時要等、等不到要丟 503，不能回空陣列——那會讓
+    # 「資料庫正在忙」長得跟「這檔沒有分部門資料」一模一樣，前端把整個面板收掉。
+    # 理由寫在 app/dbro.py。
+    return ro_rows(DB, sql, args)
 
 
 def _build(ticker: str, months: int, currency: str | None = None) -> list[dict]:
@@ -354,8 +348,21 @@ def _build(ticker: str, months: int, currency: str | None = None) -> list[dict]:
     # 排序：至少要有兩個真部門（只有一個等於沒拆）、能對上合併數的優先、
     # 其次有利潤、再其次真部門多。
     out = _merge_by_segments(out)
-    out.sort(key=lambda a: (a["real_segment_count"] < 2, a["reconciles"] is not True,
-                            not a["has_profit"], -a["real_segment_count"]))
+
+    # 時效性要排在對帳之前。公司會改變分部門的揭露方式，舊的拆法停在某一年就
+    # 不再更新——ADBE 有一個 2018 就停掉的三部門拆法「對得上合併數」，於是被排到
+    # 第一個，使用者看到的最新一期是 2018-08-31，但資料庫裡其實有到 2026-05。
+    newest = max((p["period_end"] for a in out for p in a["periods"]), default="")
+    def _stale(axis) -> bool:
+        latest = axis["periods"][0]["period_end"] if axis["periods"] else ""
+        # 同一檔的所有維度都來自同一批申報，所以「沒有涵蓋到最新一期」就代表
+        # 這種拆法已經停止揭露，不是揭露時點的差異。用寬鬆的月數門檻不夠：
+        # ADBE 那個停掉的三部門拆法只落後 9 個月，照樣被排到第一個。
+        return bool(newest and latest and latest < newest)
+
+    out.sort(key=lambda a: (_stale(a), a["real_segment_count"] < 2,
+                            a["reconciles"] is not True, not a["has_profit"],
+                            -a["real_segment_count"]))
     pinned = AXIS_PINS.get(ticker.upper())
     if pinned:
         # 人工釘選：純靠規則排不出「這家公司該看哪種拆法」時（LLY 看藥品別比

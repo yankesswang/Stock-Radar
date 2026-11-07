@@ -8,6 +8,7 @@ Runs in the background as an asyncio task (started via FastAPI lifespan)。
                    （ratios 那步同時寫進 metrics 表，所以 metrics 是新的）
   daily report     每天 08:00，各投組的每日體檢報告
   statements       每天 04:00，補抓最舊的損益表／現金流量表（見下）
+  prices           每天 05:30，把最新一筆估值快照的現價換成真收盤價（見下）
 
 statistics 這步是 2026-09 才補的。在那之前它不在任何排程裡，只能手動跑
 `scripts/scrape_statistics.py`，結果整張表停在兩個月前 —— 同業比較的利潤率、
@@ -26,6 +27,7 @@ Endpoints:
   POST /api/scheduler/report/run      – trigger daily portfolio reports
   POST /api/scheduler/ai-report/run   – trigger AI per-stock decision cards
   POST /api/scheduler/statistics/run  – trigger a statistics top-up batch
+  POST /api/scheduler/prices/run      – trigger an immediate price refresh
 """
 import asyncio
 import json
@@ -64,6 +66,14 @@ STATS_MIN_DELAY, STATS_MAX_DELAY = 3, 6
 STATEMENTS_DAILY_HOUR = 4
 STATEMENTS_BATCH_SIZE = 15
 STATEMENTS_MAX_AGE_DAYS = 100          # 超過這個天數就排進補抓佇列
+
+# 現價每日更新：valuations.current_price 原本只由每週那輪的比率表爬蟲寫入，抄的是
+# stockanalysis 的「Last Close Price」，而爬蟲排在台北凌晨（美股盤中），所以那個價
+# 最好也落後一個交易日，最壞會停整整一週以上。valuation_status / valuation_diff_pct
+# 是拿它跟合理價比出來的，價一舊，高估／低估跟著錯。05:30 挑在美東收盤（台北 04:00／
+# 夏令 05:00）之後、08:00 的每日報告之前，讓報告讀到的是當天的收盤。
+PRICES_DAILY_HOUR = 5
+PRICES_DAILY_MINUTE = 30
 # AI 持倉決策日報「不」由本內部排程自動觸發 —— 改由 stock digest 流程
 # （~/Library/Scripts/stock-digest-portfolio.sh，launchd 6:30）呼叫
 # POST /api/scheduler/ai-report/run 觸發。此處僅保留手動端點與狀態。
@@ -117,6 +127,14 @@ _state: dict[str, Any] = {
     "statements_errors":        [],
     "statements_oldest":        None,   # 全庫最舊的損益/現金流日期
     "statements_missing":       0,      # 完全沒有這兩張表的檔數
+    "prices_status":        "idle",     # idle | running
+    "prices_enabled":       True,
+    "prices_last_run":      None,
+    "prices_last_run_date": None,
+    "prices_next_run":      None,
+    "prices_updated":       0,          # 上一輪實際寫入的檔數
+    "prices_total":         0,
+    "prices_missing":       [],         # 抓不到報價的（多半是下市／改名）
 }
 
 _refresh_task: asyncio.Task | None = None
@@ -128,6 +146,7 @@ class SchedulerConfigIn(BaseModel):
     ai_report_enabled: bool | None = None
     stats_enabled: bool | None = None
     statements_enabled: bool | None = None
+    prices_enabled: bool | None = None
 
 
 # ── State persistence ─────────────────────────────────────────────────────────
@@ -155,6 +174,10 @@ def _load_state() -> None:
         _state["stats_last_run"] = saved.get("stats_last_run")
         _state["stats_last_run_date"] = saved.get("stats_last_run_date")
         _state["stats_next_run"] = saved.get("stats_next_run")
+        _state["prices_enabled"] = bool(saved.get("prices_enabled", True))
+        _state["prices_last_run"] = saved.get("prices_last_run")
+        _state["prices_last_run_date"] = saved.get("prices_last_run_date")
+        _state["prices_next_run"] = saved.get("prices_next_run")
     except Exception:
         pass
 
@@ -181,14 +204,18 @@ def _save_state() -> None:
             "statements_last_run": _state["statements_last_run"],
             "statements_last_run_date": _state["statements_last_run_date"],
             "statements_next_run": _state["statements_next_run"],
+            "prices_enabled": _state["prices_enabled"],
+            "prices_last_run": _state["prices_last_run"],
+            "prices_last_run_date": _state["prices_last_run_date"],
+            "prices_next_run": _state["prices_next_run"],
         }))
     except Exception:
         pass
 
 
-def _calc_next_run_at(hour: int, now: datetime | None = None) -> datetime:
+def _calc_next_run_at(hour: int, now: datetime | None = None, minute: int = 0) -> datetime:
     now = now or datetime.now()
-    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if now >= target:
         target = target + timedelta(days=1)
     return target
@@ -198,7 +225,8 @@ def _calc_next_report_run(now: datetime | None = None) -> datetime:
     return _calc_next_run_at(REPORT_DAILY_HOUR, now)
 
 
-def _should_run_at(now: datetime, hour: int, last_run_date: str | None, is_running: bool) -> tuple[bool, str]:
+def _should_run_at(now: datetime, hour: int, last_run_date: str | None, is_running: bool,
+                   minute: int = 0) -> tuple[bool, str]:
     """
     Decide whether a daily task should run now.
     Rules:
@@ -212,9 +240,11 @@ def _should_run_at(now: datetime, hour: int, last_run_date: str | None, is_runni
     if last_run_date == today:
         return False, "already-ran-today"
 
+    due = (now.hour, now.minute) >= (hour, minute)
+
     # First run ever
     if not last_run_date:
-        if now.hour >= hour:
+        if due:
             return True, "first-run"
         return False, "before-scheduled-hour"
 
@@ -225,7 +255,7 @@ def _should_run_at(now: datetime, hour: int, last_run_date: str | None, is_runni
         return True, "invalid-last-run-date"
 
     gap_days = (now.date() - last_d).days
-    if now.hour >= hour:
+    if due:
         return True, "scheduled-hour"
     if gap_days >= 2:
         return True, f"catch-up-gap-{gap_days}d"
@@ -242,6 +272,15 @@ def _should_run_daily_report(now: datetime) -> tuple[bool, str]:
 
 # statistics 沒有自己的每日排程 —— 併進每週那一輪（_scrape_one 的第 4 步）。
 # 這裡留下的是手動補抓的路徑與體檢數字。
+
+
+def _should_run_prices(now: datetime) -> tuple[bool, str]:
+    return _should_run_at(
+        now, PRICES_DAILY_HOUR,
+        _state.get("prices_last_run_date"),
+        _state.get("prices_status") == "running",
+        minute=PRICES_DAILY_MINUTE,
+    )
 
 
 def _should_run_statements(now: datetime) -> tuple[bool, str]:
@@ -277,12 +316,14 @@ def _scrape_one(ticker: str, group: str) -> str:
     except Exception as e:
         pass  # non-fatal
 
-    # 2. PE median
+    # 2. PE median ＋ PE 歷史檔（PE 歷史分頁讀的是 JSON 檔，不是 DB；
+    #    2026-09 以前這裡只存中位數、把整頁歷史丟掉，結果 430 多檔的 PE 分頁一直是空的）
     try:
-        from scripts.scrape_fullratio_pe import scrape_ticker as fr_scrape
+        from scripts.scrape_fullratio_pe import scrape_ticker as fr_scrape, write_json as fr_write
         from src.db_service import save_pe_median
         fr = fr_scrape(ticker)
         if fr:
+            fr_write(fr)
             pe = fr.get("summary", {}).get("Median") or fr.get("pe_median")
             if pe:
                 save_pe_median(ticker, float(pe), snapshot)
@@ -291,9 +332,12 @@ def _scrape_one(ticker: str, group: str) -> str:
 
     # 3. Forecast
     try:
-        from scripts.scrape_forecast import scrape_forecast, save_to_db
+        # JSON 也要存：分析師預估頁、DCF 輸入、摘要、產業比較、上修下修追蹤全讀這個檔，
+        # 不讀 DB。2026-09 以前這裡只存 DB，350 檔整頁空白、其餘停在 7/8 月。
+        from scripts.scrape_forecast import scrape_forecast, save_to_db, save_ticker_json
         fd = scrape_forecast(ticker)
         if fd:
+            save_ticker_json(ticker, fd)
             save_to_db(ticker, fd)
     except Exception:
         pass
@@ -741,6 +785,48 @@ def _recompute_dcf(tickers: list[str]) -> int:
     return ok
 
 
+async def _do_prices_refresh(scheduled: bool = True) -> None:
+    """把每檔最新一筆估值快照的現價換成真收盤價，並重算高估／低估。
+
+    只改價格與由價格衍生的四個欄位，不碰 EPS、PE 中位數、合理價那些爬蟲的產物，
+    也不回頭改歷史快照。抓不到報價的（下市、改名）保留原值 —— 絕不歸零，
+    0 會被下游當成「合理價 $0」。
+    """
+    if _state["prices_status"] == "running":
+        return
+
+    _state.update({"prices_status": "running", "prices_updated": 0, "prices_total": 0})
+    _log("現價更新開始 —— 重抓全庫最新快照的收盤價。")
+
+    loop = asyncio.get_event_loop()
+    try:
+        from scripts.refresh_prices import refresh
+        r = await loop.run_in_executor(None, refresh)
+    except Exception as exc:
+        _state["prices_status"] = "idle"
+        _log(f"✗ 現價更新失敗：{exc}")
+        return
+
+    now = datetime.now()
+    _state.update({
+        "prices_status":   "idle",
+        "prices_last_run": now.isoformat(timespec="seconds"),
+        "prices_updated":  r["updated"],
+        "prices_total":    r["total"],
+        "prices_missing":  r["missing"][:20],
+    })
+    if scheduled:
+        _state["prices_last_run_date"] = now.date().isoformat()
+        _state["prices_next_run"] = _calc_next_run_at(
+            PRICES_DAILY_HOUR, now, PRICES_DAILY_MINUTE
+        ).isoformat(timespec="seconds")
+    _save_state()
+    _log(
+        f"現價更新完成：{r['total']} 檔中更新 {r['updated']}、"
+        f"無變動 {r['unchanged']}、抓不到 {len(r['missing'])}"
+    )
+
+
 async def _do_statements_refresh(
     limit: int = STATEMENTS_BATCH_SIZE, scheduled: bool = True
 ) -> None:
@@ -819,6 +905,11 @@ async def scheduler_loop() -> None:
             STATEMENTS_DAILY_HOUR
         ).isoformat(timespec="seconds")
         _save_state()
+    if not _state.get("prices_next_run"):
+        _state["prices_next_run"] = _calc_next_run_at(
+            PRICES_DAILY_HOUR, minute=PRICES_DAILY_MINUTE
+        ).isoformat(timespec="seconds")
+        _save_state()
     # 開機就量一次 statistics 的新舊 —— 前端要能立刻說出「資料多舊」
     try:
         fresh = await asyncio.get_event_loop().run_in_executor(None, _stats_freshness)
@@ -857,6 +948,12 @@ async def scheduler_loop() -> None:
             if should_run:
                 _log(f"Daily report trigger ({reason}) — starting report generation.")
                 asyncio.create_task(_do_daily_report_refresh())
+
+        if _state.get("prices_enabled", True):
+            should_run, reason = _should_run_prices(now)
+            if should_run:
+                _log(f"現價更新觸發（{reason}）—— 開始重抓全庫收盤價。")
+                asyncio.create_task(_do_prices_refresh())
 
         if _state.get("statements_enabled", True):
             should_run, reason = _should_run_statements(now)
@@ -921,6 +1018,16 @@ def get_status():
             "batch_size": STATEMENTS_BATCH_SIZE,
             "errors": _state["statements_errors"][-10:],
         },
+        "prices": {
+            "enabled": _state["prices_enabled"],
+            "status": _state["prices_status"],
+            "last_run": _state["prices_last_run"],
+            "last_run_date": _state["prices_last_run_date"],
+            "next_run": _state["prices_next_run"],
+            "updated": _state["prices_updated"],
+            "total": _state["prices_total"],
+            "missing": _state["prices_missing"],
+        },
         "ai_report": {
             "enabled": _state["ai_report_enabled"],
             "status": _state["ai_report_status"],
@@ -947,6 +1054,8 @@ def update_config(payload: SchedulerConfigIn):
         _state["stats_enabled"] = payload.stats_enabled
     if payload.statements_enabled is not None:
         _state["statements_enabled"] = payload.statements_enabled
+    if payload.prices_enabled is not None:
+        _state["prices_enabled"] = payload.prices_enabled
     _save_state()
     return {
         "ok": True,
@@ -955,7 +1064,17 @@ def update_config(payload: SchedulerConfigIn):
         "ai_report_enabled": _state["ai_report_enabled"],
         "stats_enabled": _state["stats_enabled"],
         "statements_enabled": _state["statements_enabled"],
+        "prices_enabled": _state["prices_enabled"],
     }
+
+
+@router.post("/prices/run")
+async def trigger_prices_run():
+    """手動重抓全庫現價並重算高估／低估，非阻塞。"""
+    if _state["prices_status"] == "running":
+        raise HTTPException(status_code=409, detail="現價更新正在進行中。")
+    asyncio.create_task(_do_prices_refresh(scheduled=False))
+    return {"ok": True, "message": "現價更新已在背景開始。"}
 
 
 @router.post("/run")

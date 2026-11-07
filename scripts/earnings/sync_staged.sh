@@ -67,6 +67,11 @@ if [[ ! -d "$STAGE" ]] || [[ "$(find "$STAGE" -type f | wc -l | tr -d ' ')" == "
 fi
 
 COUNT=$(find "$STAGE" -type f | wc -l | tr -d ' ')
+# 排版檢查（只報不擋）：headless 生成的筆記最常犯的是把 30 秒結論寫成一整段、
+# 內文全是 200 字散文（FSLY／WDAY 2026Q2）。這裡把 FAIL 的印進 log，
+# 互動 session 看到就回頭重排；擋下來反而會讓筆記卡在 staging 沒人知道。
+find "$STAGE" -name '*財報筆記.md' -print0 | xargs -0 -r /usr/bin/env python3 "$HERE/lint_note_format.py" --quiet \
+  || echo "排版檢查有 FAIL（見上表），同步後請重排：python3 $HERE/lint_note_format.py <筆記>"
 if rsync -av "$STAGE/" "$VAULT/"; then
   find "$STAGE" -type f -delete
   find "$STAGE" -type d -empty -delete

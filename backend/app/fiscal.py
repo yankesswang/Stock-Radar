@@ -22,30 +22,42 @@
 import sqlite3
 from collections import Counter
 from datetime import date, timedelta
-from functools import lru_cache
+
+from .dbro import ro_connect
 
 
 def _months_between(a: date, b: date) -> int:
     return (b.year - a.year) * 12 + (b.month - a.month)
 
 
-@lru_cache(maxsize=512)
+# 自己管快取而不用 @lru_cache：查詢失敗的 None **不能**進快取。
+# 背景寫入鎖住 DB 的那一瞬間查詢會失敗，lru_cache 會把那次的 None 永久記住，
+# 之後這一檔的會計季標籤就再也不會出現——要重啟 backend 才好，極難追。
+_FY_END: dict[tuple[str, str], int | None] = {}
+
+
 def fiscal_year_end_month(db: str, ticker: str) -> int | None:
     """公司的會計年度結束月份。取 fp='FY' 期間結束日的月份眾數——
     52/53 週制的公司年度末會在月底前後飄，眾數比單看最新一年穩。"""
+    key = (str(db), ticker)
+    if key in _FY_END:
+        return _FY_END[key]
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = ro_connect(db)
     except sqlite3.Error:
-        return None
+        return None                        # 暫時性失敗，不寫快取
     try:
         months = [int(p[5:7]) for (p,) in con.execute(
             "SELECT DISTINCT period_end FROM financial_facts "
             "WHERE ticker=? AND period_months=12 AND fp='FY'", (ticker,))]
     except sqlite3.Error:
-        return None
+        return None                        # 同上
     finally:
         con.close()
-    return Counter(months).most_common(1)[0][0] if months else None
+    val = Counter(months).most_common(1)[0][0] if months else None
+    if len(_FY_END) < 512:                 # 原本 lru_cache 的上限，維持不變
+        _FY_END[key] = val
+    return val
 
 
 def fiscal_label(period_end: str, fye_month: int | None, months: int = 3) -> str:

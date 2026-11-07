@@ -33,7 +33,8 @@ STOCK_DIGEST_DIR = Path(
 ).expanduser()
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-# 檔名 → 前端分頁標籤（依存在與否動態納入）
+# 檔名 → 前端段落標籤（依存在與否動態納入）。前三份由戰情室「市場日報」面板讀，
+# 後兩份（復盤／掃描）由 /review 讀 —— 2026-09-07 每日報告頁併進戰情室後的分工。
 SECTIONS = [
     ("market", "今日市場報告", "📊 今日市場報告.md"),
     ("portfolio", "Portfolio", "📊 Portfolio.md"),

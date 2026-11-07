@@ -45,7 +45,7 @@ EXEC_CLAIM_RULES: list[tuple[str, str]] = [
     (r"已(?:市價)?賣出", "賣出條件已觸發，待確認"),
     (r"已(?:市價)?買進", "買進條件已觸發，待確認"),
     (r"已執行", "條件已觸發，待確認"),
-    (r"(?<![A-Za-z])executed(?![A-Za-z])", "triggered（待確認）"),
+    (r"(?<![A-Za-z])executed(?![A-Za-z])", "條件已觸發（待確認）"),
 ]
 _EXEC_ANY = re.compile("|".join(f"(?:{p})" for p, _ in EXEC_CLAIM_RULES))
 

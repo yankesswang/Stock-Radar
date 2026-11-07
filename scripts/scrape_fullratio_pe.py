@@ -10,6 +10,7 @@ Usage:
     python3 scripts/scrape_fullratio_pe.py --ticker ADI --exchange nasdaq
     python3 scripts/scrape_fullratio_pe.py --all
     python3 scripts/scrape_fullratio_pe.py --all --workers 2
+    python3 scripts/scrape_fullratio_pe.py --all --missing   # only tickers with no JSON yet
 """
 import argparse
 import json
@@ -45,7 +46,6 @@ from backend.app.models import Metric, Stock
 from src.utils import compute_iqr_statistics, filter_outliers
 
 OUTPUT_DIR = DATA_DIR / "pe" / "fullratio"
-DATE_STR = datetime.now().strftime("%Y-%m-%d")
 
 # ---------------------------------------------------------------------------
 # Exchange mapping  (yfinance exchangeCode → fullratio URL prefix)
@@ -287,7 +287,7 @@ def scrape_ticker(ticker: str, exchange: str | None = None) -> dict | None:
             "ticker":    ticker,
             "exchange":  None,
             "url":       None,
-            "date":      DATE_STR,
+            "date":      _today(),
             "pe_median": pe_fallback,
             "summary":   {"fallback_source": fallback_source},
             "records":   [],
@@ -325,7 +325,7 @@ def scrape_ticker(ticker: str, exchange: str | None = None) -> dict | None:
         "ticker":    ticker,
         "exchange":  used_exchange,
         "url":       used_url,
-        "date":      DATE_STR,
+        "date":      _today(),
         "pe_median": pe_median,
         "summary":   summary,
         "records":   records,
@@ -337,18 +337,34 @@ def scrape_ticker(ticker: str, exchange: str | None = None) -> dict | None:
 # Save helpers
 # ---------------------------------------------------------------------------
 
-def save_result(result: dict) -> Path:
-    """Save JSON output and persist PE median to the database."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ticker = result["ticker"]
+def _today() -> str:
+    # 取呼叫當下的日期 —— backend 會長跑跨日，模組層常數會停在 import 那天
+    return datetime.now().strftime("%Y-%m-%d")
 
-    path = OUTPUT_DIR / f"{ticker}_fullratio_pe_{DATE_STR}.json"
+
+def write_json(result: dict) -> Path | None:
+    """Write the PE-history JSON that the PE 歷史 tab reads (GET /api/stocks/{t}/pe).
+
+    Only when there are history rows: a yfinance-fallback result has records=[] and
+    would turn the tab "available" with an empty chart, hiding an older good file.
+    """
+    if not result.get("records"):
+        return None
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUTPUT_DIR / f"{result['ticker']}_fullratio_pe_{_today()}.json"
     with open(path, "w") as f:
         json.dump(result, f, indent=2)
+    return path
+
+
+def save_result(result: dict) -> Path | None:
+    """Save JSON output and persist PE median to the database."""
+    ticker = result["ticker"]
+    path = write_json(result)
 
     if result.get("pe_median"):
         try:
-            save_pe_median(ticker, result["pe_median"], date.fromisoformat(DATE_STR))
+            save_pe_median(ticker, result["pe_median"], date.fromisoformat(_today()))
             print(f"  [DB] Saved PE median {result['pe_median']} for {ticker}")
         except Exception as exc:
             print(f"  [DB] Error saving {ticker}: {exc}")
@@ -376,8 +392,14 @@ def scrape_and_save(ticker: str, exchange: str | None, delay: tuple) -> tuple:
     return ticker, True
 
 
-def scrape_all(workers: int = 1, delay: tuple = (5, 15)) -> None:
+def has_file(ticker: str) -> bool:
+    return any(OUTPUT_DIR.glob(f"{ticker.upper()}_fullratio_pe_*.json"))
+
+
+def scrape_all(workers: int = 1, delay: tuple = (5, 15), missing_only: bool = False) -> None:
     tickers = get_all_tickers()
+    if missing_only:
+        tickers = [t for t in tickers if not has_file(t)]
     print(f"Scraping {len(tickers)} tickers from fullratio.com (workers={workers})")
     print("-" * 60)
 
@@ -420,6 +442,7 @@ def main() -> None:
     parser.add_argument("--ticker",    type=str, help="Single ticker (e.g. ADI)")
     parser.add_argument("--exchange",  type=str, help="Exchange prefix: nasdaq|nyse (auto-detected if omitted)")
     parser.add_argument("--all",       action="store_true", help="Scrape all tickers in STOCK_LIST")
+    parser.add_argument("--missing",   action="store_true", help="With --all: only tickers that have no JSON yet")
     parser.add_argument("--workers",   type=int,   default=1,  help="Parallel workers (default 1)")
     parser.add_argument("--delay-min", type=float, default=5,  help="Min delay between requests in seconds")
     parser.add_argument("--delay-max", type=float, default=15, help="Max delay between requests in seconds")
@@ -431,7 +454,7 @@ def main() -> None:
     delay = (args.delay_min, args.delay_max)
 
     if args.all:
-        scrape_all(workers=args.workers, delay=delay)
+        scrape_all(workers=args.workers, delay=delay, missing_only=args.missing)
     else:
         ticker = args.ticker.upper()
         print(f"Scraping {ticker} from fullratio.com …")
@@ -441,7 +464,7 @@ def main() -> None:
             sys.exit(1)
 
         path = save_result(result)
-        print(f"\nSaved to {path}")
+        print(f"\nSaved to {path}" if path else "\nNo history rows — JSON not written (median only)")
 
         if result.get("summary"):
             print("\nSummary stats:")

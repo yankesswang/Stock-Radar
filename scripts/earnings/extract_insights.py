@@ -204,9 +204,15 @@ kind 只能用這幾個：
 def deep_section(body: str) -> tuple[str, str]:
     """(深度分析章節全文, 內容雜湊)。雜湊用來判斷這一季抽過之後有沒有改動。"""
     sections = [b for t, b in split_sections(body, level=2) if "深度" in t]
+    limit = 9000
+    if not sections:
+        # analyst-v2（2026-09-19）不再有「深度分析」章節，七件套拆進「2. 基本面分析」
+        # 與「4. 估值」，兩節一起丟給 LLM；公司公布的數字靠 DEEP_PROMPT 的指示排除
+        sections = [b for t, b in split_sections(body, level=2) if "基本面" in t or "估值" in t]
+        limit = 20000
     if not sections:
         return "", ""
-    text = "\n".join(sections)[:9000]
+    text = "\n".join(sections)[:limit]
     return text, hashlib.sha256(text.encode()).hexdigest()[:16]
 
 

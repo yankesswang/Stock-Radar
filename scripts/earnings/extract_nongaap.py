@@ -271,6 +271,11 @@ def pair_rows(rows: list[dict]) -> list[tuple[dict, list[dict], dict]]:
             for j in range(i - 1, max(-1, i - 20), -1):
                 if NONGAAP_PREFIX.match(rows[j]["label"]):
                     continue
+                # 金額只能配金額、百分比只能配百分比。少了這一條，模糊比對會把
+                # 「Adjusted operating expenses percentage」(22.5) 配到
+                # 「Operating expenses」(1,094,575)——前者是後者的字首，長度比也過關
+                if rows[j].get("is_pct") != r.get("is_pct"):
+                    continue
                 other = norm_label(rows[j]["label"])
                 if not other:
                     continue
@@ -398,7 +403,9 @@ def main():
 
     con = None
     if not a.dry_run:
-        con = sqlite3.connect(VALUATION_DB)
+        # timeout 讓寫入等鎖而不是立刻拋錯：先前 prune 的 VACUUM 取得獨佔鎖，
+        # 把跑到一半的抽取程序直接打斷在第 34 檔
+        con = sqlite3.connect(VALUATION_DB, timeout=120)
         con.executescript(SCHEMA)
         have = {r[1] for r in con.execute("PRAGMA table_info(nongaap_reconciliation)")}
         if "residual" not in have:      # CREATE IF NOT EXISTS 不會補欄位

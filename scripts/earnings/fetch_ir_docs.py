@@ -21,7 +21,7 @@ Does, in order:
   6. manifest.json + summary print.
 
 Usage:
-  fetch_ir_docs.py TICKER [--workdir DIR] [--num-8k 2] [--q N --y YYYY]
+  fetch_ir_docs.py TICKER [--workdir DIR] [--num-8k 2] [--q N --y YYYY] [--before YYYY-MM-DD]
 
 --q/--y override the auto-guessed quarter (fiscal-year companies like AAPL and
 NVDA; see the company's fiscal_note in the registry).
@@ -104,13 +104,18 @@ def resolve_cik(ticker, workdir):
     sys.exit(f"CIK not found for {ticker}")
 
 
-def fetch_8ks(cik, n, workdir, manifest):
+def fetch_8ks(cik, n, workdir, manifest, before=None):
+    """before=YYYY-MM-DD: ignore filings after that date, so a backfill run for an
+    old quarter sees that quarter's 8-K as press_releases[0] (the one the exhibit
+    screenshots, quarter guess and registry write-back all key off)."""
     sub = json.loads(get_text(f"https://data.sec.gov/submissions/CIK{cik:010d}.json"))
     r = sub["filings"]["recent"]
     got = 0
     for i in range(len(r["form"])):
         if got >= n:
             break
+        if before and r["filingDate"][i] > before:
+            continue
         # Item 2.02 = Results of Operations -> earnings 8-K
         if r["form"][i] != "8-K" or "2.02" not in (r.get("items", [""] * len(r["form"]))[i] or ""):
             continue
@@ -135,6 +140,8 @@ def fetch_8ks(cik, n, workdir, manifest):
                 {"date": date, "name": stem, "url": url, "txt": str(out)})
         got += 1
     for i in range(len(r["form"])):
+        if before and r["filingDate"][i] > before:
+            continue
         if r["form"][i] == "10-Q":
             manifest["latest_10q"] = {
                 "date": r["filingDate"][i],
@@ -185,6 +192,73 @@ def probe_ir_docs(ticker, q, y, workdir, manifest, kinds=None):
                 out.write_bytes(get_bytes(url))
                 manifest["ir_docs"][kind] = {"url": url, "pdf": str(out)}
                 break
+
+
+def capture_exhibit_tables(workdir, manifest, min_h=180, min_w=400):
+    """Screenshot every financial table in the current quarter's 8-K exhibits.
+
+    Why: the note must carry the *original* statements (income statement,
+    GAAP→Non-GAAP reconciliation, balance sheet, cash flow, the KPI series in
+    an investor supplement), not only charts the LLM redraws from them. PDF
+    decks already get pdftoppm'd; the EDGAR exhibits are HTML, so until now a
+    company without a deck (FSLY 2026Q2) ended up with zero official images.
+    Renders with Playwright + the SEC-declared UA; each <table> taller than
+    min_h px becomes exhibit_{stem}_table_NN.png (2x scale so digits stay
+    crisp). Failures never kill the run: the note can still be written, the
+    manifest just says why the images are missing.
+    """
+    prs = manifest["press_releases"]
+    if not prs:
+        return
+    latest = prs[0]["date"]
+    targets = [pr for pr in prs if pr["date"] == latest]
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as e:  # pragma: no cover
+        manifest["exhibit_tables_note"] = f"playwright not available: {e}"
+        return
+    shots = []
+    try:
+        with sync_playwright() as pw:
+            # Installed Google Chrome first: SEC 403s Playwright's bundled
+            # Chromium (old headless build, "Undeclared Automated Tool" page)
+            # even with the declared UA, while real Chrome 152 headless passes.
+            try:
+                browser = pw.chromium.launch(headless=True, channel="chrome")
+            except Exception:
+                browser = pw.chromium.launch(headless=True)
+            ctx = browser.new_context(user_agent=UA["User-Agent"],
+                                      viewport={"width": 1400, "height": 1000},
+                                      device_scale_factor=2)
+            for pr in targets:
+                page = ctx.new_page()
+                try:
+                    page.goto(pr["url"], wait_until="load", timeout=60000)
+                except Exception as e:
+                    manifest.setdefault("exhibit_tables_errors", []).append(f"{pr['name']}: {e}")
+                    continue
+                tables = page.locator("table")
+                k = 0
+                for i in range(tables.count()):
+                    tbl = tables.nth(i)
+                    box = tbl.bounding_box()
+                    if not box or box["height"] < min_h or box["width"] < min_w:
+                        continue
+                    k += 1
+                    out = workdir / f"exhibit_{pr['name']}_table_{k:02d}.png"
+                    tbl.screenshot(path=str(out))
+                    # first non-empty row = what the table is about, so SKILL
+                    # Step 2 can pick statements without opening every PNG
+                    rows_txt = [h.strip() for h in tbl.inner_text().strip().split("\n") if h.strip()]
+                    head = " | ".join(rows_txt)[:160]
+                    shots.append({"exhibit": pr["name"], "png": str(out), "head": head,
+                                  "text": " | ".join(rows_txt)[:4000],
+                                  "height": int(box["height"])})
+                page.close()
+            browser.close()
+    except Exception as e:
+        manifest["exhibit_tables_note"] = f"screenshot failed: {e}"
+    manifest["exhibit_tables"] = shots
 
 
 def fetch_transcript(ticker, q, y, workdir, manifest):
@@ -257,6 +331,11 @@ def main():
     ap.add_argument("--num-8k", type=int, default=2)
     ap.add_argument("--q", type=int, default=None)
     ap.add_argument("--y", type=int, default=None)
+    ap.add_argument("--no-exhibit-shots", action="store_true",
+                    help="skip Playwright screenshots of the 8-K exhibit tables")
+    ap.add_argument("--before", default=None,
+                    help="YYYY-MM-DD: backfill mode, only 8-Ks filed on or before this "
+                         "date (pick a date between the target quarter's report and the next one)")
     a = ap.parse_args()
 
     workdir = pathlib.Path(a.workdir or f"/tmp/earnings_{a.ticker.upper()}").resolve()
@@ -265,7 +344,7 @@ def main():
 
     cik = resolve_cik(a.ticker, workdir)
     manifest["cik"] = cik
-    fetch_8ks(cik, a.num_8k, workdir, manifest)
+    fetch_8ks(cik, a.num_8k, workdir, manifest, before=a.before)
     if not manifest["press_releases"]:
         sys.exit("no earnings 8-K with exhibits found")
 
@@ -273,6 +352,8 @@ def main():
     manifest["quarter"], manifest["year"] = q, y
     probe_ir_docs(a.ticker, q, y, workdir, manifest)
     convert(workdir, manifest)
+    if not a.no_exhibit_shots:
+        capture_exhibit_tables(workdir, manifest)
     fetch_transcript(a.ticker, q, y, workdir, manifest)
 
     # write back to the registry so this quarter never needs re-discovery.
@@ -305,6 +386,11 @@ def main():
     print(f"quarter guessed: Q{q} {y} (override with --q/--y if fiscal calendar differs)")
     print(f"press releases: {[p['date'] for p in manifest['press_releases']]}")
     print(f"ir docs found: {list(manifest['ir_docs']) or 'NONE -> Step 1.5 web search, then registry upsert'}")
+    shots = manifest.get("exhibit_tables", [])
+    print(f"exhibit tables screenshotted: {len(shots)}"
+          + (f" ({manifest['exhibit_tables_note']})" if manifest.get("exhibit_tables_note") else ""))
+    for s in shots:
+        print(f"  {pathlib.Path(s['png']).name}: {s['head'][:90]}")
     if "transcript_note" in manifest:
         print(f"transcript: {manifest['transcript_note']}")
     if "latest_10q" in manifest:

@@ -99,7 +99,7 @@ STOCK_LIST = {
         "ACLS", "AMAT", "AMD", "AMKR", "ARM", "ASML", "ASX", "AVGO", "CAMT", "CDNS", "CLS",
         "COHR", "DELL", "DIOD", "ENTG", "GFS", "INTC", "KLAC", "KLIC", "LRCX", "LSCC", "MCHP",
         "MRVL", "MTSI", "MU", "NVDA", "NVMI", "NXPI", "ON", "ONTO", "ORCL", "POWI", "QCOM",
-        "QRVO", "SITM", "SNPS", "SWKS", "TER", "TSM", "UMC", "WOLF"
+        "QRVO", "ROG", "SITM", "SNPS", "SWKS", "TER", "TSM", "UMC", "WOLF"
     },
     "原油": {
         "AR", "BKR", "COP", "CVX", "DVN", "EOG", "EQT", "FANG", "HAL", "KMI", "LNG", "MPC",

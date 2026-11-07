@@ -18,18 +18,17 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from datetime import date
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 MARKER_RE = re.compile(r"^<<<([A-Z_]+)>>>\s*$", re.MULTILINE)
 TICKER_SECTION_RE = re.compile(r"^[▍▌]\s*([A-Z0-9][A-Z0-9\.\-]{0,9})\s*$", re.MULTILINE)
 OUTRO_RE = re.compile(r"^\**\s*(?:明日操作計劃|整體評估)", re.MULTILINE)
 
-ACTION_ZH = {
-    "add": "加倉", "open": "建倉", "buy": "買進", "accumulate": "分批買進",
-    "trim": "減碼", "reduce": "減碼", "exit": "出場", "stop_loss": "停損",
-    "sell": "賣出", "sell_short": "放空", "hold": "維持",
-}
+from scripts.zh_terms import zh_action, zh_regime, zh_risk  # noqa: E402
 ACTIONABLE = {"add", "open", "buy", "accumulate", "trim", "reduce",
               "exit", "stop_loss", "sell", "sell_short"}
 
@@ -132,8 +131,8 @@ def _exec_label(ticker: str, exec_state: dict | None) -> str:
         return ""
     st = best.get("state")
     if st in EXECUTED_STATES:
-        return f"（前次{ACTION_ZH.get(best.get('action'), best.get('action'))}已對帳執行）"
-    return f"（前次{ACTION_ZH.get(best.get('action'), best.get('action'))}：{STATE_ZH.get(st, st)}）"
+        return f"（前次{zh_action(best.get('action'))}已對帳執行）"
+    return f"（前次{zh_action(best.get('action'))}：{STATE_ZH.get(st, st)}）"
 
 
 def build_morning_brief(*, decisions_payload: dict | None, risk: dict | None,
@@ -149,7 +148,7 @@ def build_morning_brief(*, decisions_payload: dict | None, risk: dict | None,
     lines: list[str] = ["## ⏱️ 90 秒晨報", ""]
 
     # 市場狀態 + 資料品質（一眼看出這份報告能不能信）
-    lines.append(f"**市場狀態**：{regime}")
+    lines.append(f"**市場狀態**：{zh_regime(regime)}")
     quality_bits: list[str] = []
     if quotes_ok:
         got, total = quotes_ok
@@ -185,7 +184,7 @@ def build_morning_brief(*, decisions_payload: dict | None, risk: dict | None,
         if action not in ACTIONABLE:
             continue
         t = str(d["ticker"]).upper()
-        bits = [f"建議**{ACTION_ZH.get(action, action)}**"]
+        bits = [f"建議**{zh_action(action)}**"]
         if d.get("target_weight_pct") is not None:
             bits.append(f"目標倉位 {d['target_weight_pct']}%")
         if d.get("trigger"):
@@ -237,7 +236,7 @@ def build_morning_brief(*, decisions_payload: dict | None, risk: dict | None,
         if entry.get("state") not in (STATE_TRIGGERED, STATE_ACKNOWLEDGED):
             continue
         t = entry["ticker"]
-        waiting.append(f"- ⚠️ **{t}**：{ACTION_ZH.get(entry.get('action'), entry.get('action'))} "
+        waiting.append(f"- ⚠️ **{t}**：{zh_action(entry.get('action'))} "
                        f"條件已於 {entry.get('trigger_date') or '近期'} 觸發，"
                        f"**{STATE_ZH.get(entry['state'])}** —— 需人工確認是否成交")
 
@@ -285,7 +284,7 @@ def build_morning_brief(*, decisions_payload: dict | None, risk: dict | None,
                           f"共 {b['theme_weight_pct']:.1f}% 的組合")
     for d in decisions:
         if str(d.get("risk_level") or "").lower() == "high":
-            risk_lines.append(f"- 🔴 {str(d['ticker']).upper()}（risk=high）："
+            risk_lines.append(f"- 🔴 {str(d['ticker']).upper()}（風險：高）："
                               f"{_sanitize(str(d.get('thesis') or ''), freshness, exec_state)[:80]}")
     lines += risk_lines or ["- （無組合層警告）"]
     lines.append("")
@@ -347,7 +346,7 @@ def render_hold_table(decisions_payload: dict | None, skip: set[str],
         rows.append({
             "ticker": t,
             "weight": pos.get("weight_pct"),
-            "risk": d.get("risk_level") or "—",
+            "risk": zh_risk(d.get("risk_level")),
             "trigger": str(d.get("trigger") or "—")[:44],
             "stop": d.get("stop"),
             "thesis": str(d.get("thesis") or "—")[:60],
@@ -358,7 +357,7 @@ def render_hold_table(decisions_payload: dict | None, skip: set[str],
     out = [
         "### 其餘持倉（維持，合併檢視）",
         "",
-        "| Ticker | 權重 | 風險 | 觸發條件 | 停損 | 論點 |",
+        "| 代號 | 權重 | 風險 | 觸發條件 | 停損 | 論點 |",
         "|--------|------|------|---------|------|------|",
     ]
     for r in rows:
@@ -414,7 +413,7 @@ def assemble_report(*, analysis_date: date, analysis: str,
     # ── 第二層：異常持倉 ──────────────────────────────────────────────────────
     parts += ["## 🔎 異常持倉（只展開需要判斷的）", ""]
     if attention:
-        parts.append("> 納入條件：action≠hold、風險 high、距停損 "
+        parts.append("> 納入條件：動作≠維持、風險等級 高、距停損 "
                      f"≤{NEAR_STOP_PCT:.0f}%、{ATTENTION_EARNINGS_DAYS} 天內財報、"
                      "或有未結的執行狀態。")
         parts.append("")

@@ -27,18 +27,40 @@ def ensure_column(con: sqlite3.Connection) -> None:
         con.commit()
 
 
+# 判會計年度末的規則，與 backend/app/routers/financials.py 的 _fy_ends() 同一套。
+# 光看 period_months=12 不夠，要排掉兩種同樣是 12 個月、但不是會計年度的期間：
+#   10-Q     滾動十二個月。AMZN 的 10-Q 現金流量表是用「過去十二個月」呈現的，
+#            每個季末都留下一組 12 個月的事實。
+#   DEF 14A  委任書裡給高管薪酬用的單筆淨利，期間常標成日曆年底。ONTO 的會計
+#            年度收在 12/28 或 1/3，那筆 12/31 會被誤認成另一個年度。
+# 判表別而不是判 fp='FY'：同一個 (concept, period_end, period_months) 只存得下
+# 一筆，整個年度都可能是沒有 fp 的申報寫進來的——INTU 最近三年來自 8-K 財報
+# 發布、MSFT 的 FY22 也是——逐筆篩 fp 會把真年度整年丟掉。
+def fiscal_year_ends(con: sqlite3.Connection, ticker: str) -> set[str]:
+    return {r[0] for r in con.execute(
+        "SELECT DISTINCT period_end FROM financial_facts "
+        "WHERE ticker=? AND period_months=12 "
+        "AND form NOT LIKE '10-Q%' AND form NOT LIKE 'DEF %'", (ticker,))}
+
+
 def build(con: sqlite3.Connection, ticker: str) -> list[tuple]:
     rows = con.execute(
         "SELECT concept, period_end, period_months, value, unit, form, filed, fy, fp "
         "FROM financial_facts WHERE ticker=? AND period_months IN (3, 12) "
         "AND COALESCE(derived,0)=0", (ticker,)).fetchall()
 
+    fy_ends = fiscal_year_ends(con, ticker)
     years: dict[tuple, dict] = {}      # (concept, fy_end) → 全年那筆
     quarters: dict[str, list] = {}     # concept → [(period_end, value)]
     for concept, pend, months, val, unit, form, filed, fy, fp in rows:
         if val is None:
             continue
-        if months == 12 and fp == "FY":
+        # 股數不能相減：加權平均股數是「期間內的平均」不是累加量，全年減前三季
+        # 會算出負的股數（AMZN 25Q4 = 10.66B − 31.91B = −21.26B）。EPS（單位
+        # USD/shares）保留——各季相加跟全年只差進位，實測與外部季報對得上。
+        if unit == "shares":
+            continue
+        if months == 12 and pend in fy_ends and not form.startswith("10-Q"):
             years[(concept, pend)] = (val, unit, form, filed, fy)
         elif months == 3:
             quarters.setdefault(concept, []).append((pend, val))
@@ -65,7 +87,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
-    con = sqlite3.connect(VALUATION_DB)
+    con = sqlite3.connect(VALUATION_DB, timeout=120)
     ensure_column(con)
     tickers = ([a.ticker.upper()] if a.ticker else
                [r[0] for r in con.execute(
@@ -76,13 +98,17 @@ def main():
         rows = build(con, tk)
         total += len(rows)
         print(f"{tk:<6} 補出 {len(rows):>4} 筆 Q4")
-        if rows and not a.dry_run:
-            con.execute("DELETE FROM financial_facts WHERE ticker=? AND derived=1", (tk,))
+        if a.dry_run:
+            continue
+        # 先刪再寫，而且沒算出東西也要刪：規則改嚴（例如不再推算股數）之後，
+        # 這一檔可能一筆都補不出來，舊的推算列留在庫裡就變成沒人會再更新的髒資料。
+        con.execute("DELETE FROM financial_facts WHERE ticker=? AND derived=1", (tk,))
+        if rows:
             con.executemany(
                 "INSERT OR REPLACE INTO financial_facts "
                 "(ticker,concept,period_end,period_months,value,unit,form,filed,fy,fp,derived) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
-            con.commit()
+        con.commit()
     con.close()
     print(f"\n{len(tickers)} 檔 → 補出 {total:,} 筆" + (" (dry-run)" if a.dry_run else ""))
 

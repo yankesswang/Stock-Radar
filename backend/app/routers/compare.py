@@ -1,10 +1,17 @@
+import sys as _sys
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+from ..config import settings
 from ..database import get_db
 from ..models import Stock, Metric, Forecast, Statistic, Valuation
 from ..schemas import StockDetail, MetricOut, ForecastOut, ValuationOut
+
+if str(settings.PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(settings.PROJECT_ROOT))
+from src.quotes import get_quotes as _get_quotes  # noqa: E402
 
 router = APIRouter()
 
@@ -288,6 +295,11 @@ def compare_with_peers(ticker: str, db: Session = Depends(get_db)):
     )
     stat_map = _stats_by_stock(db, [p.id for p in peers])
 
+    # metrics.current_price 是每週那輪比率表爬蟲抄下來的「Last Close Price」，
+    # 最久會停一整週。同業表整排價格擺在一起比，差一天就看得出來，所以蓋上即時報價；
+    # 抓不到的（下市、改名）退回 metrics，不留空。
+    live = _get_quotes([p.ticker for p in peers])
+
     result = []
     for s in peers:
         m = (
@@ -334,7 +346,8 @@ def compare_with_peers(ticker: str, db: Session = Depends(get_db)):
             "market_cap": (m.market_cap if m else None)
                           or stats_row.get("by_id", {}).get("marketcap")
                           or stats_row.get("by_label", {}).get(("Total Valuation", "Market Cap")),
-            "current_price": m.current_price if m else None,
+            "current_price": (live.get(s.ticker.upper()) or {}).get("price")
+                             or (m.current_price if m else None),
             "values": values,
             "sources": sources,
             # 只有成長預估會有：這一格是 3Y 還是 5Y 的預估

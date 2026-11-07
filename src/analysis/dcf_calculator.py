@@ -151,6 +151,16 @@ def _cagr(start: float | None, end: float | None, years: int) -> float | None:
     return (end / start) ** (1 / years) - 1
 
 
+
+def _live_quote(ticker: str) -> dict | None:
+    """最新報價（含 last_date 交易日）；Yahoo 掛掉或已下市回 None，呼叫端退回爬蟲的價。"""
+    try:
+        from src.quotes import get_quotes
+        return get_quotes([ticker]).get(ticker.upper())
+    except Exception:
+        return None
+
+
 class DCFCalculator:
     """Compute a DCF valuation for any ticker with statistics + forecast data."""
 
@@ -308,9 +318,24 @@ class DCFCalculator:
             if ratios_age is None:
                 warnings.append("沒有財務比率表，股價只能從月更快照推算")
 
+        # 上面先用同一輪爬蟲的（收盤價、市值）配對把流通股數推出來 —— 這兩個數字
+        # 必須同源，才會自動修掉 ADR 的股數基準差。股數定了之後，價格本身換成真
+        # 報價：比率表那欄是「Last Close Price」，爬蟲一週才跑一次而且排在美股盤中，
+        # 最好的情況也落後一個交易日。上漲空間、三情境估值軸、反推估值全都拿
+        # current_price 去比，用舊價等於整組結論跟著偏。
+        price_date = None
+        quote = _live_quote(b.ticker)
+        live = (quote or {}).get("price")
+        if live and live > 0:
+            if shares:
+                market_cap = shares * live      # 讓市值跟著價走，內部才不會自相矛盾
+            price, price_source = live, "即時報價（最新收盤）"
+            price_date = quote.get("last_date")
+
         return {
             "current_price": price,
             "price_source": price_source,
+            "price_date": price_date,           # 這個價屬於哪一盤，給快取失效判斷用
             "market_cap": market_cap,
             "shares_outstanding": shares,
         }
@@ -1475,6 +1500,7 @@ class DCFCalculator:
             "data_date": inputs["data_date"],
             "computed_date": str(self.as_of or date.today()),
             "current_price": round(current_price, 2) if current_price else None,
+            "price_date": inputs.get("price_date"),   # 這個價屬於哪一盤（快取失效用）
             "scenarios": scenarios,
             "fair_value": {
                 "weighted": round(weighted, 2),

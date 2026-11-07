@@ -45,6 +45,7 @@ import yfinance as yf
 from backend.app.config import settings
 from backend.app.database import SessionLocal
 from backend.app.models import PortfolioSnapshot
+from scripts.zh_terms import zh_action  # noqa: E402  （計分卡動作欄印中文）
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 OBSIDIAN_DIR = Path("/Users/yankesswang/Documents/arthurwang_DB/投資/Stock Digest")
@@ -1031,6 +1032,20 @@ def _md_to_html(text: str) -> str:
     return "\n".join(out)
 
 
+def _quiet_defer(url, **kw):
+    """靜音時段（預設 23:00–07:00）把推播排進佇列，07:00 再送；見 Arthur_App/scripts/lib/quiet_hours.py。"""
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _lib = str(_P.home() / "Projects" / "Arthur_App" / "scripts" / "lib")
+        if _lib not in _sys.path:
+            _sys.path.append(_lib)
+        from quiet_hours import maybe_defer
+        return maybe_defer(url, **kw)
+    except Exception:
+        return False
+
+
 def send_telegram(text: str) -> None:
     token, chat_id = _get_telegram_config()
     if not token or not chat_id:
@@ -1066,6 +1081,11 @@ def send_telegram(text: str) -> None:
         msg = chunk
         if total > 1:
             msg = f"{chunk}\n\n<i>── {i+1}/{total} ──</i>"
+        if _quiet_defer(f"https://api.telegram.org/bot{token}/sendMessage",
+                        data={"chat_id": chat_id, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": "true"},
+                        label="daily_analysis"):
+            print(f"[telegram] Chunk {i+1}/{total} queued until quiet hours end")
+            continue
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -1128,6 +1148,11 @@ def send_line(text: str, *, important_report: bool = False) -> None:
         msg = chunk
         if len(chunks) > 1:
             msg = f"{chunk}\n\n-- {i + 1}/{len(chunks)} --"
+        if _quiet_defer("https://api.line.me/v2/bot/message/broadcast",
+                        json={"messages": [{"type": "text", "text": msg[:5000]}]},
+                        headers={"Authorization": f"Bearer {token}"}, label="daily_analysis:line"):
+            print(f"[line] Chunk {i + 1}/{len(chunks)} queued until quiet hours end")
+            continue
         try:
             r = requests.post(
                 "https://api.line.me/v2/bot/message/broadcast",
@@ -1433,14 +1458,14 @@ def score_yesterday(analysis_date: date) -> str:
     lines.append("## 📋 昨日決策計分卡")
     lines.append(f"> 對照上一份決策日誌（{journal_date.isoformat()} → {analysis_date.isoformat()}）")
     lines.append("")
-    lines.append("| Ticker | 動作 | 觸發條件 | 是否觸發 | 期間漲跌% | 原論點 |")
+    lines.append("| 代號 | 動作 | 觸發條件 | 是否觸發 | 期間漲跌% | 原論點 |")
     lines.append("|--------|------|---------|---------|----------|--------|")
     for r in rows:
         chg = f"{r['chg_pct']:+.2f}%" if r["chg_pct"] is not None else "—"
         st  = status_label.get(r["status"], r["status"])
         trig = str(r["trigger"]).replace("|", "／")
         thes = str(r["thesis"]).replace("|", "／")
-        lines.append(f"| {r['ticker']} | {r['action']} | {trig} | {st} | {chg} | {thes} |")
+        lines.append(f"| {r['ticker']} | {zh_action(r['action'])} | {trig} | {st} | {chg} | {thes} |")
     scorecard_md = "\n".join(lines)
 
     # 回寫評分結果進當天 journal（若當天 journal 已存在則更新；否則之後 write_journal 時會覆蓋）

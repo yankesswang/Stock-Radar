@@ -29,7 +29,9 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import yfinance as yf
+import yfinance as yf  # noqa: E402
+
+from scripts.zh_terms import zh_action  # noqa: E402
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 JOURNAL_DIR = PROJECT_ROOT / "data" / "agent" / "journal"
@@ -208,13 +210,13 @@ def render_open_decisions(rows: list[dict]) -> list[str]:
     lines = [
         f"## 🧾 未結決策追蹤（近 {OPEN_WINDOW_DAYS} 天，每檔最新一筆）",
         "> ✅已觸發＝你之前設的條件已經發生。今天必須逐筆回應：確認執行、或明確說明為何放棄，不可裝沒看到。",
-        f"> 只列已觸發／非 hold／距觸發 ≤{NEAR_TRIGGER_PCT:.0f}% 的決策；其餘平靜的 hold 併成最後一行。",
+        f"> 只列已觸發／非「維持」／距觸發 ≤{NEAR_TRIGGER_PCT:.0f}% 的決策；其餘平靜的維持併成最後一行。",
         "",
     ]
     for r in listed:
         jd = date.fromisoformat(r["proposed_date"])
         arrow = "漲破" if r["direction"] == "above" else "跌破"
-        base = (f"- {r['ticker']}｜{r['action']}｜{arrow} {r['trigger_price']}"
+        base = (f"- {r['ticker']}｜{zh_action(r['action'])}｜{arrow} {r['trigger_price']}"
                 f"（{jd.month}/{jd.day} 提出，論點已持續 {r['streak']} 份日誌）")
         if r["status"] == "triggered":
             hd = date.fromisoformat(r["hit_date"])
@@ -226,7 +228,7 @@ def render_open_decisions(rows: list[dict]) -> list[str]:
         else:
             lines.append(base + "｜⚠️ 無價格資料")
     if quiet:
-        lines.append(f"- 另有 {len(quiet)} 檔 hold 距觸發價 >{NEAR_TRIGGER_PCT:.0f}%，無新事件："
+        lines.append(f"- 另有 {len(quiet)} 檔維持 距觸發價 >{NEAR_TRIGGER_PCT:.0f}%，無新事件："
                      + "、".join(r["ticker"] for r in quiet))
     lines.append("")
     return lines
@@ -249,9 +251,9 @@ CONFIDENCE_BUCKETS = [(0.0, 0.5, "低 <0.5"), (0.5, 0.7, "中 0.5–0.7"),
                       (0.7, 0.85, "高 0.7–0.85"), (0.85, 1.01, "極高 ≥0.85")]
 
 # 決策分組：進場類 / 維持類 / 防禦類 —— 三種的「對」定義不同，混在一起算沒有意義
-GROUP_ENTRY = "進場類（open/add/buy）"
-GROUP_HOLD = "維持類（hold）"
-GROUP_DEFENSIVE = "防禦類（trim/exit/stop_loss）"
+GROUP_ENTRY = "進場類（建倉／加倉／買進）"
+GROUP_HOLD = "維持類（維持不動）"
+GROUP_DEFENSIVE = "防禦類（減碼／出場／停損）"
 _GROUP_OF = {
     "open": GROUP_ENTRY, "add": GROUP_ENTRY, "buy": GROUP_ENTRY, "accumulate": GROUP_ENTRY,
     "hold": GROUP_HOLD,
@@ -498,11 +500,11 @@ def render_track_record(tr: dict | None) -> list[str]:
 
     b, w = tr.get("best_call"), tr.get("worst_call")
     if b:
-        lines.append(_call_line("🏆", "最佳 call（按超額排序，非絕對漲幅）", b))
+        lines.append(_call_line("🏆", "最佳判斷（按超額排序，非絕對漲幅）", b))
     if w:
-        lines.append(_call_line("💀", "最差 call", w))
+        lines.append(_call_line("💀", "最差判斷", w))
     lines.append("")
-    lines.append("> 用這份帳檢視系統性偏差（trim 太早？add 接刀？高信心是否真的較準？）。"
+    lines.append("> 用這份帳檢視系統性偏差（減碼太早？加倉接刀？高信心是否真的較準？）。"
                  "樣本不足的分組只看數字，不要拿來下結論。")
     lines.append("")
     return lines

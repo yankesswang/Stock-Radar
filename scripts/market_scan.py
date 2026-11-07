@@ -52,14 +52,9 @@ AGENT_DIR = PROJECT_ROOT / "agent"
 BACKEND_BASE = "http://127.0.0.1:6000"
 OPP_DIR = Path(settings.DATA_DIR) / "agent" / "opportunities"
 
-SETUP_ZH = {
-    "oversold_bounce": "超賣反彈",
-    "undervalued_catalyst": "低估+催化",
-    "momentum_breakout": "動能突破",
-    "mimi_entry": "Mimi進場區",
-    "breakdown_short": "破位做空",
-    "rs_leader": "強勢回檔",
-}
+from scripts.zh_terms import SETUP_ZH, zh_action  # noqa: E402  （術語中文對照的單一來源）
+
+DIRECTION_ZH = {"long": "作多", "short": "放空"}
 
 # 「今天能不能動手」的順序，跟前端機會清單一致
 ACTION_ORDER = {"buy": 0, "accumulate": 1, "sell_short": 2, "watch": 3, "avoid": 4}
@@ -661,7 +656,7 @@ def _top_table(opps: list[dict], limit: int = 5) -> list[str]:
         setup = str(o.get("setup") or "")
         rows.append(
             f"| **{cell(o.get('ticker'))}** | {cell(SETUP_ZH.get(setup, setup))} | "
-            f"**{cell(o.get('action') or 'watch')}** | {cell(why)} |"
+            f"**{cell(zh_action(o.get('action') or 'watch'))}** | {cell(why)} |"
         )
     return rows
 
@@ -712,8 +707,8 @@ def _render_note(scan_date: date, record: dict, brief: str) -> str:
             f"### {new_tag}{o.get('ticker')}（{o.get('company', '')}）— {SETUP_ZH.get(o.get('setup'), o.get('setup'))}"
         )
         lines.append(
-            f"- **{o.get('action', '—')}**｜方向 {o.get('direction', '—')}｜信心 {o.get('conviction', '—')}｜"
-            f"score {o.get('signal_score', '—')}｜RR {o.get('rr', '—')}"
+            f"- **{zh_action(o.get('action'))}**｜方向 {DIRECTION_ZH.get(o.get('direction'), o.get('direction') or '—')}"
+            f"｜信心 {o.get('conviction', '—')}｜訊號分 {o.get('signal_score', '—')}｜風報比 {o.get('rr', '—')}"
         )
         lines.append(f"- 進場 {ez_str}｜目標 {o.get('target', '—')}｜停損 {o.get('stop', '—')}")
         lines.append(f"- 論點：{o.get('thesis', '—')}")

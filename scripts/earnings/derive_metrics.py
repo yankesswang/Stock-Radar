@@ -63,7 +63,11 @@ PICK = {
     "sga_expense": ["SellingGeneralAndAdministrativeExpense"],
     "ncfo": ["NetCashProvidedByUsedInOperatingActivities",
              "CashFlowsFromUsedInOperatingActivities"],
+    # capex 取候選裡最大的，不是第一個（見 pick_max）：公用事業把主力資本支出報在
+    # PaymentsForConstructionInProcess，PaymentsToAcquireProductiveAssets 只是零頭
+    # （AEP 2024：76 億 vs 4 億），取第一個會把 FCF 高估成正 32%。
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
+              "PaymentsForConstructionInProcess",
               "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
     "sbc": ["ShareBasedCompensation"],
     "dna": ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
@@ -117,6 +121,22 @@ def safe_div(a, b):
     return (a / b) if (a is not None and b) else None
 
 
+# 判會計年度末的規則，與 backend/app/routers/financials.py 的 _fy_ends() 同一套。
+# 光看 period_months=12 不夠，要排掉兩種同樣是 12 個月、但不是會計年度的期間：
+#   10-Q     滾動十二個月。AMZN 的 10-Q 現金流量表是用「過去十二個月」呈現的，
+#            每個季末都留下一組 12 個月的事實。
+#   DEF 14A  委任書裡給高管薪酬用的單筆淨利，期間常標成日曆年底。ONTO 的會計
+#            年度收在 12/28 或 1/3，那筆 12/31 會被誤認成另一個年度。
+# 判表別而不是判 fp='FY'：同一個 (concept, period_end, period_months) 只存得下
+# 一筆，整個年度都可能是沒有 fp 的申報寫進來的——INTU 最近三年來自 8-K 財報
+# 發布、MSFT 的 FY22 也是——逐筆篩 fp 會把真年度整年丟掉。
+def fiscal_year_ends(con: sqlite3.Connection, ticker: str) -> set[str]:
+    return {r[0] for r in con.execute(
+        "SELECT DISTINCT period_end FROM financial_facts "
+        "WHERE ticker=? AND period_months=12 "
+        "AND form NOT LIKE '10-Q%' AND form NOT LIKE 'DEF %'", (ticker,))}
+
+
 def build(con: sqlite3.Connection, ticker: str) -> list[dict]:
     rows = con.execute(
         "SELECT concept, period_end, period_months, value, fp, COALESCE(derived,0) derived "
@@ -126,16 +146,13 @@ def build(con: sqlite3.Connection, ticker: str) -> list[dict]:
 
     flow: dict[tuple, dict[str, float]] = {}     # (period_end, months) → concept → value
     instant: dict[str, dict[str, float]] = {}    # period_end → concept → value（資產負債表）
-    # fp='FY' 的 12 個月才是會計年度。季報也會揭露滾動 12 個月（TTM），期間長度
-    # 一樣是 12 個月——不分開的話 AMZN 會冒出 74 個「年度」，其實只有 19 個。
-    fiscal_years: set[str] = set()
+    # 哪些 12 個月期間才是會計年度，見 fiscal_year_ends()
+    fiscal_years = fiscal_year_ends(con, ticker)
     derived_periods: set[tuple] = set()      # 哪些期間用到了推算的 Q4
     for concept, pend, months, val, fp, is_derived in rows:
         c = concept.split("_")[-1]
         if is_derived:
             derived_periods.add((pend, months))
-        if months == 12 and fp == "FY":
-            fiscal_years.add(pend)
         if months == 0:
             instant.setdefault(pend, {})[c] = val
         else:
@@ -147,6 +164,10 @@ def build(con: sqlite3.Connection, ticker: str) -> list[dict]:
                 return bag[c]
         return None
 
+    def pick_max(bag: dict, key: str):
+        vals = [abs(bag[c]) for c in PICK[key] if c in bag and bag[c] is not None]
+        return max(vals) if vals else None
+
     out = []
     for (pend, months), bag in sorted(flow.items()):
         bs = instant.get(pend, {})               # 同一天的資產負債表；對不到就沒有存量指標
@@ -156,8 +177,9 @@ def build(con: sqlite3.Connection, ticker: str) -> list[dict]:
              "has_derived": int((pend, months) in derived_periods)}
         for key in ("revenue", "gross_profit", "operating_income", "pretax_income",
                     "net_income", "eps_diluted", "shares_diluted", "rnd_expense",
-                    "sga_expense", "ncfo", "capex", "sbc", "dna"):
+                    "sga_expense", "ncfo", "sbc", "dna"):
             d[key] = pick(bag, key)
+        d["capex"] = pick_max(bag, "capex")
         for key in ("total_assets", "total_liabilities", "equity", "cash", "inventory",
                     "receivables", "current_assets", "current_liabilities"):
             d[key] = pick(bs, key)
@@ -217,7 +239,7 @@ def main():
     ap.add_argument("--show", action="store_true")
     a = ap.parse_args()
 
-    con = sqlite3.connect(VALUATION_DB)
+    con = sqlite3.connect(VALUATION_DB, timeout=120)
     con.executescript(SCHEMA)
     # CREATE TABLE IF NOT EXISTS 對既有的表不會加新欄位，加欄位後直接寫入會炸在
     # "table has no column named ..."。這個坑在這個 repo 已經踩過三次了。

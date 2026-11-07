@@ -25,6 +25,9 @@ from .indicators import adx_dmi
 
 EPS = 1e-9
 
+# 近期擺動用的固定小窗格（見 multi_scale_pivots）
+SWING_W = 5
+
 
 # ── Pivots ───────────────────────────────────────────────────────────────────
 def find_pivots(high: np.ndarray, low: np.ndarray, w: int) -> tuple[list[int], list[int]]:
@@ -71,6 +74,28 @@ def find_pivots(high: np.ndarray, low: np.ndarray, w: int) -> tuple[list[int], l
     return _thin(ph, high, True), _thin(pl, low, False)
 
 
+def multi_scale_pivots(high: np.ndarray, low: np.ndarray, w: int,
+                       periods_per_year: int = 252) -> tuple[list[int], list[int]]:
+    """結構 pivot（隨圖長放大的窗格）＋ 近期的擺動 pivot（固定小窗格）。
+
+    只用一個隨 n 放大的窗格，長圖就看不見短擺動：AMZN 的 5 年日線 w=14，8/28 的
+    267.56 與 9/21 的 259.49 兩個較低高點都不算 pivot，於是那條兩個月的下降壓力線
+    連「候選」都生不出來 —— 不是分數輸掉，是根本沒有被考慮過。
+
+    小窗格只補最近半年那一段。整條五年都用小窗格會塞進上百個 pivot，候選名額
+    （只取最後幾個）反而會把長期結構線擠掉，那是另一種瞎。
+    """
+    ph, pl = find_pivots(high, low, w)
+    if w <= SWING_W:
+        return ph, pl
+    ph_s, pl_s = find_pivots(high, low, SWING_W)
+    n = len(high)
+    cutoff = n - min(n, int(periods_per_year * 0.55))
+    ph = sorted(set(ph) | {i for i in ph_s if i >= cutoff})
+    pl = sorted(set(pl) | {i for i in pl_s if i >= cutoff})
+    return ph, pl
+
+
 def _alternating(ph: list[int], pl: list[int],
                  high: np.ndarray, low: np.ndarray) -> list[dict]:
     """Merge highs and lows into one strictly alternating H/L sequence.
@@ -96,7 +121,8 @@ def _alternating(ph: list[int], pl: list[int],
 
 # ── Trendlines ───────────────────────────────────────────────────────────────
 def _fit_side(df: pd.DataFrame, pivot_idx: list[int], side: str,
-              atr_arr: np.ndarray, max_lines: int = 3) -> list[dict]:
+              atr_arr: np.ndarray, max_lines: int = 3,
+              periods_per_year: int = 252, refine: bool = True) -> list[dict]:
     """Every pivot pair is a candidate line; keep the few that price respected."""
     high = df["High"].astype(float).values
     low = df["Low"].astype(float).values
@@ -112,116 +138,175 @@ def _fit_side(df: pd.DataFrame, pivot_idx: list[int], side: str,
 
     # Pair count is quadratic, so only the recent pivots are candidates —
     # a line anchored on a pivot from five years ago is not one anyone trades.
-    piv = pivot_idx[-22:]
-    min_span = max(8, n // 40)
+    piv = pivot_idx[-26:]
+    # 以前是 max(8, n//40)：5 年日線變成 31 根，等於規定「短於一個半月的腿不算趨勢線」。
+    # 一段 15 根的下降腿在 1 年圖上可以畫，在 5 年圖上就不行 —— 但它是同一段行情。
+    min_span = int(np.clip(n // 40, 8, 25))
+
+    def _evaluate(a: int, b: int) -> dict | None:
+        """一組錨點 → 候選線。過不了品質關卡回 None。"""
+        span = b - a
+        if span < min_span:
+            return None
+        pa, pb = price_arr[a], price_arr[b]
+        slope = (pb - pa) / span
+        line = pa + slope * (x - a)
+
+        # Tolerance tracks volatility: a $400 stock with $8 ATR should not be
+        # judged on the same absolute band as a $12 one.
+        tol = np.maximum(atr_arr * 0.30, np.abs(line) * 0.004)
+
+        v_now = float(line[-1])
+        if not np.isfinite(v_now) or v_now <= 0:
+            return None
+        # Reject lines whose projection has run away from tradeable prices.
+        if not (0.35 * current <= v_now <= 2.8 * current):
+            return None
+
+        # 1) Validity between the anchors — the defining property of a
+        #    trendline is that price did NOT cross it inside the leg.
+        seg = slice(a, b + 1)
+        excess = sign * (price_arr[seg] - line[seg])
+        breaches = int((excess > tol[seg]).sum())
+        if breaches > max(1, int(span * 0.03)):
+            return None
+
+        # 2) Break scan after the second anchor, on closes (wicks poke
+        #    through constantly; a close beyond is what invalidates a line).
+        end = n - 1
+        broken_at = None
+        if b < n - 1:
+            post = np.arange(b + 1, n)
+            excess_post = sign * (close[post] - line[post])
+            # One close through is noise on an illiquid day; two in a row
+            # (or a single close by >1.5×tol) is a break. Scan every bar —
+            # taking only the first poke-through misses the real break that
+            # follows a month later, and the line stays wrongly "intact".
+            beyond = excess_post > tol[post]
+            two_in_row = beyond.copy()
+            two_in_row[:-1] &= beyond[1:]
+            two_in_row[-1] = False
+            decisive = two_in_row | (excess_post > tol[post] * 1.5)
+            hits = np.flatnonzero(decisive)
+            if hits.size:
+                broken_at = int(post[hits[0]])
+                end = broken_at
+
+        # 3) Touches — distinct approaches within tolerance, clustered so a
+        #    week of hugging the line counts once.
+        window = np.arange(a, end + 1)
+        near = np.abs(price_arr[window] - line[window]) <= tol[window]
+        touch_idx = window[near]
+        touches: list[int] = []
+        for t in touch_idx:
+            if touches and t - touches[-1] < max(3, min_span // 3):
+                continue
+            touches.append(int(t))
+        if len(touches) < 2:
+            return None
+
+        # 4) Bounce quality — the property that separates a real trendline
+        #    from a line sitting inside a chop. Price is supposed to LEAVE
+        #    after touching: reject a line price merely hugs. This is what
+        #    catches an 18-touch "support" on a range-bound series, where
+        #    the touch count measures confinement, not strength.
+        marks = touches + [end]
+        excursions = []
+        for mi in range(len(marks) - 1):
+            s0, e0 = marks[mi], marks[mi + 1]
+            if e0 - s0 < 2:
+                continue
+            away = sign * (line[s0:e0 + 1] - close[s0:e0 + 1]) \
+                / np.maximum(atr_arr[s0:e0 + 1], EPS)
+            excursions.append(float(away.max()))
+        bounce = float(np.median(excursions)) if excursions else 0.0
+        if bounce < 1.2:
+            return None
+
+        # 5) 貼合度 —— 線浮在它所跨越的那段高點上方多遠（以 ATR 計）。
+        #    兩點弦天生只保證碰到兩個端點：一段先急跌後轉平的行情，頭尾相連的弦
+        #    會整條浮在中間那些高點上方。AMZN 8/3→9/21 就是這樣，中間三個高點分別
+        #    在線下方 11.0、4.2、6.5 元。這個數字讓「貼著走」的線贏過「架在上面」的弦。
+        gap = np.clip(sign * (line[seg] - price_arr[seg]), 0.0, None) \
+            / np.maximum(atr_arr[seg], EPS)
+        float_atr = float(gap.mean())
+
+        # 這兩個權重以前都是「佔全圖的比例」，所以圖拉得越長，近期的線越吃虧：
+        # 同一條 34 根的下降線，在 1 年圖上 span_score=0.30，在 5 年圖上只剩 0.06；
+        # 而一條最後觸及在 220 根之前的舊線，在 5 年圖上 recency 還有 0.68。
+        # 結果 5 年圖的三個名額全被 10~18% 之外的長期上升線佔滿。
+        # 改成絕對尺度（用 periods_per_year 換算，週線月線一樣適用）：
+        # 超過半年的跨度不再加分，最後錨點離現在越遠折得越兇。
+        span_score = min(span / max(periods_per_year * 0.5, 20.0), 1.0)
+        recency = math.exp(-(n - 1 - b) / max(periods_per_year * 0.35, 20.0))
+        dist = abs(v_now - current) / current
+        proximity = float(np.clip(1.0 - dist / 0.30, 0.12, 1.0))
+        bounce_factor = float(np.clip(bounce / 3.5, 0.35, 1.4))
+        score = (len(touches) ** 1.25) * (0.45 + 0.55 * span_score) \
+            * (0.35 + 0.65 * recency) * proximity * bounce_factor
+        if broken_at is not None:
+            score *= 0.4
+        score /= (1 + breaches * 0.5)
+
+        return {
+            "side": side,
+            "a": a, "b": b,
+            "slope": slope,
+            "value_now": v_now,
+            "touches_idx": touches,
+            "touches": len(touches),
+            "span": span,
+            "broken_at": broken_at,
+            "bounce": bounce,
+            "float_atr": float_atr,
+            "score": score,
+        }
+
+    def _refine(c: dict) -> dict:
+        """把錨點往旁邊挪幾根，找真正貼合高點的位置。
+
+        候選線只能錨在 pivot 上，而 pivot 是某個窗格下的局部極值 —— 一段急跌裡
+        真正撐住線的那幾根往往不是 pivot。AMZN 那條弦（8/3→9/21）平均浮空 8.92 元；
+        窮舉所有 K 棒配對找得到平均浮空 5.17、觸及 5 次的線，錨點 8/10 與 8/28
+        兩根都不是 pivot。全域窮舉是 O(n²)（5 年圖 150 萬組）所以不可行，但在原錨點
+        附近做小範圍搜尋就夠把弦拉回貼合的位置，而且成本固定。
+
+        只在「觸及更多、或同樣觸及但更貼」時才換，所以退化的情況不會發生。
+        """
+        best = c
+        r = int(np.clip(c["span"] // 4, 2, 6))
+
+        def _try(a2: int, b2: int) -> None:
+            nonlocal best
+            if not (0 <= a2 < n and 0 <= b2 < n) or b2 <= a2:
+                return
+            cand = _evaluate(a2, b2)
+            if cand is None:
+                return
+            # 換線不能把「還沒破」的線換成「已經破」的
+            if cand["broken_at"] is not None and best["broken_at"] is None:
+                return
+            if (cand["touches"], -cand["float_atr"]) > \
+               (best["touches"], -best["float_atr"]):
+                best = cand
+
+        # 座標下降而不是 (2r+1)² 的網格：兩個錨點輪流調，來回兩輪。目標函數在這裡
+        # 夠平滑，找到的位置跟全網格幾乎一樣，但評估次數從 169 降到約 39 ——
+        # 5 年圖的趨勢線計算從 90ms 回到 40ms 以內。
+        for _ in range(2):
+            a0, b0 = best["a"], best["b"]
+            for da in range(-r, r + 1):
+                _try(a0 + da, best["b"])
+            for db in range(-r, r + 1):
+                _try(best["a"], b0 + db)
+        return best
 
     out: list[dict] = []
     for ai in range(len(piv) - 1):
-        a = piv[ai]
-        pa = price_arr[a]
         for bi in range(ai + 1, len(piv)):
-            b = piv[bi]
-            span = b - a
-            if span < min_span:
-                continue
-            pb = price_arr[b]
-            slope = (pb - pa) / span
-            line = pa + slope * (x - a)
-
-            # Tolerance tracks volatility: a $400 stock with $8 ATR should not be
-            # judged on the same absolute band as a $12 one.
-            tol = np.maximum(atr_arr * 0.30, np.abs(line) * 0.004)
-
-            v_now = float(line[-1])
-            if not np.isfinite(v_now) or v_now <= 0:
-                continue
-            # Reject lines whose projection has run away from tradeable prices.
-            if not (0.35 * current <= v_now <= 2.8 * current):
-                continue
-
-            # 1) Validity between the anchors — the defining property of a
-            #    trendline is that price did NOT cross it inside the leg.
-            seg = slice(a, b + 1)
-            excess = sign * (price_arr[seg] - line[seg])
-            breaches = int((excess > tol[seg]).sum())
-            if breaches > max(1, int(span * 0.03)):
-                continue
-
-            # 2) Break scan after the second anchor, on closes (wicks poke
-            #    through constantly; a close beyond is what invalidates a line).
-            end = n - 1
-            broken_at = None
-            if b < n - 1:
-                post = np.arange(b + 1, n)
-                excess_post = sign * (close[post] - line[post])
-                # One close through is noise on an illiquid day; two in a row
-                # (or a single close by >1.5×tol) is a break. Scan every bar —
-                # taking only the first poke-through misses the real break that
-                # follows a month later, and the line stays wrongly "intact".
-                beyond = excess_post > tol[post]
-                two_in_row = beyond.copy()
-                two_in_row[:-1] &= beyond[1:]
-                two_in_row[-1] = False
-                decisive = two_in_row | (excess_post > tol[post] * 1.5)
-                hits = np.flatnonzero(decisive)
-                if hits.size:
-                    broken_at = int(post[hits[0]])
-                    end = broken_at
-
-            # 3) Touches — distinct approaches within tolerance, clustered so a
-            #    week of hugging the line counts once.
-            window = np.arange(a, end + 1)
-            near = np.abs(price_arr[window] - line[window]) <= tol[window]
-            touch_idx = window[near]
-            touches: list[int] = []
-            for t in touch_idx:
-                if touches and t - touches[-1] < max(3, min_span // 3):
-                    continue
-                touches.append(int(t))
-            if len(touches) < 2:
-                continue
-
-            # 4) Bounce quality — the property that separates a real trendline
-            #    from a line sitting inside a chop. Price is supposed to LEAVE
-            #    after touching: reject a line price merely hugs. This is what
-            #    catches an 18-touch "support" on a range-bound series, where
-            #    the touch count measures confinement, not strength.
-            marks = touches + [end]
-            excursions = []
-            for mi in range(len(marks) - 1):
-                s0, e0 = marks[mi], marks[mi + 1]
-                if e0 - s0 < 2:
-                    continue
-                away = sign * (line[s0:e0 + 1] - close[s0:e0 + 1]) \
-                    / np.maximum(atr_arr[s0:e0 + 1], EPS)
-                excursions.append(float(away.max()))
-            bounce = float(np.median(excursions)) if excursions else 0.0
-            if bounce < 1.2:
-                continue
-
-            span_score = min(span / max(n * 0.45, 1.0), 1.0)
-            recency = math.exp(-2.2 * (n - 1 - b) / max(n - 1, 1))
-            dist = abs(v_now - current) / current
-            proximity = float(np.clip(1.0 - dist / 0.30, 0.12, 1.0))
-            bounce_factor = float(np.clip(bounce / 3.5, 0.35, 1.4))
-            score = (len(touches) ** 1.25) * (0.45 + 0.55 * span_score) \
-                * (0.35 + 0.65 * recency) * proximity * bounce_factor
-            if broken_at is not None:
-                score *= 0.4
-            score /= (1 + breaches * 0.5)
-
-            out.append({
-                "side": side,
-                "a": a, "b": b,
-                "slope": slope,
-                "value_now": v_now,
-                "touches_idx": touches,
-                "touches": len(touches),
-                "span": span,
-                "broken_at": broken_at,
-                "bounce": bounce,
-                "score": score,
-            })
+            cand = _evaluate(piv[ai], piv[bi])
+            if cand is not None:
+                out.append(cand)
 
     # A resistance sitting 12% *below* price, or a support above it, is a line
     # price already left behind — informative only while the break is fresh.
@@ -251,19 +336,41 @@ def _fit_side(df: pd.DataFrame, pivot_idx: list[int], side: str,
     out = near
 
     # Dedupe: near-identical lines differ only in which pivot they anchored on.
-    kept: list[dict] = []
-    for c in out:
-        dup = False
-        for k in kept:
+    def _dup(c: dict, pool: list[dict]) -> bool:
+        for k in pool:
             same_level = abs(c["value_now"] - k["value_now"]) / current < 0.025
             same_tilt = abs(c["slope"] - k["slope"]) / current < 0.0012
             if same_level and same_tilt:
-                dup = True
-                break
-        if not dup:
+                return True
+        return False
+
+    kept: list[dict] = []
+    for c in out:
+        if not _dup(c, kept):
             kept.append(c)
         if len(kept) >= max_lines:
             break
+
+    # 保留一個名額給「價格當下就貼著」的那條。純照分數排，三個名額很容易被長期的
+    # 強線佔滿，而現價正踩著的那條被擠掉 —— 實測十檔 × 四種週期共 40 張圖，有 16 張
+    # 如此，留下的最遠一條在 9~17% 之外。長期結構有它的價值，但「現在站在哪條線上」
+    # 是看圖的人第一個要問的問題，所以讓最近的那條頂掉分數最低的。
+    # 門檻差 1 個百分點才換，避免兩條差不多近的線互相抖動。
+    if len(out) > len(kept):
+        nearest = min(out, key=lambda c: abs(c["value_now"] - current))
+        d_near = abs(nearest["value_now"] - current) / current
+        d_kept = min((abs(c["value_now"] - current) / current for c in kept), default=1e9)
+        if d_near < d_kept - 0.01 and not _dup(nearest, kept):
+            if len(kept) >= max_lines:
+                kept[-1] = nearest          # out 是照分數排的，kept[-1] 就是最低分那條
+            else:
+                kept.append(nearest)
+
+    # 選完才 refine：refine 是 O(r²) 的局部搜尋，對每個候選都做太貴（5 年圖上
+    # 候選有數百個），而它改的是「線畫在哪」不是「哪條線重要」。
+    if refine:
+        kept = [_refine(c) for c in kept]
+    kept.sort(key=lambda c: -c["score"])
     return kept
 
 
@@ -732,17 +839,36 @@ def compute_trend_structure(df: pd.DataFrame, periods_per_year: int = 252,
     # not surface swings of the same bar count.
     w = int(np.clip(n // 45, 4, 14))
     ph, pl = find_pivots(high, low, w)
+    # 趨勢線另外吃一份多尺度的 pivot（結構窗格＋近期小窗格），長圖才看得見短腿。
+    # 形態辨識「不」用這一份：頭肩、雙頂這類形態是對某個尺度的主張，把 5 根的擺動
+    # 跟 14 根的結構混在一條 zig-zag 上認形態，認出來的東西不對應任何一個尺度。
+    ph_tl, pl_tl = multi_scale_pivots(high, low, w, periods_per_year)
 
     res = [_serialise_line(df, c, times, bar_seconds, proj_bars, periods_per_year)
-           for c in _fit_side(df, ph, "resistance", atr_arr)]
+           for c in _fit_side(df, ph_tl, "resistance", atr_arr,
+                              periods_per_year=periods_per_year)]
     sup = [_serialise_line(df, c, times, bar_seconds, proj_bars, periods_per_year)
-           for c in _fit_side(df, pl, "support", atr_arr)]
+           for c in _fit_side(df, pl_tl, "support", atr_arr,
+                              periods_per_year=periods_per_year)]
 
     channel = _pattern_from_lines(res, sup, close)
     piv_chain = _alternating(ph, pl, high, low)
     patterns = _reversal_patterns(piv_chain, times, close, n, atr_now)
 
-    regime = trend_regime(df, reg_stats, res + sup)
+    # regime 讀的是「線被遵守得多好」（bounce，以 ATR 計），而 bounce 跟線的長度
+    # 高度相關 —— 一條橫跨 700 根的線本來就比 34 根的彈得遠。所以它必須用固定的
+    # 證據基礎來算，不能跟著顯示用的選線政策跑：拿多尺度那份去餵，NVDA 的五年線
+    # 會因為選到較短較近的線而被判成「不趨勢」（分數 40→26），形態層跟著整個消失。
+    # （_fit_side 回的是原始候選，欄位叫 bounce；trend_regime 讀的是序列化後的
+    #   bounce_atr，所以這裡要對上名字。）
+    regime_lines = [
+        {"bounce_atr": round(float(c.get("bounce", 0.0)), 1)}
+        for c in (_fit_side(df, ph, "resistance", atr_arr,
+                            periods_per_year=periods_per_year, refine=False)
+                  + _fit_side(df, pl, "support", atr_arr,
+                              periods_per_year=periods_per_year, refine=False))
+    ]
+    regime = trend_regime(df, reg_stats, regime_lines)
     rng = range_stats(df, periods_per_year)
 
     # A formation is a claim about trend continuation or reversal. On a series

@@ -109,7 +109,11 @@ def fetch_history(ticker, years=2):
     """
     import pandas as pd
     CACHE.mkdir(parents=True, exist_ok=True)
-    f = CACHE / f"{ticker}_{dt.date.today().isoformat()}.csv"
+    # Backfilling an old quarter needs bars from before the default window,
+    # so a non-default span gets its own cache file instead of clobbering the
+    # 2-year one every other run reads.
+    span = "" if years == 2 else f"_{years}y"
+    f = CACHE / f"{ticker}_{dt.date.today().isoformat()}{span}.csv"
     if f.exists():
         df = pd.read_csv(f, index_col=0, parse_dates=True)
     else:
@@ -960,11 +964,21 @@ def main():
     ap.add_argument("--panels", default="macd,rsi",
                     help="oscillator panels under the candles: macd,rsi,kdj,willr,obv")
     ap.add_argument("--no-chart", action="store_true")
+    ap.add_argument("--as-of", default=None,
+                    help="YYYY-MM-DD: drop every bar after this date, so a backfilled "
+                         "note reads the technicals as they stood a week after that "
+                         "quarter's report instead of today's")
     a = ap.parse_args()
 
     t = a.ticker.upper()
     rt = radar_ticker(t)
-    df = fetch_history(rt)
+    years = 2
+    if a.as_of:
+        # keep ~2 years of history behind the as-of date (250-day MA + 52w range)
+        years = 2 + max(0, -(-(dt.date.today() - dt.date.fromisoformat(a.as_of)).days // 365))
+    df = fetch_history(rt, years=years)
+    if a.as_of and not df.empty:
+        df = df[df.index <= dt.datetime.fromisoformat(a.as_of)]
     if df.empty or len(df) < 60:
         json.dump({"ticker": t, "error": "not enough price history"}, sys.stdout)
         print()
@@ -973,6 +987,8 @@ def main():
     ind = indicators(df)
     last_close = float(df["Close"].iloc[-1])
     events = known_earnings_dates(t)
+    if a.as_of:  # a note written as of that date cannot know later quarters
+        events = [e for e in events if e["date"] <= a.as_of]
     if a.report_date and not any(e["date"] == a.report_date for e in events):
         events.insert(0, {"quarter": None, "date": a.report_date, "reaction_pct": None})
     support, resist = build_levels(df, ind, events, last_close)

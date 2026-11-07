@@ -69,6 +69,7 @@ from scripts.report_meta import (
     resolve_trade_date,
 )
 from scripts.report_guard import apply_guards, render_audit_md, render_audit_summary
+from scripts.zh_terms import localize, zh_action
 from scripts.war_room_report import assemble_report, build_morning_brief, build_telegram_summary
 from scripts.daily_manifest import build_manifest, render_manifest_md, save_manifest
 from backend.app.database import SessionLocal
@@ -342,7 +343,7 @@ def build_scan_followup_section(analysis_date: date) -> list[str]:
         ez_str = f"${ez[0]}-{ez[1]}" if isinstance(ez, list) and len(ez) == 2 else "—"
         p_str = f"${price:.2f}" if price is not None else "—"
         lines.append(
-            f"- {t}｜{o.get('action')}｜conviction {o.get('conviction', '—')}｜"
+            f"- {t}｜{zh_action(o.get('action'))}｜信心 {o.get('conviction', '—')}｜"
             f"進場區 {ez_str}｜現價 {p_str}｜{status}｜{str(o.get('thesis') or '')[:60]}"
         )
     lines.append("")
@@ -678,6 +679,9 @@ def build_briefing(
     L("   逐檔都健康不代表組合健康——這是單股 25% 規則看不到的風險。")
     L("完成後**輸出六區塊**：`<<<SUMMARY>>> <<<SHARED>>> <<<MAIN>>> <<<MOM>>> <<<MIMI>>> <<<DECISIONS>>>`")
     L("（格式與 DECISIONS JSON schema 詳見 agent/CLAUDE.md 的「輸出契約」。每檔持倉必須逐一點評。）")
+    L("⚠️ **正文寫中文術語**：`action` / `risk_level` / `market_regime` 的英文值只填在 JSON 裡，"
+      "句子裡一律寫 減碼／加倉／建倉／出場／停損／維持／風險等級高／避險，不要寫 trim、"
+      "stop_loss、risk_level=high、risk-off。")
     L("⚠️ 報告的第一層「90 秒晨報」由程式從你的 DECISIONS 自動組裝——"
       "**DECISIONS 的 action / trigger / stop / risk_level / ack_prev 必須與文字區塊一致**，"
       "填錯會直接反映在使用者看到的第一頁。")
@@ -943,6 +947,9 @@ def main() -> None:
             audit_md=audit_md, audit_summary=audit_summary, quotes_ok=quotes_ok,
             manifest_md=render_manifest_md(manifest),
         )
+        # 術語中文化：DECISIONS 的英文 enum（trim / risk-off / acknowledged…）不該出現在
+        # 人看的那一面。JSON、行內程式碼與網址由 localize 自己跳過，journal 不受影響。
+        report_md = localize(report_md)
         save_mirror_note(analysis_date, report_md)
 
         # manifest 重算一次（War Room 剛落地，狀態要反映得出來）
@@ -965,6 +972,7 @@ def main() -> None:
                 analysis_date=analysis_date, blocks_summary=summary_body,
                 freshness=freshness, morning_lines=morning_lines, manifest=manifest,
             )
+            telegram_text = localize(telegram_text)
             print("[telegram/line] 發送第一層晨報 + SUMMARY...")
             send_telegram(telegram_text)
             send_line(telegram_text, important_report=True)

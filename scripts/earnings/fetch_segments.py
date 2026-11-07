@@ -340,7 +340,7 @@ def main():
 
     con = None
     if not a.dry_run:
-        con = sqlite3.connect(VALUATION_DB)
+        con = sqlite3.connect(VALUATION_DB, timeout=120)
         con.executescript(SCHEMA)
         have = {r[1] for r in con.execute("PRAGMA table_info(segment_financials)")}
         if "currency" not in have:        # 舊表沒這欄，CREATE IF NOT EXISTS 不會補
