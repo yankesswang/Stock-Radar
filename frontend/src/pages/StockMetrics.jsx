@@ -1,16 +1,15 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import { useRoute, useSearch, Link, Redirect } from 'wouter';
+import axios from '../lib/apiClient';
 import {
     ComposedChart, Bar, Line, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
     CartesianGrid, Cell, ReferenceLine,
 } from 'recharts';
 import {
-    ArrowLeft, ChevronDown, BarChart3, Layers, CalendarDays, FileQuestion,
+    ChevronDown, BarChart3, Layers, CalendarDays, FileQuestion,
     LineChart as LineIcon, AreaChart as AreaIcon, Rows3, Layers2,
 } from 'lucide-react';
-import SecFinancials from '../components/SecFinancials';
-import SecSupplement from '../components/SecSupplement';
+import StockPageHeader from '../components/StockPageHeader';
 import SecSegmentRevenue from '../components/SecSegmentRevenue';
 import {
     CHART_GRID, CHART_AXIS, CHART_REFERENCE, chartTooltipStyle, chartTooltipLabelStyle,
@@ -255,17 +254,10 @@ function DeltaText({ delta }) {
     return <span className={cls}>{delta.text}</span>;
 }
 
-function Skeleton() {
+function Skeleton({ ticker }) {
     return (
         <div className="container py-10 space-y-6" aria-busy="true" aria-label="載入中">
-            <div className="h-4 w-28 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-            <div className="flex justify-between items-end gap-4 pb-6 border-b border-[var(--glass-border)]">
-                <div className="space-y-2">
-                    <div className="h-8 w-40 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-                    <div className="h-4 w-64 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-                </div>
-                <div className="h-9 w-48 rounded-lg bg-[var(--bg-tertiary)] animate-pulse" />
-            </div>
+            <StockPageHeader ticker={ticker} />
             <div className="h-[360px] rounded-2xl bg-[var(--bg-tertiary)] animate-pulse opacity-70" />
             {[0, 1, 2].map((i) => (
                 <div key={i} className="h-[220px] rounded-2xl bg-[var(--bg-tertiary)] animate-pulse opacity-60" />
@@ -488,7 +480,14 @@ export default function StockMetrics() {
     const toggleCat = (name) => setOpenCats((prev) => ({ ...prev, [name]: !prev[name] }));
     const jumpTo = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
-    if (loading) return <Skeleton />;
+    // 三大表已拆到 /financials；舊的 /metrics?tab=income 書籤與外部連結直接轉過去
+    const search = useSearch();
+    const legacyTab = new URLSearchParams(search || '').get('tab');
+    if (['income', 'balance', 'cashflow', 'metrics'].includes(legacyTab)) {
+        return <Redirect to={`/stock/${ticker}/financials?tab=${legacyTab}`} replace />;
+    }
+
+    if (loading) return <Skeleton ticker={ticker} />;
 
     if (error) {
         // 爬來的 metrics CSV 不是每檔都有。以前這裡整頁 bail，現在至少把
@@ -497,17 +496,8 @@ export default function StockMetrics() {
         // 英文錯誤訊息孤零零躺著，所以補一張講清楚狀況、給得出去路的空狀態卡。
         return (
             <div className="container py-10 space-y-6 animate-fade-in">
-                <Link href={`/stock/${ticker}`}
-                      className="ui-focus rounded inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-                    <ArrowLeft size={14} aria-hidden="true" /> Back to {ticker}
-                </Link>
-                <div className="flex items-center gap-3 pb-6 border-b border-[var(--glass-border)]">
-                    <h1 className="text-3xl font-extrabold tracking-tight">{ticker}</h1>
-                    <span className="badge badge-neutral">分項指標</span>
-                </div>
-                <SecFinancials ticker={ticker} />
+                <StockPageHeader ticker={ticker} />
                 <SecSegmentRevenue ticker={ticker} />
-                <SecSupplement ticker={ticker} />
                 <section className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] p-6 max-w-2xl">
                     <h2 className="text-[15px] font-bold inline-flex items-center gap-2 mb-2">
                         <FileQuestion size={16} aria-hidden="true" /> {ticker} 沒有營運分項資料
@@ -538,56 +528,43 @@ export default function StockMetrics() {
 
     return (
         <div className="container py-10 space-y-6 animate-fade-in">
-            <Link
-                href={`/stock/${ticker}`}
-                className="ui-focus rounded inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-            >
-                <ArrowLeft size={14} aria-hidden="true" /> Back to {ticker}
-            </Link>
-
-            {/* 頁首：先講清楚這頁是什麼、資料多新，再往下看 */}
-            <header className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 pb-6 border-b border-[var(--glass-border)]">
-                <div>
-                    <div className="flex items-center gap-3 mb-2">
-                        <h1 className="text-3xl font-extrabold tracking-tight">{ticker}</h1>
-                        <span className="badge badge-neutral">分項指標</span>
-                    </div>
-                    <p className="text-[14px] text-[var(--text-meta)]">
+            <StockPageHeader
+                ticker={ticker}
+                meta={
+                    <>
                         {cats.length} 個分類 · {totalRows} 項指標 · 最多 {maxPeriods} 期
                         <span className="mx-1.5 opacity-50">|</span>
                         資料日 {data.date} · 來源 stockanalysis.com
-                    </p>
-                </div>
-                <div className="flex items-center gap-2" role="group" aria-label="顯示期數">
-                    <CalendarDays size={14} className="text-[var(--text-muted)]" aria-hidden="true" />
-                    {periodOptions.map((n) => {
-                        const isAll = n === maxPeriods;
-                        const on = visiblePeriods === n || (visiblePeriods > maxPeriods && isAll);
-                        return (
-                            <button
-                                key={n}
-                                onClick={() => setVisiblePeriods(n)}
-                                aria-pressed={on}
-                                className={`ui-focus tap cursor-pointer px-3 py-1.5 rounded-full text-[12.5px] font-medium border transition-colors duration-200 ${
-                                    on
-                                        ? 'text-[var(--accent-cyan-text)] bg-[rgba(0,82,255,0.10)] border-[rgba(0,82,255,0.35)]'
-                                        : 'text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-[var(--glass-border)] hover:border-[var(--glass-border-hover)]'
-                                }`}
-                            >
-                                {isAll ? `全部 ${n} 期` : `${n} 期`}
-                            </button>
-                        );
-                    })}
-                </div>
-            </header>
+                    </>
+                }
+                actions={
+                    <div className="flex items-center gap-2" role="group" aria-label="顯示期數">
+                        <CalendarDays size={14} className="text-[var(--text-muted)]" aria-hidden="true" />
+                        {periodOptions.map((n) => {
+                            const isAll = n === maxPeriods;
+                            const on = visiblePeriods === n || (visiblePeriods > maxPeriods && isAll);
+                            return (
+                                <button
+                                    key={n}
+                                    onClick={() => setVisiblePeriods(n)}
+                                    aria-pressed={on}
+                                    className={`ui-focus tap cursor-pointer px-3 py-1.5 rounded-full text-[12.5px] font-medium border transition-colors duration-200 ${
+                                        on
+                                            ? 'text-[var(--accent-cyan-text)] bg-[rgba(0,82,255,0.10)] border-[rgba(0,82,255,0.35)]'
+                                            : 'text-[var(--text-secondary)] bg-[var(--bg-secondary)] border-[var(--glass-border)] hover:border-[var(--glass-border-hover)]'
+                                    }`}
+                                >
+                                    {isAll ? `全部 ${n} 期` : `${n} 期`}
+                                </button>
+                            );
+                        })}
+                    </div>
+                }
+            />
 
-            {/* SEC 三大表＋由它們推算的基本面，同一區塊裡切分頁，放在爬來的
-                breakdown 之前：那份是每日快照的股價類比率，這份是十年以上的申報數 */}
-            <SecFinancials ticker={ticker} />
             {/* 分部門用 SEC 而不是下面那份爬蟲 CSV：兩邊都有的 22 檔裡，
-                CSV 一律只有 8 期、SEC 中位數 37 期 */}
+                CSV 一律只有 8 期、SEC 中位數 37 期。三大表與 Non-GAAP 在 /financials */}
             <SecSegmentRevenue ticker={ticker} />
-            <SecSupplement ticker={ticker} />
 
             {/* 分項拆解區塊標題 + 跳轉 */}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-2">

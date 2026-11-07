@@ -13,7 +13,7 @@
  */
 import { useMemo, useState } from 'react';
 import { OctagonX, TriangleAlert, CircleCheck, ListTodo, ChevronDown, Search } from 'lucide-react';
-import { C, actionMeta, RISK_META, fmt, signPct } from './opsTheme';
+import { C, alpha, actionMeta, RISK_META, fmt, signPct } from './opsTheme';
 import { Panel, Badge, Empty, FilterChip } from './opsUi';
 import { parseAttention } from './warRoomAttention';
 
@@ -68,7 +68,7 @@ function TickerCard({ item }) {
   return (
     <li
       className="flex flex-col border py-5 pl-4 pr-4"
-      style={{ borderColor: C.border, borderLeft: `4px solid ${meta.color}`, background: 'rgba(255,255,255,0.015)' }}
+      style={{ borderColor: C.border, borderLeft: `4px solid ${meta.color}`, background: alpha(C.ink, 0.015) }}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <LevelIcon size={22} aria-label={meta.label} style={{ color: meta.color, flexShrink: 0 }} />
@@ -76,7 +76,7 @@ function TickerCard({ item }) {
         {portfolio && <Badge color={C.muted}>{portfolio}</Badge>}
         {am && <Badge color={am.color}>{am.label}</Badge>}
         {rm && (
-          <span className="inline-flex items-center gap-1" title={`risk_level = ${decision.risk_level}`}>
+          <span className="inline-flex items-center gap-1" title={`模型標的風險等級：${decision.risk_level}`}>
             <span className="h-2.5 w-2.5 rounded-full" style={{ background: rm.color }} />
             <span className="font-mono text-[14px]" style={{ color: rm.color }}>{rm.label}</span>
           </span>
@@ -105,45 +105,44 @@ function TickerCard({ item }) {
   );
 }
 
-// 明日操作計劃：一列一檔，代號／動作／條件 → 目標 ／ 備註。
+// 明日操作計劃：真正的表格 —— 代號｜動作｜條件｜目標倉位｜備註，一列一檔。
+// 報告原文是「LLY 減碼｜跌破1230已觸發｜目標降至5%以下｜多日未對帳」這種豎線分隔，
+// 攤成表格才對得齊；窄螢幕橫向捲動，不讓整頁變寬。
+const PLAN_HEADERS = ['代號', '動作', '條件', '目標倉位', '備註'];
 function PlanList({ rows }) {
+  const th = 'px-3 py-2 text-left font-mono text-[12.5px] font-semibold uppercase tracking-[0.14em] whitespace-nowrap';
   return (
-    <ul className="px-3 py-1.5">
-      {rows.map((r, i) => {
-        const am = r.action ? actionMeta(r.action) : null;
-        return (
-          <li
-            key={`${r.label}-${i}`}
-            className="flex flex-wrap items-start gap-x-3 gap-y-1 py-3 sm:grid"
-            style={{ gridTemplateColumns: '7.5rem 5rem minmax(0, 1fr)', borderTop: i ? `1px solid ${C.border}` : 'none' }}
-          >
-            <span className="flex flex-wrap gap-x-1.5 gap-y-0.5 font-mono text-[18px] font-bold leading-[1.75]" style={{ color: C.text }}>
-              {r.isRest && <span className="font-normal" style={{ color: C.dim }}>其餘</span>}
-              {r.tickers.length ? r.tickers.map((x) => <span key={x}>{x}</span>) : r.label}
-            </span>
-            <span className="pt-[5px]">
-              {am ? <Badge color={am.color}>{am.label}</Badge> : <span style={{ color: C.muted }}>—</span>}
-            </span>
-            <span className="min-w-0 basis-full break-words text-[19px] leading-[1.75] sm:basis-auto" style={{ color: C.sub }}>
-              {r.actionNote && <span className="mr-1.5 text-[16px]" style={{ color: C.dim }}>{r.actionNote}</span>}
-              {r.condition || '—'}
-              {r.target && (
-                <>
-                  <span className="mx-1.5" style={{ color: C.muted }}>→</span>
-                  <span className="font-mono text-[17.5px] tabular-nums" style={{ color: C.text }}>{r.target}</span>
-                </>
-              )}
-              {r.note && (
-                <>
-                  <span className="mx-1.5" style={{ color: C.muted }}>／</span>
-                  <span style={{ color: C.dim }}>{r.note}</span>
-                </>
-              )}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+    <div className="overflow-x-auto">
+      <table className="w-full border-collapse text-[16px]">
+        <thead>
+          <tr style={{ background: alpha(C.ink, 0.03) }}>
+            {PLAN_HEADERS.map((h) => <th key={h} className={th} style={{ color: C.dim }}>{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const am = r.action ? actionMeta(r.action) : null;
+            return (
+              <tr key={`${r.label}-${i}`} style={{ borderTop: `1px solid ${C.border}` }}>
+                <td className="px-3 py-2.5 align-top font-mono text-[16px] font-bold leading-relaxed" style={{ color: C.text }}>
+                  <span className="flex flex-wrap gap-x-1.5 gap-y-0.5">
+                    {r.isRest && <span className="font-normal" style={{ color: C.dim }}>其餘</span>}
+                    {r.tickers.length ? r.tickers.map((x) => <span key={x} className="whitespace-nowrap">{x}</span>) : r.label}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 align-top whitespace-nowrap">
+                  {am ? <Badge color={am.color}>{am.label}</Badge> : <span style={{ color: C.muted }}>—</span>}
+                  {r.actionNote && <span className="ml-1.5 text-[13.5px]" style={{ color: C.dim }}>{r.actionNote}</span>}
+                </td>
+                <td className="min-w-[160px] px-3 py-2.5 align-top leading-relaxed" style={{ color: C.sub }}>{r.condition || '—'}</td>
+                <td className="min-w-[110px] px-3 py-2.5 align-top font-mono text-[15px] tabular-nums leading-relaxed" style={{ color: C.text }}>{r.target || '—'}</td>
+                <td className="min-w-[180px] px-3 py-2.5 align-top leading-relaxed" style={{ color: C.dim }}>{r.note || '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -156,7 +155,7 @@ function HoldTable({ table }) {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         className="flex w-full cursor-pointer items-center gap-1.5 border px-2.5 py-2 font-mono text-[15px] uppercase tracking-wider transition-colors duration-200"
-        style={{ borderColor: C.border, color: C.dim, background: 'rgba(255,255,255,0.015)' }}
+        style={{ borderColor: C.border, color: C.dim, background: alpha(C.ink, 0.015) }}
       >
         <ChevronDown size={14} style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 200ms' }} />
         {open ? '收起' : `其餘 ${table.rows.length} 檔維持（合併檢視，可展開）`}
@@ -170,7 +169,7 @@ function HoldTable({ table }) {
                   <th
                     key={h}
                     className="px-2 py-2 text-left font-mono text-[13.5px] font-semibold uppercase tracking-[0.14em]"
-                    style={{ color: C.dim, background: 'rgba(255,255,255,0.03)' }}
+                    style={{ color: C.dim, background: alpha(C.ink, 0.03) }}
                   >
                     {h}
                   </th>
@@ -201,7 +200,7 @@ function HoldTable({ table }) {
 
 function MissingAlert({ tickers, decisionOf, openOf }) {
   return (
-    <div className="flex items-start gap-2.5 border px-3 py-2.5" style={{ borderColor: `${C.amber}55`, background: `${C.amber}0D` }}>
+    <div className="flex items-start gap-2.5 border px-3 py-2.5" style={{ borderColor: `${alpha(C.amber, 0.333)}`, background: `${alpha(C.amber, 0.051)}` }}>
       <TriangleAlert size={20} aria-hidden="true" style={{ color: C.amber, flexShrink: 0, marginTop: 5 }} />
       <div className="min-w-0 flex-1">
         <div className="text-[18px] leading-[1.75]" style={{ color: C.sub }}>
@@ -217,7 +216,7 @@ function MissingAlert({ tickers, decisionOf, openOf }) {
               <li
                 key={t}
                 className="inline-flex items-center gap-2 border px-2.5 py-1.5 font-mono text-[15.5px]"
-                style={{ borderColor: `${C.amber}44`, color: C.text }}
+                style={{ borderColor: `${alpha(C.amber, 0.267)}`, color: C.text }}
                 title={d?.thesis || ''}
               >
                 <span className="font-bold">{t}</span>
@@ -246,10 +245,10 @@ function PortfolioSummary({ p }) {
         )}
       </header>
       {p.plan.length > 0 && (
-        <div className="border" style={{ borderColor: `${C.accent}33` }}>
+        <div className="border" style={{ borderColor: `${alpha(C.accent, 0.2)}` }}>
           <div
             className="flex items-center gap-2 border-b px-3 py-2.5 font-mono text-[14.5px] uppercase tracking-[0.14em]"
-            style={{ borderColor: `${C.accent}33`, color: C.accent }}
+            style={{ borderColor: `${alpha(C.accent, 0.2)}`, color: C.accent }}
           >
             <ListTodo size={16} aria-hidden="true" /> 明日操作計劃 · {p.name}
           </div>
@@ -259,7 +258,7 @@ function PortfolioSummary({ p }) {
       {p.assessment && (
         <div
           className="border-l-2 px-4 py-3.5 text-[19px] leading-[1.75]"
-          style={{ borderColor: C.mimi, color: C.sub, background: 'rgba(255,255,255,0.015)' }}
+          style={{ borderColor: C.mimi, color: C.sub, background: alpha(C.ink, 0.015) }}
         >
           <span className="mr-2 font-semibold" style={{ color: C.mimi }}>整體評估</span>
           {p.assessment}
@@ -358,7 +357,7 @@ export default function AttentionPositionsPanel({ md, decisions, openRows }) {
       : <Badge color={C.long}>無需判斷項目</Badge>;
 
   return (
-    <Panel label="異常持倉 / ATTENTION POSITIONS" status={status}>
+    <Panel label="異常持倉" status={status}>
       {!md ? (
         <Empty>該日報告沒有「異常持倉」段落</Empty>
       ) : (
@@ -385,12 +384,12 @@ export default function AttentionPositionsPanel({ md, decisions, openRows }) {
                   ))}
                 </>
               )}
-              <div className="ml-auto flex max-w-full items-center gap-1.5 border px-2 py-1" style={{ borderColor: C.border, background: '#0B1220' }}>
+              <div className="ml-auto flex max-w-full items-center gap-1.5 border px-2 py-1" style={{ borderColor: C.border, background: C.deep }}>
                 <Search size={13} aria-hidden="true" style={{ color: C.muted }} />
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="FILTER TICKER…"
+                  placeholder="篩選代號…"
                   aria-label="篩選標的"
                   spellCheck={false}
                   className="w-36 min-w-0 bg-transparent font-mono text-[15px] uppercase tracking-wider outline-none"
@@ -410,7 +409,7 @@ export default function AttentionPositionsPanel({ md, decisions, openRows }) {
           )}
 
           {total === 0 && !parsed.missing.length && <Empty>今日沒有需要展開判斷的持倉</Empty>}
-          {total > 0 && !visible.length && <Empty>NO MATCH</Empty>}
+          {total > 0 && !visible.length && <Empty>無符合條件</Empty>}
 
           {groups.map(({ l, meta, items: gi }) => {
             const I = meta.Icon;

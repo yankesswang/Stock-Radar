@@ -1,13 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import GroupSelect from '../components/GroupSelect';
 import { useExtendedQuotes } from '../components/useExtendedQuotes';
 import ExtendedQuoteBadge from '../components/ExtendedQuote';
-import DailyDigestPanel from '../components/DailyDigestPanel';
+import WarRoomTeaser from '../components/WarRoomTeaser';
 import {
   RefreshCw, TrendingUp, TrendingDown, DollarSign,
   BarChart2, Layers, Trash2, Plus, CloudDownload, Check, X,
@@ -562,9 +562,12 @@ export default function GSheetPortfolio() {
   const gainValue = net_gain ?? total_pnl;
   const gainPct = net_return_pct ?? return_pct;
 
+  // 後端已把同一檔跨帳戶的倉位合併成一列（lots 保留各帳戶原始列）。
+  // All 看合併後的；切到單一帳戶、或按帳戶加總時展開回各帳戶的那一筆。
+  const positions = holdings.flatMap(h => h.lots ?? [h]);
   const filtered = (acct === 'All'
     ? holdings
-    : holdings.filter(h => h.account?.toLowerCase() === acct.toLowerCase())
+    : positions.filter(h => h.account?.toLowerCase() === acct.toLowerCase())
   ).slice().sort((a, b) => {
     const wa = a.market_value ?? a.cost_basis ?? 0;
     const wb = b.market_value ?? b.cost_basis ?? 0;
@@ -581,7 +584,7 @@ export default function GSheetPortfolio() {
   const selectedSectorValue = selectedSectorHoldings.reduce((s, h) => s + (h.market_value ?? h.cost_basis ?? 0), 0);
 
   // Per-account breakdown
-  const accountBreakdown = holdings.reduce((acc, h) => {
+  const accountBreakdown = positions.reduce((acc, h) => {
     const name = h.account || 'Unknown';
     if (!acc[name]) acc[name] = { value: 0, cost: 0, pnl: 0 };
     acc[name].value += h.market_value ?? h.cost_basis ?? 0;
@@ -609,14 +612,6 @@ export default function GSheetPortfolio() {
     return !t || !radarTickers.has(t);
   });
   const perfRows = perfHistory?.rows || [];
-
-  // AI 卡產生端的 weight_pct 是空的（holdings 只帶 ticker/portfolio），
-  // 但這頁本來就有即時權重 —— 直接餵給日報面板，省得整欄都是「—」。
-  const weightByTicker = Object.fromEntries(
-    holdings
-      .filter(h => h.ticker && h.ticker !== 'CASH')
-      .map(h => [h.ticker, total_value > 0 ? (h.market_value ?? h.cost_basis ?? 0) / total_value * 100 : null])
-  );
 
   return (
     <div className="container py-10 space-y-6 animate-fade-in">
@@ -1119,8 +1114,8 @@ export default function GSheetPortfolio() {
         )}
       </div>
 
-      {/* 這頁只放一天的總結；逐檔決策卡／兩萬字復盤／全部候選與新聞在 /briefing */}
-      <DailyDigestPanel weights={weightByTicker} variant="summary" />
+      {/* 這頁只放一眼看得完的戰情數字；逐檔指令／復盤／新聞線／市場日報都在 War Room 家族 */}
+      <WarRoomTeaser />
 
       {/* Deposits panel */}
       <div className="card overflow-hidden">
@@ -1250,7 +1245,7 @@ export default function GSheetPortfolio() {
                   paddingAngle={2}
                   cursor="pointer"
                   onClick={(entry) => setSelectedSector(prev => prev === entry.name ? null : entry.name)}
-                  label={({ name, value, cx, cy, midAngle, outerRadius }) => {
+                  label={({ value, cx, cy, midAngle, outerRadius }) => {
                     const pct = total_value > 0 ? (value / total_value * 100).toFixed(1) : 0;
                     const RADIAN = Math.PI / 180;
                     const r = outerRadius + 22;
@@ -1365,7 +1360,7 @@ export default function GSheetPortfolio() {
             {a}
             {a !== 'All' && (
               <span className="ml-1.5 text-[10px] opacity-60">
-                {holdings.filter(h => h.account?.toLowerCase() === a.toLowerCase()).length}
+                {positions.filter(h => h.account?.toLowerCase() === a.toLowerCase()).length}
               </span>
             )}
           </button>
@@ -1402,10 +1397,23 @@ export default function GSheetPortfolio() {
             {filtered.map((h, i) => {
               const weight = total_value > 0 ? (h.market_value ?? h.cost_basis ?? 0) / total_value * 100 : null;
               const isCash = h.ticker === 'CASH';
+              // 跨帳戶合併的列：股數／均價是加總後的，改哪個帳戶不明確 → 唯讀，到帳戶分頁改
+              const merged = (h.lots?.length ?? 1) > 1;
+              const lotsTip = merged
+                ? h.lots.map(l => `${l.account}：${fmt(l.shares, 4).replace(/\.?0+$/, '')} 股 @ $${fmt(l.avg_cost)}`).join('\n')
+                  + '\n（切到帳戶分頁可逐筆編輯）'
+                : undefined;
 
               return (
                 <tr key={i} className="border-b border-[var(--glass-border)] last:border-0 hover:bg-[rgba(255,255,255,0.02)] transition-colors group">
-                  <td className="px-4 py-3 text-xs text-[var(--text-muted)]">{h.account}</td>
+                  <td className="px-4 py-3 text-xs text-[var(--text-muted)]" title={lotsTip}>
+                    {merged ? (
+                      <span className="flex items-center gap-1 whitespace-nowrap">
+                        {h.accounts.join(' + ')}
+                        <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-[rgba(139,92,246,0.15)] text-[var(--accent-purple)]">合併 {h.lots.length}</span>
+                      </span>
+                    ) : h.account}
+                  </td>
                   <td className="px-4 py-3">
                     {isCash ? (
                       <span className="font-bold text-[var(--text-secondary)]">CASH</span>
@@ -1421,7 +1429,9 @@ export default function GSheetPortfolio() {
 
                   {/* Editable: Shares */}
                   <td className="px-3 py-2">
-                    {isCash ? <span className="text-[var(--text-muted)] px-1">—</span> : (
+                    {isCash ? <span className="text-[var(--text-muted)] px-1">—</span> : merged ? (
+                      <span className="px-1" title={lotsTip}>{fmt(h.shares, 4).replace(/\.?0+$/, '')}</span>
+                    ) : (
                       <EditableCell
                         value={h.shares}
                         display={h.shares != null ? fmt(h.shares, 4).replace(/\.?0+$/, '') : '—'}
@@ -1438,6 +1448,9 @@ export default function GSheetPortfolio() {
 
                   {/* Editable: Avg Cost (or cash balance for CASH) */}
                   <td className="px-3 py-2">
+                    {merged ? (
+                      <span className="px-1" title={lotsTip}>${fmt(h.avg_cost)}</span>
+                    ) : (
                     <EditableCell
                       value={h.avg_cost}
                       display={h.avg_cost != null ? `$${fmt(h.avg_cost)}` : '—'}
@@ -1449,6 +1462,7 @@ export default function GSheetPortfolio() {
                       onCancel={cancelCell}
                       width="w-24"
                     />
+                    )}
                   </td>
 
                   {/* Leverage */}
@@ -1620,13 +1634,13 @@ export default function GSheetPortfolio() {
                   </td>
 
                   <td className="px-4 py-3">
-                    <button
+                    {!merged && <button
                       onClick={() => deleteHolding(h.ticker, h.account)}
                       className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent-danger)] hover:bg-[rgba(248,113,113,0.1)] transition-all"
                       title="Remove from portfolio"
                     >
                       <Trash2 size={12} />
-                    </button>
+                    </button>}
                   </td>
                 </tr>
               );
@@ -1721,7 +1735,7 @@ export default function GSheetPortfolio() {
   );
 }
 
-function EditableCell({ value, display, isEditing, editVal, onStart, onChange, onSave, onCancel, width = 'w-20' }) {
+function EditableCell({ display, isEditing, editVal, onStart, onChange, onSave, onCancel, width = 'w-20' }) {
   if (isEditing) {
     return (
       <input

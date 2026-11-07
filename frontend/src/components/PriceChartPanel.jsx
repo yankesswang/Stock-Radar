@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import Theme from '../theme';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   createChart, CrosshairMode, ColorType,
   CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers,
@@ -22,19 +22,31 @@ const PERIODS = [
   { label: 'MAX', value: 'max' },
 ];
 
+// 紅／綠只留給 K 棒、趨勢線、支撐壓力（紅＝壓力、綠＝支撐）。均線以前 MA50 綠、
+// MA250 紅，跟趨勢線撞色，分不出哪條是哪條 → 均線全部改用非紅綠的顏色，
+// 長週期的畫粗一點。
 const MA_DEFS = [
-  { key: 'ma5',   label: 'MA5',   color: '#f59e0b' },
-  { key: 'ma10',  label: 'MA10',  color: '#60a5fa' },
-  { key: 'ma20',  label: 'MA20',  color: '#a78bfa' },
-  { key: 'ma50',  label: 'MA50',  color: '#34d399' },
-  { key: 'ma250', label: 'MA250', color: '#f87171' },
+  { key: 'ma5',   label: 'MA5',   color: '#facc15', width: 1 },
+  { key: 'ma10',  label: 'MA10',  color: '#38bdf8', width: 1 },
+  { key: 'ma20',  label: 'MA20',  color: '#c084fc', width: 1 },
+  { key: 'ma50',  label: 'MA50',  color: '#fb923c', width: 2 },
+  { key: 'ma250', label: 'MA250', color: '#94a3b8', width: 2 },
 ];
+
+// 財報日／持倉成本（資料來自 /chart-events）
+const EARN_COLOR = '#f59e0b';
+const COST_COLOR = '#e879f9';
+// bar.time 是交易所當地午夜的 epoch（美股 ET 04:00/05:00 UTC、台股前一天 16:00 UTC），
+// 加 12 小時再取 UTC 日期，兩邊都會落在正確的那一天。
+const barDate = (t) => new Date((t + 43200) * 1000).toISOString().slice(0, 10);
 
 // ── Price-panel overlays ─────────────────────────────────────────────────────
 // `lines`   → LineSeries drawn on the candle chart
 // `special` → custom draw routine (supertrend colouring, psar dots, level lines)
 const OVERLAY_DEFS = [
-  { key: 'sr',     label: 'Support / Resistance', desc: '',              color: '#e879f9', special: 'sr' },
+  { key: 'earn',   label: '財報日',                desc: 'E 標記',        color: EARN_COLOR, special: 'earn' },
+  { key: 'cost',   label: '持倉成本',              desc: '加權均價',       color: COST_COLOR, special: 'cost' },
+  { key: 'sr',     label: 'Support / Resistance', desc: '',              color: '#34d399', special: 'sr' },
   { key: 'trend',  label: '趨勢線',                desc: '自動偵測',       color: '#38bdf8', special: 'trend' },
   { key: 'regch',  label: '回歸通道',              desc: '±1σ/±2σ',       color: '#a78bfa',
     lines: [{ f: 'reg_mid', c: '#a78bfa', width: 2 },
@@ -153,7 +165,7 @@ const DEFAULT_ACTIVE = {
   st: false, psar: false, chand: false, pivots: false, fib: false, vp: false,
   squeeze: false, atr: false, cci: false, mfi: false, cmf: false, aroon: false,
   bbpct: false, willr: false, rs: false, obv: false, adl: false, kdj: false, rvol: false,
-  td: true,
+  td: true, earn: true, cost: true,
 };
 
 // 圖面顏色來自 index.css 的 --chart-* token：亮色下維持原本的深色圖面，
@@ -799,6 +811,18 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
   const [showMA, setShowMA] = useState(Object.fromEntries(MA_DEFS.map(m => [m.key, true])));
   const [activeIndicators, setActiveIndicators] = useState(DEFAULT_ACTIVE);
   const [srData, setSrData] = useState({ resistance: [], support: [] });
+  const [rawEvents, setEvents] = useState(null);   // { ticker, earnings: {past, upcoming}, positions }
+  // 換股票時舊的那份直接作廢，不用在 effect 裡先清空
+  const events = rawEvents && rawEvents.ticker === ticker?.toUpperCase() ? rawEvents : null;
+
+  useEffect(() => {
+    if (!ticker) return;
+    let alive = true;
+    axios.get(`/api/stocks/${encodeURIComponent(ticker)}/chart-events`)
+      .then(res => { if (alive) setEvents(res.data); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [ticker]);
 
   // Refs for DOM containers
   const containerRef = useRef(null);
@@ -923,6 +947,34 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
     if (pc) {
       chartsRef.current.price = pc;
 
+      // ── 財報日：整根高度的淡色直條（另一個隱藏價格軸上的柱狀圖）＋K 棒上方的 E ──
+      // 直條要比 K 棒先加，才會畫在 K 棒後面。
+      const earnTimes = [];
+      if (active.earn && events?.earnings?.past?.length) {
+        const dates = bars.map(b => barDate(b.time));
+        const hit = new Set();
+        events.earnings.past.forEach(ev => {
+          if (ev.date < dates[0]) return;          // 區間起點之前的財報
+          // 落在「日期 ≤ 財報日」的最後一根：日線就是當天，週／月線是包含那天的那根
+          let lo = 0, hi = dates.length - 1, idx = -1;
+          while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (dates[mid] <= ev.date) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+          }
+          if (idx >= 0) hit.add(bars[idx].time);
+        });
+        earnTimes.push(...[...hit].sort((a, b) => a - b));
+        if (earnTimes.length) {
+          const band = pc.addSeries(HistogramSeries, {
+            priceScaleId: 'earn', lastValueVisible: false, priceLineVisible: false,
+            color: `${EARN_COLOR}2e`,
+          });
+          band.priceScale().applyOptions({ visible: false, scaleMargins: { top: 0, bottom: 0 } });
+          band.setData(earnTimes.map(time => ({ time, value: 1 })));
+          seriesRef.current.earn_band = band;
+        }
+      }
+
       const candle = pc.addSeries(CandlestickSeries, {
         upColor: '#34d399', downColor: '#f87171',
         borderUpColor: '#34d399', borderDownColor: '#f87171',
@@ -932,9 +984,9 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
       seriesRef.current.candle = candle;
 
       // Simple MAs
-      MA_DEFS.forEach(({ key, color }) => {
+      MA_DEFS.forEach(({ key, color, width }) => {
         const s = pc.addSeries(LineSeries, {
-          color, lineWidth: 1, crosshairMarkerVisible: false,
+          color, lineWidth: width, crosshairMarkerVisible: false,
           lastValueVisible: false, priceLineVisible: false, visible: showMARef.current[key],
         });
         s.setData(bars.filter(b => b[key] != null).map(b => ({ time: b.time, value: b[key] })));
@@ -983,6 +1035,11 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
         seriesRef.current.ov_psar = s;
       }
 
+      // 全部 K 棒標記（九轉、財報 E）排序後一次設定
+      const candleMarks = earnTimes.map(time => ({
+        time, position: 'aboveBar', color: EARN_COLOR, shape: 'square', text: 'E', size: 0.6,
+      }));
+
       // 神奇九轉 — only the completed 9s are drawn; marking every bar of every
       // run buries the candles under text. The running count lives in the alert
       // strip and the hover readout instead.
@@ -992,19 +1049,37 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
           .map(b => (b.td_setup <= -9
             ? { time: b.time, position: 'belowBar', color: '#34d399', shape: 'arrowUp',   text: '低9' }
             : { time: b.time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', text: '高9' }));
-        if (marks.length) createSeriesMarkers(candle, marks);
+        candleMarks.push(...marks);
+      }
+
+      if (candleMarks.length) {
+        createSeriesMarkers(candle, candleMarks.sort((a, b) => a.time - b.time));
+      }
+
+      // ── 持倉成本：每個組合一條（跨帳戶已加權平均）──
+      if (active.cost && events?.positions?.length) {
+        events.positions.forEach(pos => candle.createPriceLine({
+          price: pos.avg_cost, color: COST_COLOR, lineWidth: 2, lineStyle: 2,
+          axisLabelVisible: true,
+          title: events.positions.length > 1 ? `成本 ${pos.portfolio}` : '成本',
+        }));
       }
 
       // Support / Resistance price lines
+      // 價格軸標籤重疊時 lightweight-charts 會把標籤推開，S/R 一多成本標籤就被擠到
+      // 離線好幾格的地方。所以只有強度 ≥3 的 S/R 才掛軸標籤，且離成本 1.5% 內的不掛。
       if (active.sr) {
         const { resistance, support } = srData;
+        const costs = active.cost ? (events?.positions ?? []).map(p => p.avg_cost) : [];
+        const srLabel = lvl => lvl.strength >= 3
+          && !costs.some(c => Math.abs(lvl.price - c) / c < 0.015);
         resistance.forEach(lvl => candle.createPriceLine({
           price: lvl.price, color: `rgba(248,113,113,${0.35 + lvl.strength * 0.1})`,
-          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: true, title: '',
+          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: srLabel(lvl), title: '',
         }));
         support.forEach(lvl => candle.createPriceLine({
           price: lvl.price, color: `rgba(52,211,153,${0.35 + lvl.strength * 0.1})`,
-          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: true, title: '',
+          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: srLabel(lvl), title: '',
         }));
       }
 
@@ -1219,7 +1294,7 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
       chartsRef.current = {};
       seriesRef.current = {};
     };
-  }, [bars, loading, error, activeIndicators, barMap, srData, analytics, forceTrend]);
+  }, [bars, loading, error, activeIndicators, barMap, srData, analytics, forceTrend, events]);
 
   // ── 主題切換：canvas 不會跟 CSS 變數，得手動把新調色盤套到每張圖 ──────
   useEffect(() => Theme.subscribe(() => {
@@ -1966,16 +2041,79 @@ export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytic
               </div>
             )}
             <div className="flex flex-wrap gap-1.5 ml-auto">
-              {MA_DEFS.map(({ key, label, color }) => (
+              {MA_DEFS.map(({ key, label, color, width }) => (
                 <button key={key} onClick={() => toggleMA(key)}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${showMA[key] ? 'opacity-100' : 'opacity-30'}`}
                   style={{ borderColor: showMA[key] ? color : BORDER, background: showMA[key] ? `${color}22` : 'transparent', color }}>
-                  <span className="w-3 h-px rounded-full inline-block" style={{ background: color }} />
+                  <span className="w-4 rounded-full inline-block" style={{ background: color, height: width + 1 }} />
                   {label}
+                  {display?.[key] != null && <span className="font-mono font-normal">{display[key].toFixed(2)}</span>}
                 </button>
               ))}
             </div>
           </div>
+
+          {/* ── 圖例：每種線是什麼。紅綠只代表壓力／支撐，均線一律是其他顏色 ── */}
+          {(() => {
+            const last = bars[bars.length - 1]?.close;
+            const showTL = activeIndicators.trend && trendable && trendLines.length > 0;
+            const up = events?.earnings?.upcoming;
+            const daysTo = up ? Math.round((new Date(`${up.date}T00:00:00`) - new Date(new Date().toDateString())) / 86400000) : null;
+            const Swatch = ({ color, dashed, faded }) => (
+              <span className="inline-block w-5 align-middle" style={{
+                borderTop: `2px ${dashed ? 'dashed' : 'solid'} ${color}`, opacity: faded ? 0.4 : 1,
+              }} />
+            );
+            const items = [];
+            if (showTL) items.push(
+              <span key="tl" className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-semibold text-[var(--text-secondary)]">趨勢線</span>
+                <Swatch color="#f87171" /> 壓力
+                <Swatch color="#34d399" /> 支撐
+                <Swatch color="#94a3b8" dashed /> 往後延伸
+                <Swatch color="#94a3b8" faded /> 已跌破
+              </span>);
+            if (activeIndicators.sr && (srData.resistance.length || srData.support.length)) items.push(
+              <span key="sr" className="flex items-center gap-1.5">
+                <span className="font-semibold text-[var(--text-secondary)]">水平線</span>
+                <span className="text-[#f87171]">紅＝壓力區</span><span className="text-[#34d399]">綠＝支撐區</span>
+              </span>);
+            if (activeIndicators.earn && events?.earnings) items.push(
+              <span key="earn" className="flex items-center gap-1.5">
+                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-sm text-[9px] font-bold text-black" style={{ background: EARN_COLOR }}>E</span>
+                財報日
+                {up && (
+                  <span style={{ color: EARN_COLOR }}>
+                    · 下次 {up.date.slice(5).replace('-', '/')}{up.time_of_day ? ` ${up.time_of_day}` : ''}
+                    {up.confirmed ? '' : '（預估）'}{daysTo != null && daysTo >= 0 ? `，還有 ${daysTo} 天` : ''}
+                  </span>
+                )}
+              </span>);
+            if (activeIndicators.cost && events?.positions?.length) items.push(
+              <span key="cost" className="flex items-center gap-1.5 flex-wrap">
+                <Swatch color={COST_COLOR} dashed />
+                {events.positions.map(pos => {
+                  const pnl = last ? (last / pos.avg_cost - 1) * 100 : null;
+                  return (
+                    <span key={pos.portfolio} title={`${pos.accounts.join(' + ')} · ${pos.shares} 股`}>
+                      成本{events.positions.length > 1 ? ` ${pos.portfolio}` : ''}{' '}
+                      <span className="font-mono" style={{ color: COST_COLOR }}>{pos.avg_cost.toFixed(2)}</span>
+                      {pnl != null && (
+                        <span className={`font-mono ml-1 ${pnl >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+                          {pnl >= 0 ? '+' : ''}{pnl.toFixed(1)}%
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
+              </span>);
+            if (!items.length) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-4 py-1.5 border-b border-[var(--glass-border)] text-[11px] text-[var(--text-muted)]">
+                {items}
+              </div>
+            );
+          })()}
 
           {/* Candlestick */}
           <div ref={priceRef} style={{ width: '100%', height: 380 }} />

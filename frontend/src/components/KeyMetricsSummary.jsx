@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 
 const GROUP_COLORS = {
     cyan:    { border: 'rgba(0,212,255,0.18)',  bg: 'rgba(0,212,255,0.05)',  accent: 'var(--accent-cyan)',    tab: 'rgba(0,212,255,0.12)' },
@@ -106,7 +106,6 @@ export default function KeyMetricsSummary({ ticker }) {
                     Key Metrics
                 </span>
                 {groups.map((g, i) => {
-                    const gc = GROUP_COLORS[g.color] ?? GROUP_COLORS.cyan;
                     return (
                         <button
                             key={g.name}

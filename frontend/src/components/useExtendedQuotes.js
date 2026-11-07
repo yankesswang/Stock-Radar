@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 
 /**
  * Pre/post-market quotes for a list of tickers, keyed by symbol.

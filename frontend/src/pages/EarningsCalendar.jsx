@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   ChevronLeft, ChevronRight, RefreshCw, CalendarDays,
   TrendingUp, DollarSign, Clock,

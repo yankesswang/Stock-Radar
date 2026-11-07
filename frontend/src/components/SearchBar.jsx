@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'wouter';
 import { Search, Loader2 } from 'lucide-react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 
 export default function SearchBar() {
     const [query, setQuery] = useState('');

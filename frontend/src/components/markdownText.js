@@ -4,13 +4,16 @@
 
 // ReportReader 的目錄要靠 id 跳，slug 規則兩邊必須一致 → 從這裡 export。
 export function headingId(text) {
-  return 'h-' + String(text)
+  const slug = String(text)
     .trim()
     .replace(/[#*`]/g, '')
     .replace(/\s+/g, '-')
     .replace(/[^\p{L}\p{N}-]/gu, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
     .slice(0, 60)
     .toLowerCase();
+  return `h-${slug}`;
 }
 
 

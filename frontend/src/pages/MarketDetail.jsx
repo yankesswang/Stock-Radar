@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { ArrowLeft, TrendingDown, TrendingUp } from 'lucide-react';
 import PriceChartPanel from '../components/PriceChartPanel';
 import { useExtendedQuotes } from '../components/useExtendedQuotes';

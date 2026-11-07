@@ -38,8 +38,7 @@ const GROUPS = [
     items: [
       { href: '/macro', label: '市場', icon: Globe2, hint: 'Macro · 板塊 RS',
         match: ['/macro', '/sectors'] },
-      { href: '/briefing', label: '每日報告', icon: LayoutList, hint: '總覽 · 市場個股 · 市場新聞' },
-      { href: '/war-room', label: 'War Room', icon: Radar, hint: '戰情室 · 盤後復盤 · Signals',
+      { href: '/war-room', label: 'War Room', icon: Radar, hint: '戰情室 · 盤後復盤 · 訊號雷達 · 新聞線／市場日報',
         match: ['/war-room', '/review', '/signals'] },
       { href: '/earnings', label: '財報', icon: CalendarDays, hint: '行事曆 · 結論 · 論點追蹤',
         match: ['/earnings'] },

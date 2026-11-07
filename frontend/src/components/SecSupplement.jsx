@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Sparkles, AlertTriangle, Check } from 'lucide-react';
 
 // stockanalysis 的 TTM 快照：補 SEC 沒有的欄位（員工數、WACC、Z-Score、分析師預估），

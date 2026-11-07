@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Bell, BellRing, CalendarDays, TrendingUp, X, Trash2 } from 'lucide-react';
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { TrendingUp, TrendingDown, Activity, RefreshCw, AlertTriangle, Globe2 } from 'lucide-react';
 import { Link } from 'wouter';
 import { useExtendedQuotes } from '../components/useExtendedQuotes';

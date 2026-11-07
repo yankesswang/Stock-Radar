@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Link } from 'wouter';
 import {
     ArrowUp, ArrowDown, ChevronsUpDown,

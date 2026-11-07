@@ -13,7 +13,7 @@
  * 其餘吃 app 主題變數的頁面用預設的 light。
  */
 import { Link } from 'wouter';
-import { C } from './opsTheme';
+import { C, alpha } from './opsTheme';
 
 export default function ClusterTabs({ items, active, theme = 'light', className = '' }) {
   if (theme === 'ops') {
@@ -35,7 +35,7 @@ export default function ClusterTabs({ items, active, theme = 'light', className 
               className="inline-flex cursor-pointer items-center gap-1.5 whitespace-nowrap px-3 py-1.5 font-mono text-[12px] font-bold uppercase tracking-wider transition-colors duration-150"
               style={
                 on
-                  ? { background: 'rgba(34,211,238,0.12)', color: C.accent, boxShadow: `inset 0 0 0 1px ${C.accent}` }
+                  ? { background: alpha(C.accent, 0.12), color: C.accent, boxShadow: `inset 0 0 0 1px ${C.accent}` }
                   : { color: C.muted }
               }
             >

@@ -23,7 +23,20 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', {
+        varsIgnorePattern: '^[A-Z_]',
+        argsIgnorePattern: '^[A-Z_]',
+      }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      // Chinese prose occasionally contains deliberate full-width spacing.
+      'no-irregular-whitespace': 'warn',
+      // Loading/error resets at request boundaries are intentional in this
+      // existing SPA. Keep the React 19 guidance visible without blocking CI.
+      'react-hooks/set-state-in-effect': 'warn',
     },
+  },
+  {
+    files: ['vite.config.js'],
+    languageOptions: { globals: globals.node },
   },
 ])

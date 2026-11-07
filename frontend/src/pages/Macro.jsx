@@ -20,7 +20,7 @@
  * 的線型排序，顏色只是輔助。
  */
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   TrendingUp, TrendingDown, Activity, RefreshCw, Loader2,
   AlertTriangle, Check,

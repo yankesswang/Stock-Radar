@@ -1,6 +1,6 @@
 // Ops-center 暗色系的基礎元件（角標面板、徽章、篩選晶片、空狀態）。
 // 只放元件；常數與工具在 opsTheme.js。
-import { C } from './opsTheme';
+import { C, alpha } from './opsTheme';
 
 export function Corner({ pos }) {
   const map = {
@@ -21,7 +21,7 @@ export function Panel({ label, status, children, className = '' }) {
   return (
     <section
       className={`relative border p-4 ${className}`}
-      style={{ background: C.panel, borderColor: C.border, boxShadow: 'inset 0 0 24px rgba(34,211,238,0.03)' }}
+      style={{ background: C.panel, borderColor: C.border, boxShadow: `inset 0 0 24px ${alpha(C.accent, 0.03)}` }}
     >
       <Corner pos="tl" /><Corner pos="tr" /><Corner pos="bl" /><Corner pos="br" />
       {label && (
@@ -41,7 +41,7 @@ export function Badge({ color, children }) {
   return (
     <span
       className="inline-flex items-center rounded px-2 py-0.5 font-mono text-[14px] font-semibold"
-      style={{ color, background: `${color}1A`, border: `1px solid ${color}55` }}
+      style={{ color, background: `${alpha(color, 0.102)}`, border: `1px solid ${alpha(color, 0.333)}` }}
     >
       {children}
     </span>
@@ -65,7 +65,7 @@ export function FilterChip({ active, color, children, onClick, title }) {
       style={{
         borderColor: active ? c : C.border,
         color: active ? c : C.muted,
-        background: active ? `${c}12` : 'transparent',
+        background: active ? `${alpha(c, 0.071)}` : 'transparent',
       }}
     >
       {children}

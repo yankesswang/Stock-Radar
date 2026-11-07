@@ -1291,3 +1291,52 @@ a.md-ticker:hover { background: rgba(0, 82, 255, 0.18); text-decoration: none; }
 :root[data-theme="dark"] select,
 :root[data-theme="dark"] input,
 :root[data-theme="dark"] textarea { color-scheme: dark; }
+
+/* ── Ops-center 色票（War Room / 盤後復盤 / 訊號雷達 共用）────────────────
+ * 以前 opsTheme.js 寫死一組暗色 hex，不管 data-theme 怎麼切都不會變。
+ * 現在 C.* 全部指向這裡的變數，亮／暗兩組各自調過對比：
+ * 亮色版的語意色（多方/防禦/警戒/中性）在白底上都 ≥ 4.5:1。 */
+:root {
+  --ops-bg: #f1f5f9;
+  --ops-panel: #ffffff;
+  --ops-deep: #f8fafc;         /* 面板內凹區塊、hover 底 */
+  --ops-border: #d9e0e8;
+  --ops-text: #0f172a;
+  --ops-sub: #334155;
+  --ops-dim: #475569;
+  --ops-muted: #64748b;
+  --ops-placeholder: #94a3b8;
+  --ops-ink: #0f172a;          /* 疊色用：暗色版是白、亮色版是深藍 */
+  --ops-long: #0f7d72;
+  --ops-short: #dc2626;
+  --ops-amber: #b45309;
+  --ops-accent: #0e7490;
+  --ops-mimi: #7c3aed;
+  --ops-hit: #0f766e;
+  --ops-track: #6d28d9;
+  --ops-signal: #4a6a8f;
+  --ops-shadow: rgba(15, 23, 42, 0.14);
+  --ops-backdrop: rgba(15, 23, 42, 0.45);
+}
+:root[data-theme="dark"] {
+  --ops-bg: #020617;
+  --ops-panel: #0f172a;
+  --ops-deep: #0b1220;
+  --ops-border: #1e293b;
+  --ops-text: #f8fafc;
+  --ops-sub: #cbd5e1;
+  --ops-dim: #94a3b8;
+  --ops-muted: #64748b;
+  --ops-placeholder: #475569;
+  --ops-ink: #ffffff;
+  --ops-long: #26a69a;
+  --ops-short: #ef5350;
+  --ops-amber: #f59e0b;
+  --ops-accent: #22d3ee;
+  --ops-mimi: #a78bfa;
+  --ops-hit: #5eead4;
+  --ops-track: #c4b5fd;
+  --ops-signal: #7da0c4;
+  --ops-shadow: rgba(0, 0, 0, 0.55);
+  --ops-backdrop: rgba(2, 6, 23, 0.82);
+}

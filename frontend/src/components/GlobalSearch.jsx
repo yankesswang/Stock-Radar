@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Search, X, TrendingUp, Building2, Loader2 } from 'lucide-react';
 
 // Simple debounce hook

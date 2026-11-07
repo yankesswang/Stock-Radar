@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, LabelList,
 } from 'recharts';
-import { ArrowLeft, ChevronDown, BarChart3 } from 'lucide-react';
+import { ChevronDown, BarChart3 } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import { CHART_GRID, CHART_AXIS } from '../components/chartTheme';
 
 const COLORS = [
@@ -102,24 +103,9 @@ export default function StockRatios() {
             .finally(() => setLoading(false));
     }, [ticker]);
 
-    if (loading) {
-        return (
-            <div className="container py-20 flex justify-center">
-                <div className="w-6 h-6 border-2 border-[var(--accent-purple)] border-t-transparent rounded-full animate-spin" />
-            </div>
-        );
-    }
+    if (loading) return <StockPageFallback ticker={ticker} />;
 
-    if (error) {
-        return (
-            <div className="container py-20 text-center">
-                <p className="text-[var(--text-muted)] text-base">{error}</p>
-                <Link href={`/stock/${ticker}`} className="text-sm text-[var(--accent-purple)] hover:underline mt-4 inline-block">
-                    Back to {ticker}
-                </Link>
-            </div>
-        );
-    }
+    if (error) return <StockPageFallback ticker={ticker} error={error} />;
 
     const toggleSection = (name) => setOpenSections(prev => ({ ...prev, [name]: !prev[name] }));
 
@@ -142,26 +128,10 @@ export default function StockRatios() {
 
     return (
         <div className="container py-10 space-y-6 animate-fade-in">
-            {/* Navigation */}
-            <Link
-                href={`/stock/${ticker}`}
-                className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-            >
-                <ArrowLeft size={14} /> Back to {ticker}
-            </Link>
-
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 pb-6 border-b border-[var(--glass-border)]">
-                <div>
-                    <div className="flex items-center gap-3 mb-2">
-                        <h1 className="text-3xl font-extrabold tracking-tight">{ticker}</h1>
-                        <span className="badge badge-neutral">Financial Ratios</span>
-                    </div>
-                    <p className="text-[15px] text-[var(--text-muted)]">
-                        {totalMetrics} ratios &middot; {data.periods.length} fiscal periods &middot; Data as of {data.date}
-                    </p>
-                </div>
-            </div>
+            <StockPageHeader
+                ticker={ticker}
+                meta={<>{totalMetrics} 項比率 · {data.periods.length} 個會計期間 · 資料日 {data.date}</>}
+            />
 
             {/* Chart */}
             {chartData.length > 0 && selectedMetric && (

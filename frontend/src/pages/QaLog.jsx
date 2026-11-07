@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
     MessageSquare, Search, Star, ChevronRight, Filter, X, Clock,
     ExternalLink, AlertTriangle, Trash2, User, Bot,
@@ -279,14 +279,13 @@ function SessionCard({ session: s, open, onToggle, onStar, onDelete }) {
 }
 
 function Thread({ messages, sessionId, onStar }) {
-    let lastDay = day(messages[0]?.created_at);
     return (
         <div className="space-y-3">
             {messages.map((m, i) => {
                 const d = day(m.created_at);
+                const previousDay = i > 0 ? day(messages[i - 1]?.created_at) : null;
                 // 同一段對話跨天才插分隔線 —— 一天內問完的不需要
-                const sep = i > 0 && d && d !== lastDay ? d : null;
-                if (sep) lastDay = d;
+                const sep = i > 0 && d && d !== previousDay ? d : null;
                 return (
                     <div key={m.id} className="space-y-3">
                         {sep && (

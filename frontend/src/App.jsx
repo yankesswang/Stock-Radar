@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { Route, Switch, Redirect } from 'wouter';
+import { Route, Switch, Redirect, useSearch } from 'wouter';
 import Navbar from './components/Navbar';
 import MacNotifier from './components/MacNotifier';
 import StockChatDock from './components/StockChatDock';
@@ -8,6 +8,7 @@ import Home from './pages/Home';
 const ValuationList = lazy(() => import('./pages/ValuationList'));
 const StockDetail = lazy(() => import('./pages/StockDetail'));
 const StockMetrics = lazy(() => import('./pages/StockMetrics'));
+const StockFinancials = lazy(() => import('./pages/StockFinancials'));
 const StockStatistics = lazy(() => import('./pages/StockStatistics'));
 const StockRatios = lazy(() => import('./pages/StockRatios'));
 const StockForecast = lazy(() => import('./pages/StockForecast'));
@@ -35,8 +36,19 @@ const StockPeers = lazy(() => import('./pages/StockPeers'));
 import StockEarningsNotes from './pages/StockEarningsNotes';
 const WarRoom = lazy(() => import('./pages/WarRoom'));
 const PostMarketReview = lazy(() => import('./pages/PostMarketReview'));
-const Briefing = lazy(() => import('./pages/Briefing'));
 const QaLog = lazy(() => import('./pages/QaLog'));
+
+// 舊每日報告的書籤：帶著原本的分頁去對應的新位置
+function BriefingRedirect() {
+  const q = new URLSearchParams(useSearch() || '');
+  const tab = q.get('tab');
+  const section = q.get('section');
+  let to = '/war-room';
+  if (tab === 'notes') to = '/war-room?panel=news';
+  else if (tab === 'market') to = section === 'warroom' || section === 'scan' ? '/review' : '/war-room?panel=digest';
+  else if (tab === 'review' || tab === 'ai') to = '/review';
+  return <Redirect to={to} replace />;
+}
 
 function PageLoader() {
   return (
@@ -73,10 +85,7 @@ function App() {
             <Route path="/stock/:ticker/ai" component={StockAIAnalysis} />
             <Route path="/stock/:ticker/earnings-notes" component={StockEarningsNotes} />
             <Route path="/stock/:ticker/segments" component={StockSegments} />
-            {/* 三大表已併進 metrics 頁的「財務報表與基本面」區塊，舊書籤直接落到損益表分頁 */}
-            <Route path="/stock/:ticker/financials">
-                {(p) => <Redirect to={`/stock/${p.ticker}/metrics?tab=income`} replace />}
-            </Route>
+            <Route path="/stock/:ticker/financials" component={StockFinancials} />
             <Route path="/qa" component={QaLog} />
             <Route path="/macro" component={Macro} />
             <Route path="/sectors" component={Sectors} />
@@ -91,10 +100,12 @@ function App() {
             <Route path="/portfolio/gsheet" component={GSheetPortfolio} />
             <Route path="/portfolio/:id" component={PortfolioDetail} />
             <Route path="/portfolio" component={PortfolioList} />
-            <Route path="/briefing" component={Briefing} />
+            {/* 每日報告（/briefing）2026-09-07 併進戰情室：總覽＝戰情室本身、
+                市場新聞＝新聞線面板、市場個股＝市場日報面板、持倉復盤＝/review */}
+            <Route path="/briefing" component={BriefingRedirect} />
             {/* 舊書籤：直接進完整版的對應分頁，不再繞經 Portfolio 頁 */}
-            <Route path="/market-digest"><Redirect to="/briefing?tab=market" /></Route>
-            <Route path="/finance-digest"><Redirect to="/briefing?tab=notes" /></Route>
+            <Route path="/market-digest"><Redirect to="/war-room?panel=digest" /></Route>
+            <Route path="/finance-digest"><Redirect to="/war-room?panel=news" /></Route>
             {/* 復盤的完整畫面只有一份，在 /review —— 每日報告不再重畫一次 */}
             <Route path="/ai-report"><Redirect to="/review" /></Route>
             <Route path="/war-room" component={WarRoom} />

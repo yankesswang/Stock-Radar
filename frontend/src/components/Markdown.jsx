@@ -2,6 +2,7 @@ import { Component, useMemo } from 'react';
 import { Link } from 'wouter';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkCjkFriendly from 'remark-cjk-friendly';
 import { clean, headingId } from './markdownText';
 
 // 防止單一筆內容 render 失敗就讓整頁白屏（App 無全域 error boundary）
@@ -278,7 +279,9 @@ function buildComponents(tickers, markHeld, quotes) {
   };
 }
 
-const REMARK = [remarkGfm];
+// CommonMark 的 flanking 規則遇到全形標點會失效：「**結論：**現價」的收尾 ** 前面是
+// 「：」後面接中文，不算 closing → 星號原樣露出來。cjk-friendly 放寬這條規則。
+const REMARK = [remarkGfm, remarkCjkFriendly];
 const REHYPE = [rehypeReportText];
 
 /**

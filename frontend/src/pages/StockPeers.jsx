@@ -14,10 +14,11 @@
  */
 import { useState, useEffect, useMemo } from 'react';
 import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
-  ArrowLeft, Loader2, Users, Info, TrendingUp, TrendingDown,
+  Loader2, Users, Info, TrendingUp, TrendingDown,
 } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import {
   MIN_RANK_N, fmtNum, fmtMoney, fmtCap, fmtDiff, diffTone,
 } from '../components/peerFormat';
@@ -299,34 +300,24 @@ export default function StockPeers() {
   const im = data?.implied || {};
 
   return (
-    <div className="container animate-fade-in space-y-6 py-6">
-      <Link href={`/stock/${ticker}`}
-            className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]">
-        <ArrowLeft size={14} /> 回到 {ticker}
-      </Link>
-
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[var(--accent-cyan)] to-[var(--accent-purple)] shadow-lg">
-          <Users size={17} className="text-white" />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold">{ticker} · 同業比較</h1>
-          <p className="text-sm text-[var(--text-muted)]">
-            {data
-              ? `${data.industry} · ${data.peer_count - 1} 檔同業 · ${shown.length} 個指標（本檔不計入中位數與區間）`
-              : '載入中…'}
-          </p>
-          {/* 資料多舊要寫在臉上 —— 兩張表來自兩條不同節奏的管線 */}
-          {data?.as_of && (
-            <p className="mt-0.5 text-[11px] text-[var(--text-meta)]">
-              倍數／報酬率 {data.as_of.metrics ?? '—'}（每週管線）
-              {data.as_of.statistics && data.as_of.statistics !== data.as_of.metrics && (
-                <> · 利潤率／成長／評分 {data.as_of.statistics}（每日補抓管線輪到才更新）</>
-              )}
-            </p>
-          )}
-        </div>
-      </div>
+    <div className="container animate-fade-in space-y-6 py-10">
+      <StockPageHeader
+        ticker={ticker}
+        meta={data ? (
+          <>
+            {data.industry} · {data.peer_count - 1} 檔同業 · {shown.length} 個指標（本檔不計入中位數與區間）
+            {/* 資料多舊要寫在臉上 —— 兩張表來自兩條不同節奏的管線 */}
+            {data.as_of && (
+              <span className="mt-0.5 block text-[11px]">
+                倍數／報酬率 {data.as_of.metrics ?? '—'}（每週管線）
+                {data.as_of.statistics && data.as_of.statistics !== data.as_of.metrics && (
+                  <> · 利潤率／成長／評分 {data.as_of.statistics}（每日補抓管線輪到才更新）</>
+                )}
+              </span>
+            )}
+          </>
+        ) : '載入中…'}
+      />
 
       {loading && (
         <div className="glass flex items-center justify-center gap-3 rounded-xl p-16 text-[var(--text-muted)]">

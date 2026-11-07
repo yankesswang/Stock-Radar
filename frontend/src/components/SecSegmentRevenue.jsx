@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { PieChart, ExternalLink } from 'lucide-react';
 
 // 分部門營收，資料取自 SEC 申報而不是爬蟲 CSV。
@@ -33,7 +33,9 @@ export default function SecSegmentRevenue({ ticker }) {
                 setAxisIdx(0);
                 setState(d.axes?.length ? 'ok' : 'none');
             })
-            .catch(() => setState('none'));
+            // 503 是背景排程佔著 DB 的暫時性錯誤，不能跟「這檔沒有分部門資料」
+            // 一樣整塊收掉——那正是「分部門營收突然不見了」的來源
+            .catch((e) => setState(e?.response?.status === 503 ? 'busy' : 'none'));
     }, [ticker, months]);
 
     const axis = data?.axes?.[axisIdx] ?? null;
@@ -103,6 +105,12 @@ export default function SecSegmentRevenue({ ticker }) {
                         </button>
                     ))}
                 </div>
+            )}
+
+            {state === 'busy' && (
+                <p className="text-[12.5px] text-[var(--text-secondary)] py-6 text-center">
+                    資料庫正在更新中，稍後重新整理即可。
+                </p>
             )}
 
             {state === 'loading' && (

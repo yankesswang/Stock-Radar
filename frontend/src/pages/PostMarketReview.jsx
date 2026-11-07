@@ -16,9 +16,7 @@
  * 第三層附錄（逐檔全文／帳本／稽核明細）收進「完整報告」分頁，不再預設全展開。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import axios from '../lib/apiClient';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, Cell, ReferenceLine, LabelList,
@@ -28,21 +26,26 @@ import {
   ChevronLeft, ChevronRight, ChevronDown, Telescope, FileText, Activity,
   LayoutDashboard, ListChecks, Crosshair, BookOpen, Search, Flame, Sparkles,
 } from 'lucide-react';
-import { C, actionMeta, RISK_META, fmt, signPct, mmdd } from '../components/opsTheme';
+import { C, alpha, actionMeta, RISK_META, fmt, signPct, mmdd } from '../components/opsTheme';
 import { Panel, Badge, Empty, FilterChip } from '../components/opsUi';
 import { clean as cleanMd } from '../components/markdownText';
 import AttentionPositionsPanel from '../components/AttentionPositions';
 import { splitBriefSections, normalizeTickerBlocks } from '../components/warRoomAttention';
 import { mergeDecisionsWithCards } from '../components/reviewMerge';
 import ClusterTabs from '../components/ClusterTabs';
+import OpsProse from '../components/OpsMarkdown';
+import OpsDatePicker from '../components/OpsDatePicker';
+import MorningBriefCards from '../components/MorningBriefCards';
+import { parseMorningBrief } from '../components/morningBrief';
 import { OPS_TABS } from '../components/clusterTabsDef';
 
+// key 是 API 的 enum，label 一律中文（同 scripts/zh_terms.py 的對照）
 const REGIME = {
-  'risk-on': { label: 'RISK-ON', color: C.long, Icon: ShieldCheck },
-  risk_on: { label: 'RISK-ON', color: C.long, Icon: ShieldCheck },
-  'risk-off': { label: 'RISK-OFF', color: C.short, Icon: ShieldAlert },
-  risk_off: { label: 'RISK-OFF', color: C.short, Icon: ShieldAlert },
-  mixed: { label: 'MIXED', color: C.amber, Icon: Scale },
+  'risk-on': { label: '風險偏好', color: C.long, Icon: ShieldCheck },
+  risk_on: { label: '風險偏好', color: C.long, Icon: ShieldCheck },
+  'risk-off': { label: '避險', color: C.short, Icon: ShieldAlert },
+  risk_off: { label: '避險', color: C.short, Icon: ShieldAlert },
+  mixed: { label: '多空分歧', color: C.amber, Icon: Scale },
 };
 
 const TOOLTIP_STYLE = {
@@ -53,43 +56,8 @@ const TOOLTIP_STYLE = {
   color: C.sub,
 };
 
-// ── 深色 markdown（完整報告用；app 的 Markdown.jsx 吃淺色主題變數，這裡自帶）────
-const MD_DARK = {
-  h1: (p) => <h1 className="mb-2 mt-4 text-2xl font-bold" style={{ color: C.text }} {...p} />,
-  h2: (p) => <h2 className="mb-2.5 mt-7 border-b pb-1.5 text-[21px] font-semibold" style={{ color: C.accent, borderColor: C.border }} {...p} />,
-  h3: (p) => <h3 className="mb-2 mt-5 text-[18.5px] font-semibold" style={{ color: C.text }} {...p} />,
-  h4: (p) => <h4 className="mb-2 mt-6 border-l-2 pl-2.5 font-mono text-[18.5px] font-bold tracking-wide" style={{ color: C.text, borderColor: C.accent }} {...p} />,
-  p: (p) => <p className="my-3 text-[18px] leading-[1.75]" style={{ color: C.sub }} {...p} />,
-  ul: (p) => <ul className="my-3 list-disc space-y-2 pl-6 text-[18px] leading-[1.75]" style={{ color: C.sub }} {...p} />,
-  ol: (p) => <ol className="my-3 list-decimal space-y-2 pl-6 text-[18px] leading-[1.75]" style={{ color: C.sub }} {...p} />,
-  li: (p) => <li className="leading-relaxed" {...p} />,
-  strong: (p) => <strong style={{ color: C.text }} {...p} />,
-  blockquote: (p) => (
-    <blockquote className="my-3.5 border-l-2 pl-3.5 text-[17px] leading-[1.75]" style={{ borderColor: C.accent, color: C.muted }} {...p} />
-  ),
-  code: ({ className, children, ...p }) => {
-    const isBlock = /language-/.test(className || '') || String(children ?? '').includes('\n');
-    return isBlock ? (
-      <code className="my-2 block overflow-x-auto whitespace-pre rounded-lg p-3.5 text-[15.5px]" style={{ background: 'rgba(0,0,0,0.4)', color: C.sub }} {...p}>{children}</code>
-    ) : (
-      <code className="rounded px-1 py-0.5 text-[15.5px]" style={{ background: 'rgba(255,255,255,0.08)', color: C.accent }} {...p}>{children}</code>
-    );
-  },
-  table: (p) => <div className="my-3 overflow-x-auto"><table className="w-full border-collapse text-[16px]" {...p} /></div>,
-  th: (p) => <th className="border px-2 py-1 text-left font-semibold" style={{ borderColor: C.border, background: 'rgba(255,255,255,0.04)', color: C.text }} {...p} />,
-  td: (p) => <td className="border px-2 py-1" style={{ borderColor: C.border, color: C.sub }} {...p} />,
-  hr: () => <hr className="my-4" style={{ borderColor: C.border }} />,
-};
-
-// Markdown prose reads best around 65-75ch per line — cap width instead of
-// letting it stretch across the full panel.
-function Prose({ children }) {
-  return (
-    <div className="mx-auto" style={{ maxWidth: 1080 }}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_DARK}>{children}</ReactMarkdown>
-    </div>
-  );
-}
+// 深色 markdown 閱讀器抽到 components/OpsMarkdown.jsx（戰情室的市場日報共用）
+const Prose = OpsProse;
 
 // ── 統計磚 ────────────────────────────────────────────────────────────────────
 function StatTile({ label, value, sub, color = C.text }) {
@@ -129,7 +97,7 @@ function TabBar({ tab, setTab, counts }) {
             {counts?.[t.id] != null && (
               <span
                 className="rounded-full px-1.5 py-0.5 font-mono text-[10px]"
-                style={{ background: active ? `${C.accent}22` : 'rgba(255,255,255,0.06)', color: active ? C.accent : C.muted }}
+                style={{ background: active ? `${alpha(C.accent, 0.133)}` : alpha(C.ink, 0.06), color: active ? C.accent : C.muted }}
               >
                 {counts[t.id]}
               </span>
@@ -177,7 +145,7 @@ function TodayFocusPanel({ decisions, openRows }) {
 
   return (
     <Panel
-      label="今日焦點 / TODAY'S FOCUS"
+      label="今日焦點"
       status={<Badge color={C.accent}><Flame size={11} className="mr-1 inline" />一眼看重點</Badge>}
     >
       {!cards.length ? (
@@ -185,7 +153,7 @@ function TodayFocusPanel({ decisions, openRows }) {
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {cards.map((c) => (
-            <div key={c.key} className="border-l-4 p-3" style={{ borderColor: c.color, background: `${c.color}0D`, borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
+            <div key={c.key} className="border-l-4 p-3" style={{ borderColor: c.color, background: `${alpha(c.color, 0.051)}`, borderTop: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}` }}>
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-3xl font-bold tabular-nums" style={{ color: c.color }}>{c.items.length}</span>
                 <span className="font-mono text-[12px] font-bold uppercase tracking-wider" style={{ color: C.text }}>{c.title}</span>
@@ -195,7 +163,7 @@ function TodayFocusPanel({ decisions, openRows }) {
                   <span
                     key={it.ticker}
                     className="inline-flex items-center gap-1 border px-2 py-1 font-mono text-[12.5px] font-bold"
-                    style={{ borderColor: `${c.color}55`, color: C.text, background: `${c.color}14` }}
+                    style={{ borderColor: `${alpha(c.color, 0.333)}`, color: C.text, background: `${alpha(c.color, 0.078)}` }}
                     title={it.note}
                   >
                     {it.ticker}
@@ -211,14 +179,34 @@ function TodayFocusPanel({ decisions, openRows }) {
 }
 
 // ── 90 秒晨報（報告標頭＋第一層；第二層「異常持倉」改由 AttentionPositionsPanel 結構化呈現）──
+// 2026-09-07 起解析成卡片（components/morningBrief.js + MorningBriefCards.jsx），跟異常持倉同一套
+// 視覺；舊格式解析不出「今天需要處理／等待條件／最大風險」任一段才退回 markdown。
 function MorningBriefPanel({ md }) {
+  const brief = useMemo(() => (md ? parseMorningBrief(md) : null), [md]);
   if (!md) return null;
+  const cards = brief?.ok;
   return (
     <Panel
-      label="90 秒晨報 / MORNING BRIEF"
-      status={<Badge color={C.accent}><FileText size={11} className="mr-1 inline" />今天要做・等待條件・最大風險</Badge>}
+      label="90 秒晨報"
+      status={
+        <Badge color={C.accent}>
+          <FileText size={11} className="mr-1 inline" />
+          {cards ? '一句話・今天要做・等待條件・最大風險' : '今天要做・等待條件・最大風險'}
+        </Badge>
+      }
     >
-      <Prose>{cleanMd(md)}</Prose>
+      {cards ? (
+        <>
+          <MorningBriefCards brief={brief} />
+          {brief.unparsed.length > 0 && (
+            <div className="mt-4 border-t pt-3" style={{ borderColor: C.border }}>
+              <Prose>{cleanMd(brief.unparsed.map((u) => `### ${u.title}\n${u.md}`).join('\n\n'))}</Prose>
+            </div>
+          )}
+        </>
+      ) : (
+        <Prose>{cleanMd(md)}</Prose>
+      )}
     </Panel>
   );
 }
@@ -229,9 +217,9 @@ function TrendPanel({ trend }) {
     () => (trend || []).filter((r) => r.scored_n).map((r) => ({ ...r, d: mmdd(r.date) })),
     [trend],
   );
-  if (rows.length < 2) return <Panel label="復盤品質曲線 / QUALITY TREND"><Empty>累積兩份以上計分卡後開始畫曲線</Empty></Panel>;
+  if (rows.length < 2) return <Panel label="復盤品質曲線"><Empty>累積兩份以上計分卡後開始畫曲線</Empty></Panel>;
   return (
-    <Panel label="復盤品質曲線 / QUALITY TREND" status={<Badge color={C.accent}>{rows.length} 份計分卡</Badge>}>
+    <Panel label="復盤品質曲線" status={<Badge color={C.accent}>{rows.length} 份計分卡</Badge>}>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div>
           <div className="mb-1 font-mono text-[11px]" style={{ color: C.sub }}>
@@ -278,13 +266,13 @@ function TrackRecordPanel({ tr }) {
     [tr],
   );
   if (!rows.length) {
-    return <Panel label="30 天決策戰績 / TRACK RECORD"><Empty>帳本尚無足夠決策樣本</Empty></Panel>;
+    return <Panel label="30 天決策戰績"><Empty>帳本尚無足夠決策樣本</Empty></Panel>;
   }
   const best = tr.best_call;
   const worst = tr.worst_call;
   return (
     <Panel
-      label={`${tr.window_days} 天決策戰績 / TRACK RECORD`}
+      label={`${tr.window_days} 天決策戰績`}
       status={<Badge color={C.accent}>{tr.n_total} 筆・{tr.fwd_trading_days} 日前瞻</Badge>}
     >
       <ResponsiveContainer width="100%" height={190}>
@@ -312,13 +300,13 @@ function TrackRecordPanel({ tr }) {
       {(best || worst) && (
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {best && (
-            <div className="border px-2.5 py-1.5 font-mono text-[11.5px]" style={{ borderColor: `${C.long}44`, color: C.sub }}>
+            <div className="border px-2.5 py-1.5 font-mono text-[11.5px]" style={{ borderColor: `${alpha(C.long, 0.267)}`, color: C.sub }}>
               🏆 <span style={{ color: C.long }}>{best.ticker} {actionMeta(best.action).label}</span>
               （{mmdd(best.date)}）5日 {signPct(best.fwd_pct)}，vs SPY {signPct(best.alpha_pct)}
             </div>
           )}
           {worst && (
-            <div className="border px-2.5 py-1.5 font-mono text-[11.5px]" style={{ borderColor: `${C.short}44`, color: C.sub }}>
+            <div className="border px-2.5 py-1.5 font-mono text-[11.5px]" style={{ borderColor: `${alpha(C.short, 0.267)}`, color: C.sub }}>
               💀 <span style={{ color: C.short }}>{worst.ticker} {actionMeta(worst.action).label}</span>
               （{mmdd(worst.date)}）5日 {signPct(worst.fwd_pct)}，vs SPY {signPct(worst.alpha_pct)}
             </div>
@@ -339,7 +327,7 @@ function OpenDecisionRow({ r }) {
   return (
     <div
       className="flex flex-wrap items-center gap-x-3 gap-y-1 border px-2.5 py-1.5"
-      style={{ borderColor: r.status === 'triggered' ? `${C.short}55` : C.border, background: 'rgba(255,255,255,0.02)' }}
+      style={{ borderColor: r.status === 'triggered' ? `${alpha(C.short, 0.333)}` : C.border, background: alpha(C.ink, 0.02) }}
       title={r.thesis || ''}
     >
       <span className="w-14 font-mono text-[13px] font-bold" style={{ color: C.text }}>{r.ticker}</span>
@@ -356,7 +344,7 @@ function OpenDecisionRow({ r }) {
         )}
         {r.status === 'pending' && r.distance_pct !== null && (
           <>
-            <span className="hidden h-1.5 w-24 overflow-hidden rounded sm:block" style={{ background: 'rgba(255,255,255,0.06)' }}>
+            <span className="hidden h-1.5 w-24 overflow-hidden rounded sm:block" style={{ background: alpha(C.ink, 0.06) }}>
               <span className="block h-full rounded" style={{ width: `${100 - barPct}%`, background: barColor, opacity: 0.85 }} />
             </span>
             <span className="font-mono text-[12px]" style={{ color: barColor }}>
@@ -395,7 +383,7 @@ function OpenDecisionsPanel({ rows }) {
 
   return (
     <Panel
-      label="未結決策追蹤 / OPEN DECISIONS"
+      label="未結決策追蹤"
       status={nTriggered
         ? <Badge color={C.short}>✅ {nTriggered} 筆已觸發待回應</Badge>
         : <Badge color={C.long}>無已觸發項目</Badge>}
@@ -414,7 +402,7 @@ function OpenDecisionsPanel({ rows }) {
                 type="button"
                 onClick={() => setShowRest((v) => !v)}
                 className="flex w-full cursor-pointer items-center gap-1.5 border px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-wider transition-colors duration-200"
-                style={{ borderColor: C.border, color: C.muted, background: 'rgba(255,255,255,0.015)' }}
+                style={{ borderColor: C.border, color: C.muted, background: alpha(C.ink, 0.015) }}
               >
                 <ChevronDown size={12} style={{ transform: showRest ? 'rotate(180deg)' : 'none', transition: 'transform 200ms' }} />
                 {showRest ? '收起' : `其餘 ${rest.length} 筆（距離較遠／尚無資料，可展開）`}
@@ -507,11 +495,11 @@ function DecisionsPanel({ journal, rows }) {
   );
 
   if (!decisions.length) {
-    return <Panel label="當日決策 / DECISIONS"><Empty>該日 journal 無決策（可能為管線失敗日）</Empty></Panel>;
+    return <Panel label="當日決策"><Empty>該日 journal 無決策（可能為管線失敗日）</Empty></Panel>;
   }
 
   return (
-    <Panel label="當日決策 / DECISIONS" status={<Badge color={C.accent}>{decisions.length} 筆</Badge>}>
+    <Panel label="當日決策" status={<Badge color={C.accent}>{decisions.length} 筆</Badge>}>
       <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b pb-3" style={{ borderColor: C.border }}>
         <FilterChip active={group === 'all'} onClick={() => setGroup('all')}>ALL {decisions.length}</FilterChip>
         {groups.map((g) => (
@@ -526,13 +514,13 @@ function DecisionsPanel({ journal, rows }) {
         )}
         <div
           className="ml-auto flex items-center gap-1.5 border px-2 py-1"
-          style={{ borderColor: C.border, background: '#0B1220' }}
+          style={{ borderColor: C.border, background: C.deep }}
         >
           <Search size={11} style={{ color: C.muted }} />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="FILTER TICKER…"
+            placeholder="篩選代號…"
             spellCheck={false}
             className="w-32 bg-transparent font-mono text-[13px] uppercase tracking-wider outline-none"
             style={{ color: C.text }}
@@ -541,7 +529,7 @@ function DecisionsPanel({ journal, rows }) {
       </div>
 
       {!filtered.length ? (
-        <Empty>NO MATCH</Empty>
+        <Empty>無符合條件</Empty>
       ) : (
         <div className="space-y-1.5">
           {filtered.map((d, i) => {
@@ -551,7 +539,7 @@ function DecisionsPanel({ journal, rows }) {
               <div
                 key={`${d.ticker}-${i}`}
                 className="border px-2.5 py-2"
-                style={{ borderColor: C.border, background: 'rgba(255,255,255,0.015)' }}
+                style={{ borderColor: C.border, background: alpha(C.ink, 0.015) }}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-[13.5px] font-bold" style={{ color: C.text }}>{d.ticker}</span>
@@ -562,7 +550,7 @@ function DecisionsPanel({ journal, rows }) {
                     <span className="font-mono text-[11px]" style={{ color: rm.color }}>{rm.label}</span>
                   </span>
                   <span className="inline-flex items-center gap-1.5">
-                    <span className="inline-block h-1.5 w-14 overflow-hidden rounded align-middle" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                    <span className="inline-block h-1.5 w-14 overflow-hidden rounded align-middle" style={{ background: alpha(C.ink, 0.08) }}>
                       <span className="block h-full rounded" style={{ width: `${Math.round((d.confidence ?? 0) * 100)}%`, background: C.accent }} />
                     </span>
                     <span className="font-mono text-[11px]" style={{ color: C.muted }}>{fmt((d.confidence ?? 0) * 100, 0)}%</span>
@@ -595,7 +583,7 @@ function OpportunitiesPanel({ opp }) {
   const nNew = rows.filter((o) => o.is_new).length;
   return (
     <Panel
-      label="機會掃描 / OPPORTUNITY SCAN"
+      label="機會掃描"
       status={nNew ? <Badge color={C.mimi}>🆕 {nNew} 檔首次入圍</Badge> : <Badge color={C.muted}>{rows.length} 檔入圍</Badge>}
     >
       {!rows.length ? (
@@ -606,7 +594,7 @@ function OpportunitiesPanel({ opp }) {
             const am = actionMeta(o.action);
             const ez = Array.isArray(o.entry_zone) && o.entry_zone.length === 2 ? `$${o.entry_zone[0]}-${o.entry_zone[1]}` : '—';
             return (
-              <div key={o.ticker} className="border px-2.5 py-2" style={{ borderColor: o.is_new ? `${C.mimi}66` : C.border, background: 'rgba(255,255,255,0.02)' }}>
+              <div key={o.ticker} className="border px-2.5 py-2" style={{ borderColor: o.is_new ? `${alpha(C.mimi, 0.4)}` : C.border, background: alpha(C.ink, 0.02) }}>
                 <div className="flex items-center gap-2">
                   {o.is_new && <Badge color={C.mimi}>🆕</Badge>}
                   <span className="font-mono text-[13px] font-bold" style={{ color: C.text }}>{o.ticker}</span>
@@ -737,7 +725,7 @@ export default function PostMarketReview() {
         <div className="flex flex-wrap items-center gap-3">
           <ClipboardCheck size={20} style={{ color: C.accent }} />
           <h1 className="font-mono text-lg font-bold tracking-wide" style={{ color: C.text }}>
-            盤後復盤 <span style={{ color: C.muted }}>/ POST-MARKET REVIEW</span>
+            盤後復盤 <span style={{ color: C.muted }}>／ 戰情中心當日報告</span>
           </h1>
           {regime && (
             <Badge color={regime.color}><regime.Icon size={12} className="mr-1 inline" />{regime.label}</Badge>
@@ -752,14 +740,7 @@ export default function PostMarketReview() {
             >
               <ChevronLeft size={14} />
             </button>
-            <select
-              className="border bg-transparent px-2 py-1.5 font-mono text-[12.5px] outline-none"
-              style={{ borderColor: C.border, color: C.text, background: C.panel }}
-              value={date || ''}
-              onChange={(e) => selectDate(e.target.value)}
-            >
-              {dates.map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
+            <OpsDatePicker value={date} available={dates} onChange={selectDate} />
             <button
               className="border p-1.5 disabled:opacity-30"
               style={{ borderColor: C.border, color: C.sub }}
@@ -809,7 +790,7 @@ export default function PostMarketReview() {
                 color={nTriggered ? C.short : C.long}
                 sub={openRows.length ? `未結追蹤 ${openRows.length} 筆` : '無帳本資料'}
               />
-              <StatTile label="高風險持倉" value={nHighRisk} color={nHighRisk ? C.amber : C.long} sub="risk_level = high" />
+              <StatTile label="高風險持倉" value={nHighRisk} color={nHighRisk ? C.amber : C.long} sub="模型標為高風險" />
               <StatTile
                 label="30天樣本"
                 value={ledger?.track_record?.n_total ?? '—'}
@@ -851,7 +832,7 @@ export default function PostMarketReview() {
 
             {tab === 'report' && (
               <Panel
-                label="完整報告附錄 / FULL REPORT"
+                label="完整報告附錄"
                 status={appendixMd
                   ? <Badge color={C.accent}><FileText size={11} className="mr-1 inline" />鏡像已落地</Badge>
                   : <Badge color={C.muted}>該日無附錄內容</Badge>}

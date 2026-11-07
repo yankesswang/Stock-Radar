@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearch, useLocation } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Landmark } from 'lucide-react';
 
 /* SEC 申報的財務資料，一個區塊四個切面：
@@ -53,13 +53,17 @@ function fmtMetric(v, format) {
 }
 
 /* ── 變化率 ─────────────────────────────────────────────────────────────
-   每個項目都算：年度視圖只有 YoY（比上一年）；單季視圖同時給
-   QoQ（比上一季）和 YoY（比四季前的同一季，避開淡旺季）。
-   比率類指標（毛利率、ROE）的變化用百分點，金額變化用 %。 */
-const CHANGE_COLS = {
-    annual:    [{ k: 'yoy', label: 'YoY', step: 1 }],
-    quarterly: [{ k: 'qoq', label: 'QoQ', step: 1 }, { k: 'yoy', label: 'YoY', step: 4 }],
-};
+   每一欄都跟它右邊那一欄（前一期）比，也就是環比：年度視圖是比上一年、
+   單季視圖是比上一季。以前只在表頭左邊放一組變化欄，那組永遠只算最新一期，
+   其餘期間看不出走勢——十欄數字裡只有一欄有變化率，等於沒有。
+
+   單季的環比會被淡旺季干擾（零售業 Q4 永遠暴衝、Q1 永遠掉），所以單季視圖
+   額外把同比（較去年同季、四季前）放進滑鼠提示，跟這個檔案處理會計季、
+   公式的方式一致：主線只留一個數字，第二層資訊走 title。
+
+   比率類指標（毛利率、ROE）的變化用百分點 pp，金額變化用 %。 */
+const CHANGE_LABEL = { annual: '較上一年', quarterly: '較上一季' };
+const YOY_STEP = 4;                       // 單季視圖的同比：往回四季
 
 function change(cur, prev, format) {
     if (cur == null || prev == null) return null;
@@ -68,30 +72,38 @@ function change(cur, prev, format) {
         return { v: pp, text: `${pp > 0 ? '+' : ''}${pp.toFixed(1)}pp` };
     }
     if (prev === 0) return null;
+    // 跨過零的變化率沒有意義：營業外收支從 −1.16B 到 21.0M 會算出 +82452%，
+    // 那個數字只反映分母多接近零，不反映變化多大。直接講「轉正／轉負」。
+    if ((cur < 0) !== (prev < 0)) {
+        return { v: cur >= 0 ? 1 : -1, text: cur >= 0 ? '轉正' : '轉負' };
+    }
     const pct = ((cur - prev) / Math.abs(prev)) * 100;
+    // 基期接近零時變化率會噴到四五位數（AMZN 2025 營業外收支 21.0M → 17.34B
+    // 是 +82452%），那個位數只反映分母多小。封頂讓欄寬穩定，真正的倍數看上面
+    // 兩個原數就好。
+    if (Math.abs(pct) > 999) return { v: pct, text: pct > 0 ? '>+999%' : '<−999%' };
     return { v: pct, text: `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%` };
 }
 
-function ChangeHeaders({ freq }) {
-    return CHANGE_COLS[freq].map((c) => (
-        <th key={c.k} scope="col" className="num py-2 px-3 font-medium text-right whitespace-nowrap"
-            title={c.k === 'qoq' ? '較上一季' : freq === 'annual' ? '較上一年' : '較去年同季（四季前）'}>
-            {c.label}
-        </th>
-    ));
-}
-
-function ChangeCells({ values, periods, freq, format }) {
-    return CHANGE_COLS[freq].map((c) => {
-        const d = change(values[periods[0]], values[periods[c.step]], format);
-        const color = d == null ? 'var(--text-meta)'
-            : d.v >= 0 ? 'var(--accent-success-text)' : 'var(--accent-danger-text)';
-        return (
-            <td key={c.k} className="num py-1.5 px-3 text-right whitespace-nowrap" style={{ color }}>
-                {d ? d.text : '—'}
-            </td>
-        );
-    });
+/* 一格數值＋它的環比。periods 是新到舊，所以「前一期」是 i + 1。 */
+function ValueCell({ values, periods, i, freq, format, unit, showDelta }) {
+    const p = periods[i];
+    const text = format === undefined ? fmtStatement(values[p], unit) : fmtMetric(values[p], format);
+    const d = showDelta ? change(values[p], values[periods[i + 1]], format) : null;
+    // 單季才給同比：年度視圖的環比本來就是同比，再放一次是重複
+    const yoy = freq === 'quarterly' ? change(values[p], values[periods[i + YOY_STEP]], format) : null;
+    return (
+        <td className="num py-1.5 px-3 text-right whitespace-nowrap align-top text-[var(--text-primary)]"
+            title={yoy ? `較去年同季 ${yoy.text}` : undefined}>
+            <div>{text}</div>
+            {d && (
+                <div className="text-[10.5px] leading-tight tabular-nums"
+                     style={{ color: d.v >= 0 ? 'var(--accent-success-text)' : 'var(--accent-danger-text)' }}>
+                    {d.text}
+                </div>
+            )}
+        </td>
+    );
 }
 
 const PILL_ON  = 'text-[var(--accent-cyan-text)] bg-[rgba(0,82,255,0.10)] border-[rgba(0,82,255,0.35)]';
@@ -119,8 +131,7 @@ function PeriodHeaders({ data }) {
 }
 
 /* ── 基本面指標：只列計算值 ─────────────────────────────────────────── */
-function MetricsTable({ ticker, data, freq }) {
-    const nChange = CHANGE_COLS[freq].length;
+function MetricsTable({ ticker, data, freq, showDelta }) {
     // 申報原數（營收、淨利、資產總計…）已經在三大表分頁，這裡不再抄一次
     const groups = useMemo(() => data.groups
         .map((g) => ({ ...g, items: g.items.filter((it) => it.source === 'computed') }))
@@ -135,14 +146,13 @@ function MetricsTable({ ticker, data, freq }) {
             <thead>
                 <tr className="text-[var(--text-meta)]">
                     <th scope="col" className="py-2 px-3 text-left font-medium sticky-col">指標</th>
-                    <ChangeHeaders freq={freq} />
                     <PeriodHeaders data={data} />
                 </tr>
             </thead>
             <tbody>
                 {groups.map((g) => [
                     <tr key={g.group} className="border-t border-[var(--glass-border)]">
-                        <td colSpan={data.periods.length + 1 + nChange}
+                        <td colSpan={data.periods.length + 1}
                             className="sticky-col py-1.5 px-3 text-[11px] uppercase tracking-wide text-[var(--text-meta)]">
                             {g.group}
                         </td>
@@ -163,11 +173,9 @@ function MetricsTable({ ticker, data, freq }) {
                                     </span>
                                 )}
                             </th>
-                            <ChangeCells values={it.values} periods={data.periods} freq={freq} format={it.format} />
-                            {data.periods.map((p) => (
-                                <td key={p} className="num py-1.5 px-3 text-right whitespace-nowrap text-[var(--text-primary)]">
-                                    {fmtMetric(it.values[p], it.format)}
-                                </td>
+                            {data.periods.map((p, i) => (
+                                <ValueCell key={p} values={it.values} periods={data.periods} i={i}
+                                           freq={freq} format={it.format} showDelta={showDelta} />
                             ))}
                         </tr>
                     )),
@@ -178,14 +186,13 @@ function MetricsTable({ ticker, data, freq }) {
 }
 
 /* ── 三大表 ─────────────────────────────────────────────────────────── */
-function StatementTable({ ticker, data, freq }) {
+function StatementTable({ ticker, data, freq, showDelta }) {
     const periods = data.periods ?? [];
     // 段落標頭底下沒有任何科目（例如損益表尾巴掛著的「Products」軸）就不畫
     const items = useMemo(() => {
         const src = data.line_items ?? [];
         return src.filter((li, i) => !li.is_header || (src[i + 1] && !src[i + 1].is_header));
     }, [data]);
-    const nChange = CHANGE_COLS[freq].length;
 
     return (
         <table className="data-table w-full text-[12.5px] border-collapse">
@@ -195,7 +202,6 @@ function StatementTable({ ticker, data, freq }) {
             <thead>
                 <tr className="text-[var(--text-meta)]">
                     <th scope="col" className="py-2 px-3 font-medium text-left sticky-col">科目</th>
-                    <ChangeHeaders freq={freq} />
                     <PeriodHeaders data={data} />
                 </tr>
             </thead>
@@ -204,7 +210,7 @@ function StatementTable({ ticker, data, freq }) {
                     if (li.is_header) {
                         return (
                             <tr key={li.concept} className="border-t border-[var(--glass-border)]">
-                                <td colSpan={periods.length + 1 + nChange}
+                                <td colSpan={periods.length + 1}
                                     className="sticky-col py-1.5 px-3 text-[11px] uppercase tracking-wide text-[var(--text-meta)]">
                                     {li.label}
                                 </td>
@@ -222,11 +228,9 @@ function StatementTable({ ticker, data, freq }) {
                                 {/* 沒有中文對照的科目沿用申報原文，標一下 */}
                                 {!li.translated && <span className="ml-1 text-[10px] text-[var(--text-meta)]">EN</span>}
                             </th>
-                            <ChangeCells values={li.values} periods={periods} freq={freq} />
-                            {periods.map((p) => (
-                                <td key={p} className="num py-1.5 px-3 text-right whitespace-nowrap text-[var(--text-primary)]">
-                                    {fmtStatement(li.values[p], li.unit)}
-                                </td>
+                            {periods.map((p, i) => (
+                                <ValueCell key={p} values={li.values} periods={periods} i={i}
+                                           freq={freq} unit={li.unit} showDelta={showDelta} />
                             ))}
                         </tr>
                     );
@@ -249,6 +253,8 @@ export default function SecFinancials({ ticker }) {
     const [view, setViewState] = useState(urlTab ?? 'metrics');
     const [freq, setFreq]      = useState('annual');
     const [limit, setLimit]    = useState(10);
+    // 變化率佔掉每一列第二行，四十期的表會變兩倍高，給個開關收起來
+    const [showDelta, setShowDelta] = useState(true);
     // 回應都以 key 存成字典，畫面直接用當下的 key 去查：查不到就是載入中。
     // 這樣換 ticker / 切分頁不需要在 effect 裡同步重設狀態，切回去過的分頁也是秒開。
     const [ovMap, setOvMap]    = useState({});     // ticker → 總覽；null = 沒 SEC 資料
@@ -326,6 +332,11 @@ export default function SecFinancials({ ticker }) {
                             {f.label}
                         </button>
                     ))}
+                    <button onClick={() => setShowDelta((v) => !v)} aria-pressed={showDelta}
+                            title={`每一欄顯示${CHANGE_LABEL[freq]}的變化率`}
+                            className={pill(showDelta)}>
+                        變化率
+                    </button>
                     <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}
                             aria-label="顯示幾個期間"
                             className="ui-focus tap num rounded-lg border border-[var(--glass-border)]
@@ -354,6 +365,8 @@ export default function SecFinancials({ ticker }) {
                         : data?.derived_periods?.length > 0
                             ? '標「推算」的是第四季：10-K 只報全年，該季由全年減前三季得出'
                             : '負數以括號表示'}
+                    {showDelta && `　·　數字下方是${CHANGE_LABEL[freq]}`}
+                    {showDelta && freq === 'quarterly' && '，滑鼠移上去看較去年同季'}
                 </span>
             </div>
 
@@ -379,8 +392,8 @@ export default function SecFinancials({ ticker }) {
                 {state === 'ok' && data && (
                     <div className="overflow-auto max-h-[70vh]">
                         {isMetrics
-                            ? <MetricsTable ticker={ticker} data={data} freq={freq} />
-                            : <StatementTable ticker={ticker} data={data} freq={freq} />}
+                            ? <MetricsTable ticker={ticker} data={data} freq={freq} showDelta={showDelta} />
+                            : <StatementTable ticker={ticker} data={data} freq={freq} showDelta={showDelta} />}
                     </div>
                 )}
             </div>

@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
     ReferenceLine, Cell, CartesianGrid,
 } from 'recharts';
-import { ArrowLeft, TrendingUp, TrendingDown, Loader2, Info } from 'lucide-react';
+import { TrendingUp, TrendingDown, Info } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import { CHART_GRID, CHART_AXIS, CHART_REFERENCE } from '../components/chartTheme';
 
 // ── colour constants ──────────────────────────────────────────────────────────
@@ -203,19 +204,18 @@ export default function StockPE() {
         });
     }, [ticker]);
 
-    if (loading) return (
-        <div className="container py-20 flex justify-center">
-            <Loader2 className="w-6 h-6 animate-spin text-[var(--accent-purple)]" />
-        </div>
-    );
+    if (loading) return <StockPageFallback ticker={ticker} />;
 
     if (error) return (
-        <div className="container py-20 text-center space-y-2">
-            <p className="text-[var(--text-muted)] text-sm">{error}</p>
-            <p className="text-xs text-[var(--text-muted)] font-mono">
-                python3 scripts/scrape_fullratio_pe.py --ticker {ticker}
-            </p>
-        </div>
+        <StockPageFallback
+            ticker={ticker}
+            error={
+                <>
+                    <p>{error}</p>
+                    <p className="mt-2 font-mono text-xs">python3 scripts/scrape_fullratio_pe.py --ticker {ticker}</p>
+                </>
+            }
+        />
     );
 
     if (!peData) return null;
@@ -286,35 +286,20 @@ export default function StockPE() {
 
     return (
         <div className="container py-10 space-y-6 animate-fade-in">
-            {/* Back */}
-            <Link href={`/stock/${ticker}`}
-                className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
-                <ArrowLeft size={14} /> Back to {ticker}
-            </Link>
-
-            {/* Header */}
-            <div className="flex items-end justify-between pb-6 border-b border-[var(--glass-border)]">
-                <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight">
-                        <span className="font-mono text-[var(--accent-cyan)]">{ticker}</span>
-                        <span className="text-[var(--text-secondary)] font-normal text-xl ml-3">PE Ratio History</span>
-                    </h1>
-                    <p className="text-xs text-[var(--text-muted)] mt-1">
-                        Source: fullratio.com · {peData.date}
-                        {price && <span className="ml-3">· Current price: <span className="font-mono">${price}</span></span>}
-                    </p>
-                </div>
-                {vsMedian != null && (
+            <StockPageHeader
+                ticker={ticker}
+                meta={<>來源 fullratio.com · {peData.date}</>}
+                actions={vsMedian != null && (
                     <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold border ${
                         parseFloat(vsMedian) > 0
                             ? 'bg-[rgba(248,113,113,0.1)] text-[var(--accent-danger)] border-[rgba(248,113,113,0.2)]'
                             : 'bg-[rgba(52,211,153,0.1)] text-[var(--accent-success)] border-[rgba(52,211,153,0.2)]'
                     }`}>
                         {parseFloat(vsMedian) > 0 ? <TrendingUp size={14}/> : <TrendingDown size={14}/>}
-                        Trailing PE {sign(vsMedian)}{vsMedian}% vs Median
+                        Trailing PE {sign(vsMedian)}{vsMedian}% vs 中位數
                     </div>
                 )}
-            </div>
+            />
 
             {/* Top stat cards */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">

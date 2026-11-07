@@ -17,13 +17,14 @@
  * 色盲讀者不會少任何資訊（配色檢查寫在 chartTheme.js）。
  */
 import { Fragment, useState, useEffect, useMemo } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
 import {
     BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, Legend,
     ResponsiveContainer, CartesianGrid, ReferenceLine, Cell, LabelList,
 } from 'recharts';
-import { ArrowLeft, PieChart, Layers, TrendingUp, Percent, Activity } from 'lucide-react';
+import { Layers, TrendingUp, Percent, Activity } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import {
     CHART_GRID, CHART_AXIS, CHART_REFERENCE,
     chartTooltipStyle, chartTooltipLabelStyle,
@@ -239,13 +240,13 @@ function SegmentDetail({ name, periods, byKey }) {
     if (!rows.length) {
         return <div className="text-[12px] text-[var(--text-meta)]">這個部門沒有更細的科目</div>;
     }
-    let lastKind = null;
     return (
         <table className="w-full text-[12px] border-collapse">
             <caption className="sr-only">{name} 的完整科目明細</caption>
             <tbody>
                 {rows.map((r, i) => {
-                    const header = r.kind !== lastKind ? (lastKind = r.kind) : null;
+                    const previousKind = i > 0 ? rows[i - 1].kind : null;
+                    const header = r.kind !== previousKind ? r.kind : null;
                     return (
                         // Fragment 要帶 key，否則 React 會對整份清單發出 key 警告
                         <Fragment key={`${r.concept || r.label}-${i}`}>
@@ -316,7 +317,11 @@ export default function StockSegments() {
                 setAxisIdx(0);
                 if (!d.axes?.length) setError(d.note || '這檔沒有分部門資料');
             })
-            .catch(() => setError('讀取分部門資料失敗'))
+            // 503 = 背景排程正在寫入 DB。講清楚是「暫時」的，不然使用者會以為
+            // 資料掉了而去重跑爬蟲（見 backend/app/dbro.py）
+            .catch((e) => setError(e?.response?.status === 503
+                ? '資料庫正在更新中，稍後重新整理即可'
+                : '讀取分部門資料失敗'))
             .finally(() => setLoading(false));
     }, [ticker, months, ccy]);
 
@@ -431,10 +436,9 @@ export default function StockSegments() {
     if (loading) {
         // 骨架而不是置中 spinner：高度接近實際版面，資料到位時不會整個跳動
         return (
-            <div className="max-w-6xl mx-auto px-4 py-6" aria-busy="true" aria-live="polite">
+            <div className="container py-10 space-y-6" aria-busy="true" aria-live="polite">
                 <div className="sr-only">載入分部門資料中</div>
-                <div className="h-7 w-56 rounded bg-[var(--bg-tertiary)] animate-pulse mb-3" />
-                <div className="h-4 w-72 rounded bg-[var(--bg-tertiary)] animate-pulse mb-5" />
+                <StockPageHeader ticker={ticker} />
                 <div className="flex gap-2 mb-4">
                     {[0, 1, 2, 3].map((i) => (
                         <div key={i} className="h-9 w-20 rounded-full bg-[var(--bg-tertiary)] animate-pulse" />
@@ -461,22 +465,19 @@ export default function StockSegments() {
         : { width: 140, chars: 20, pad: { left: 44, right: 48 } };
 
     return (
-        <div className="max-w-6xl mx-auto px-4 py-6">
-            <Link href={`/stock/${ticker}`}
-                  className="ui-focus inline-flex items-center gap-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--accent-cyan-text)] mb-4 rounded">
-                <ArrowLeft size={15} /> 回 {ticker}
-            </Link>
-
-            <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2 mb-1">
-                <PieChart size={20} aria-hidden="true" /> {ticker} 分部門營收與利潤
-            </h1>
-            <div className="num text-[12.5px] text-[var(--text-meta)] mb-4">
-                {summary && `最新一期 ${summary.periodEnd}`}
-                {summary?.priorEnd && ` · 對比去年同期 ${summary.priorEnd}`}
-                {data?.currency && ` · ${data.currency}`}
-                {' · 來源：SEC 申報的分部門報表'}
-            </div>
-
+        <div className="container py-10 animate-fade-in">
+            <StockPageHeader
+                ticker={ticker}
+                meta={
+                    <span className="num">
+                        {summary && `最新一期 ${summary.periodEnd}`}
+                        {summary?.priorEnd && ` · 對比去年同期 ${summary.priorEnd}`}
+                        {data?.currency && ` · ${data.currency}`}
+                        {' · 來源：SEC 申報的分部門報表'}
+                    </span>
+                }
+            />
+            <div className="mt-6">
             {/* 控制列：期間長度是主要的，幣別與期間數是次要的，所以分兩段擺 */}
             <div className="flex gap-2 flex-wrap items-center mb-4">
                 {MONTH_OPTIONS.map((o) => (
@@ -902,6 +903,7 @@ export default function StockSegments() {
                     單一部門公司通常不會分開揭露。
                 </div>
             )}
+            </div>
         </div>
     );
 }

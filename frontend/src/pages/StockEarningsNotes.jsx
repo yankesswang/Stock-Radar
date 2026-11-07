@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
-import { ArrowLeft, Loader2, FileText, Paperclip, CalendarDays, ExternalLink, Link2 } from 'lucide-react';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
+import { Loader2, Paperclip, CalendarDays, ExternalLink, Link2 } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import Markdown from '../components/Markdown';
 
 function reactionColor(text) {
@@ -42,28 +43,16 @@ export default function StockEarningsNotes() {
             .catch(() => setError('讀取筆記內容失敗'));
     }, [ticker, active]);
 
-    if (loading) {
-        return (
-            <div className="flex items-center justify-center py-24 text-[var(--text-muted)]">
-                <Loader2 className="animate-spin mr-2" size={18} /> 載入財報筆記…
-            </div>
-        );
-    }
+    if (loading) return <StockPageFallback ticker={ticker} />;
 
     return (
-        <div className="max-w-4xl mx-auto px-4 py-6">
-            <Link href={`/stock/${ticker}`}
-                  className="inline-flex items-center gap-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--accent-cyan)] mb-4">
-                <ArrowLeft size={15} /> 回 {ticker}
-            </Link>
-
-            <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2 mb-1">
-                <FileText size={20} /> {ticker} 財報筆記
-            </h1>
-            {quarters[0]?.industry && (
-                <div className="text-[13px] text-[var(--text-muted)] mb-4">{quarters[0].industry}</div>
-            )}
-
+        <div className="container py-10 animate-fade-in">
+            <StockPageHeader
+                ticker={ticker}
+                meta={quarters.length ? `${quarters.length} 季筆記 · 最新 ${quarters[0].quarter.replace('_', ' ')}` : null}
+            />
+            {/* 筆記是拿來讀的，內容區維持閱讀寬度；標頭跟其他切面一樣滿版 */}
+            <div className="max-w-4xl mt-6">
             {error && !quarters.length && (
                 <div className="rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] p-6 text-center text-[var(--text-muted)]">
                     {error}
@@ -149,6 +138,7 @@ export default function StockEarningsNotes() {
                     <Loader2 className="animate-spin mr-2" size={16} /> 載入內容…
                 </div>
             )}
+            </div>
         </div>
     );
 }

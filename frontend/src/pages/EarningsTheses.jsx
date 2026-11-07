@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
     Target, Loader2, Wallet, ChevronDown, ChevronRight,
     TrendingUp, TrendingDown, ExternalLink, Sparkles, Search,

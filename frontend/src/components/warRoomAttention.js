@@ -14,12 +14,37 @@
 const TICKER_RE = /^[▍▌]\s*([A-Z0-9][A-Z0-9.-]{0,9})\s*$/;
 const FIELD_RE = /^(今日原因|Mimi|技術)\s*[：:]\s*(.*)$/i;
 const VERDICT_RE = /^(✅|⚠️|⚠|🔴|🟡|🟢|⛔|❌)?\s*明日\s*[：:]\s*(.*)$/u;
-const PLAN_HEAD_RE = /^\**\s*明日操作計劃[^：:]*[：:]\s*\**\s*$/;
+// 標題有時是「明日操作計劃：」、有時是「**明日操作計劃**」（沒冒號）—— 兩種都要認得，
+// 否則整段計劃會落到 trailing 變成一坨純文字。
+const PLAN_HEAD_RE = /^\**\s*明日操作計劃[^：:]*[：:]?\s*\**\s*$/;
 const ASSESS_RE = /^\**\s*整體評估\s*\**\s*[：:]\s*(.*)$/;
 const PORTFOLIO_H_RE = /^###\s*【(.+?)】\s*$/;
 const HOLD_H_RE = /^###\s*其餘持倉/;
 const ATTENTION_H_RE = /^## 🔎 異常持倉.*$/m;
+// 報告落地前會過 scripts/zh_terms.py，動作寫的是中文（減碼／停損／…）；
+// 舊報告與模型偶爾漏網的英文 enum 也要照樣認得出來，所以兩種都收。
 const ACTION_TOKEN_RE = /^(stop_loss|trim|add|open|exit|hold|watch|reduce|accumulate|buy|avoid|sell)\b/i;
+const ZH_ACTION_TOKEN = [
+  ['停損', 'stop_loss'], ['減碼', 'trim'], ['減倉', 'trim'], ['出清', 'exit'],
+  ['出場', 'exit'], ['清倉', 'exit'], ['加倉', 'add'], ['加碼', 'add'],
+  ['建倉', 'open'], ['分批買進', 'accumulate'], ['分批買入', 'accumulate'],
+  ['買進', 'buy'], ['賣出', 'sell'], ['放空', 'sell_short'],
+  ['維持', 'hold'], ['持有', 'hold'], ['觀察', 'watch'], ['迴避', 'avoid'],
+];
+const ZH_ACTION_HEAD_RE = new RegExp(`^(${ZH_ACTION_TOKEN.map(([zh]) => zh).join('|')})`);
+
+/** 句首的動作詞（中英皆可）→ { action, rest }；不是動作開頭則回 null。 */
+export function matchActionToken(text) {
+  const t = (text || '').trim();
+  const en = t.match(ACTION_TOKEN_RE);
+  if (en) return { action: en[1].toLowerCase(), rest: t.slice(en[0].length).trim() };
+  const zh = t.match(ZH_ACTION_HEAD_RE);
+  if (zh) {
+    const hit = ZH_ACTION_TOKEN.find(([w]) => w === zh[1]);
+    return { action: hit[1], rest: t.slice(zh[0].length).trim() };
+  }
+  return null;
+}
 
 const LEVEL_BY_EMOJI = {
   '🔴': 'act', '⛔': 'act', '❌': 'act',
@@ -38,7 +63,7 @@ export function splitBriefSections(md) {
 function inferLevel(text) {
   const t = text || '';
   if (/stop_loss|停損|出場|清倉|\bexit\b|\btrim\b|減碼|減倉/i.test(t)) return 'act';
-  if (/risk_level\s*=?\s*high|盯盤|觀察線|警示|留意|貼近/i.test(t)) return 'watch';
+  if (/risk_level\s*=?\s*high|風險等級\s*[=:：]?\s*高|盯盤|觀察線|警示|留意|貼近/i.test(t)) return 'watch';
   return 'ok';
 }
 
@@ -49,12 +74,13 @@ const ZH_ACTION = [
 
 /** 從「明日：」句子推測動作（journal 有值時以 journal 為準，這只是後備）。 */
 export function inferAction(text) {
-  let t = (text || '').trim().replace(/^(維持|繼續|重申)\s*/, '');
-  const m = t.match(ACTION_TOKEN_RE);
-  if (m) return m[1].toLowerCase();
-  for (const [re, action] of ZH_ACTION) if (re.test(t)) return action;
-  t = (text || '').trim();
-  for (const [re, action] of ZH_ACTION) if (re.test(t)) return action;
+  // 「維持觀察」「繼續減碼」：前綴剝掉後才看得到真正的動作詞
+  const stripped = (text || '').trim().replace(/^(維持|繼續|重申)\s*(?=[^\s])/, '');
+  for (const t of [stripped, (text || '').trim()]) {
+    const m = matchActionToken(t);
+    if (m) return m.action;
+    for (const [re, action] of ZH_ACTION) if (re.test(t)) return action;
+  }
   return null;
 }
 
@@ -74,14 +100,18 @@ export function parsePlanRow(line) {
   let label = head;
   let action = null;
   let actionNote = '';
-  const hm = head.match(/^(\S+)\s+(\S.*)$/);
-  if (hm && ACTION_TOKEN_RE.test(hm[2])) {
+  // 「LLY 減碼」有空白、「LLY減碼」沒有——中文動作黏著代號時也要切得開
+  const hm = head.match(/^(\S+)\s+(\S.*)$/)
+    || head.match(new RegExp(`^([A-Z0-9][A-Z0-9.-]{0,9})\\s*(${ZH_ACTION_TOKEN.map(([zh]) => zh).join('|')}.*)$`));
+  const headTok = hm ? matchActionToken(hm[2]) : null;
+  const cellTok = rest.length ? matchActionToken(rest[0]) : null;
+  if (headTok) {
     label = hm[1];
-    action = hm[2].match(ACTION_TOKEN_RE)[1].toLowerCase();
-    actionNote = hm[2].replace(ACTION_TOKEN_RE, '').trim();
-  } else if (rest.length && ACTION_TOKEN_RE.test(rest[0])) {
-    action = rest[0].match(ACTION_TOKEN_RE)[1].toLowerCase();
-    actionNote = rest[0].replace(ACTION_TOKEN_RE, '').trim();
+    action = headTok.action;
+    actionNote = headTok.rest;
+  } else if (cellTok) {
+    action = cellTok.action;
+    actionNote = cellTok.rest;
     rest = rest.slice(1);
   }
   const tickers = label

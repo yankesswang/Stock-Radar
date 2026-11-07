@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Link } from 'wouter';
 import { Layers, ArrowUpRight, RefreshCw, ChevronDown, Briefcase, Eye } from 'lucide-react';
 

@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Router } from 'wouter'
 import './index.css'
 import './theme.js'   // 套 <html data-theme>，並掛系統/跨分頁同步
@@ -9,11 +10,23 @@ import App from './App.jsx'
 // pathname 都在 /stocks/ 底下，wouter 需要同樣的 base 才比得中 Route。
 // 仍然在執行期判斷而不寫死：build 出來的靜態檔若被掛在別的路徑下也能運作。
 const base = window.location.pathname.startsWith('/stocks') ? '/stocks' : ''
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    },
+    mutations: { retry: 0 },
+  },
+})
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Router base={base}>
-      <App />
-    </Router>
+    <QueryClientProvider client={queryClient}>
+      <Router base={base}>
+        <App />
+      </Router>
+    </QueryClientProvider>
   </StrictMode>,
 )

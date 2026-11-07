@@ -18,7 +18,7 @@ export const MARKET_TABS = [
 export const OPS_TABS = [
   { href: '/war-room', label: '戰情室', icon: Radar },
   { href: '/review', label: '盤後復盤', icon: ClipboardCheck },
-  { href: '/signals', label: 'Signals', icon: Radar },
+  { href: '/signals', label: '訊號雷達', icon: Radar },
 ];
 
 // 財報：時間軸（誰要公布）→ 結論（我決定怎麼做）→ 論點（下季拿什麼對帳）

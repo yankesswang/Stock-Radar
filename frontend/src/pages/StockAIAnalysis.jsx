@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
 import {
-    ArrowLeft, Loader2, RefreshCw, Sparkles, TrendingUp, TrendingDown,
+    Loader2, RefreshCw, Sparkles, TrendingUp, TrendingDown,
     Target, ShieldAlert, Zap, AlertTriangle,
 } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
+import { invalidateStockTabs } from '../components/useStockHeader';
 
 const GREEN = 'var(--accent-success)';
 const RED   = 'var(--accent-danger)';
@@ -74,7 +76,7 @@ export default function StockAIAnalysis() {
         refresh ? setRefreshing(true) : setLoading(true);
         setError('');
         axios.get(`/api/stocks/${ticker}/ai-analysis`, { params: refresh ? { refresh: 1 } : {}, timeout: 320000 })
-            .then(res => setCard(res.data))
+            .then(res => { setCard(res.data); invalidateStockTabs(ticker); })
             .catch(err => setError(err.response?.data?.detail || '產生 AI 分析失敗，請稍後重試。'))
             .finally(() => { setLoading(false); setRefreshing(false); });
     };
@@ -82,46 +84,36 @@ export default function StockAIAnalysis() {
     useEffect(() => { load(false); }, [ticker]);
 
     if (loading) return (
-        <div className="container py-20 flex flex-col items-center gap-3">
-            <Loader2 className="w-7 h-7 animate-spin text-[var(--accent-purple)]" />
-            <p className="text-sm text-[var(--text-muted)]">AI 正在分析 {ticker}…（首次產生約需 20–90 秒）</p>
+        <div className="container py-10 space-y-6 animate-fade-in">
+            <StockPageHeader ticker={ticker} />
+            <div className="py-16 flex flex-col items-center gap-3" role="status">
+                <Loader2 className="w-7 h-7 animate-spin text-[var(--accent-purple)]" />
+                <p className="text-sm text-[var(--text-muted)]">AI 正在分析 {ticker}…（首次產生約需 20–90 秒）</p>
+            </div>
         </div>
     );
 
     return (
         <div className="container py-10 space-y-6 animate-fade-in">
-            {/* Back + refresh */}
-            <div className="flex items-center justify-between">
-                <Link href={`/stock/${ticker}`}
-                    className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
-                    <ArrowLeft size={14} /> Back to {ticker}
-                </Link>
-                <button
-                    onClick={() => load(true)}
-                    disabled={refreshing}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 border border-white/10 text-[var(--text-secondary)] transition-colors disabled:opacity-50"
-                >
-                    <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-                    {refreshing ? '重新分析中…' : '重新分析'}
-                </button>
-            </div>
-
-            {/* Header */}
-            <div className="flex items-end justify-between pb-6 border-b border-[var(--glass-border)]">
-                <div>
-                    <h1 className="text-3xl font-extrabold tracking-tight flex items-center gap-2">
-                        <Sparkles size={22} className="text-[var(--accent-purple)]" />
-                        <span className="font-mono text-[var(--accent-cyan)]">{ticker}</span>
-                        <span className="text-[var(--text-secondary)] font-normal text-xl ml-1">AI 決策分析</span>
-                    </h1>
-                    {card && (
-                        <p className="text-xs text-[var(--text-muted)] mt-1">
-                            {card.company_name} · 產生於 {card.generated_at?.slice(0, 16).replace('T', ' ')}
-                            {card.cached && <span className="ml-2 text-[var(--accent-amber)]">（當日快取）</span>}
-                        </p>
-                    )}
-                </div>
-            </div>
+            <StockPageHeader
+                ticker={ticker}
+                meta={card && (
+                    <>
+                        產生於 {card.generated_at?.slice(0, 16).replace('T', ' ')}
+                        {card.cached && <span className="ml-2 text-[var(--accent-amber)]">（當日快取）</span>}
+                    </>
+                )}
+                actions={
+                    <button
+                        onClick={() => load(true)}
+                        disabled={refreshing}
+                        className="ui-focus inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 border border-white/10 text-[var(--text-secondary)] transition-colors disabled:opacity-50"
+                    >
+                        <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+                        {refreshing ? '重新分析中…' : '重新分析'}
+                    </button>
+                }
+            />
 
             {error && (
                 <div className="card !p-6 border border-[rgba(248,113,113,0.2)] bg-[rgba(248,113,113,0.04)] flex items-start gap-3">

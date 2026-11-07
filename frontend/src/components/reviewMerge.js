@@ -3,7 +3,7 @@
 //   - 🧑‍🍳 05:00 預產的逐檔 AI 卡（ai_cards.cards，中文 action：分批買入 / 減碼 / 觀望 …）
 // 兩邊對同一檔持倉各自有看法。買賣結論以 War Room 為準；AI 卡是證據層，
 // 唯一值得多看一眼的是「兩邊方向相反」的那幾檔。這裡只做純資料合併與分歧判定，
-// 不放元件（DailyDigestPanel 與 PostMarketReview 共用）。
+// 不放元件（PostMarketReview 用；2026-09-07 前的每日報告面板也曾共用）。
 
 // War Room 決策動作 → 中文標籤 + 方向（+1 加、-1 減、0 不動）
 export const WR_ACTION_META = {

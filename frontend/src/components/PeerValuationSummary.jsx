@@ -13,7 +13,7 @@
  */
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Users, Loader2, ArrowRight, TrendingUp, TrendingDown } from 'lucide-react';
 import { MIN_RANK_N, fmtNum, fmtMoney } from './peerFormat';
 

@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
 } from 'recharts';
 import {
-    ArrowLeft, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Info,
+    TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Info,
 } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import SensitivityMatrix from '../components/SensitivityMatrix';
 import { CHART_GRID, CHART_AXIS } from '../components/chartTheme';
 
@@ -232,25 +233,9 @@ export default function StockDCF() {
             .finally(() => setLoading(false));
     }, [ticker]);
 
-    if (loading) {
-        return (
-            <div className="container py-20 flex justify-center">
-                <div className="w-6 h-6 border-2 border-[var(--accent-purple)] border-t-transparent rounded-full animate-spin"
-                     role="status" aria-label="載入中" />
-            </div>
-        );
-    }
+    if (loading) return <StockPageFallback ticker={ticker} />;
 
-    if (error) {
-        return (
-            <div className="container py-20 text-center">
-                <p className="text-[var(--text-meta)] text-base">{error}</p>
-                <Link href={`/stock/${ticker}`} className="text-sm text-[var(--accent-purple-text)] hover:underline mt-4 inline-block">
-                    返回 {ticker}
-                </Link>
-            </div>
-        );
-    }
+    if (error) return <StockPageFallback ticker={ticker} error={error} />;
 
     if (!data || !data.scenarios) return null;
 
@@ -306,36 +291,23 @@ export default function StockDCF() {
 
     return (
         <div className="container py-8 space-y-9 animate-fade-in">
-            <Link
-                href={`/stock/${ticker}`}
-                className="inline-flex items-center gap-2 text-sm text-[var(--text-meta)] hover:text-[var(--text-primary)] transition-colors duration-200"
-            >
-                <ArrowLeft size={14} /> 返回 {ticker}
-            </Link>
-
-            {/* ══ 標題 ══ */}
-            <header className="pb-5 border-b border-[var(--glass-border)]">
-                <div className="flex flex-wrap items-center gap-3 mb-1.5">
-                    <h1 className="text-3xl font-extrabold tracking-tight">{ticker}</h1>
-                    <span className="badge badge-neutral">現金流折現估值 DCF</span>
-                    {confidence && (
-                        <span
-                            className="badge"
-                            style={{
-                                background: 'var(--bg-tertiary)',
-                                color: CONF_TONE(confidence.score),
-                                border: `1px solid ${CONF_TONE(confidence.score)}33`,
-                            }}
-                            title={confidence.summary}
-                        >
-                            資料可信度 {confidence.grade}（{confidence.score}/100）
-                        </span>
-                    )}
-                </div>
-                <p className="text-[13.5px] text-[var(--text-meta)]">
-                    財報資料截至 {data.data_date} · 本次計算 {data.computed_date}
-                </p>
-            </header>
+            <StockPageHeader
+                ticker={ticker}
+                meta={<>財報資料截至 {data.data_date} · 本次計算 {data.computed_date}</>}
+                chips={confidence && (
+                    <span
+                        className="badge"
+                        style={{
+                            background: 'var(--bg-tertiary)',
+                            color: CONF_TONE(confidence.score),
+                            border: `1px solid ${CONF_TONE(confidence.score)}33`,
+                        }}
+                        title={confidence.summary}
+                    >
+                        資料可信度 {confidence.grade}（{confidence.score}/100）
+                    </span>
+                )}
+            />
 
             {/* ══ 適用性警示 ══ */}
             {applicability && !applicability.meaningful && (

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { X, Bell, BellOff, Target, TrendingUp, AlertTriangle, CheckCircle } from 'lucide-react';
 
 const MA_PERIODS = [5, 10, 20, 50, 200];

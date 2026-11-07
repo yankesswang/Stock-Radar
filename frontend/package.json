@@ -7,9 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "vitest run",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.107.1",
     "axios": "^1.13.4",
     "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.563.0",
@@ -17,6 +19,7 @@
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "recharts": "^3.7.0",
+    "remark-cjk-friendly": "^2.3.1",
     "remark-gfm": "^4.0.1",
     "wouter": "^3.9.0"
   },
@@ -32,6 +35,7 @@
     "globals": "^16.5.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.19",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^5.1.0"
   }
 }
