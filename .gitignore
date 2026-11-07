@@ -25,6 +25,10 @@ backend/.env
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
 
 # ── Personal portfolio data ───────────────────────────────────────────────────
 Portfolio_management/

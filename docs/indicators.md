@@ -220,11 +220,30 @@ RS vs SPY 上升 = 跑贏大盤，這是法人選股的核心邏輯。
 
 ## 七、訊號掃描頁 `/signals`
 
-全市場掃一遍，只列出當天有觸發的標的，依訊號數排序。約 20 秒跑完 269 檔。
+全市場掃一遍（約 20–40 秒），**每檔只給一句話**，預設依 `trend_strength` 由強到弱排成一張平表
+（|score| ＋ 爆量 ＋ ADX 強度 ＋ 5 日幅度，後兩項只在與型態同向時加分、反向扣一半）；
+頁面可切「分層」檢視，把它分成三層：
 
-新增的訊號類型：SuperTrend 翻轉、TTM Squeeze 釋放、ADX 趨勢分級、Stoch RSI、MFI、CCI、CMF、Ichimoku 雲層突破、Parabolic SAR 翻轉、黃金/死亡交叉、52 週新高低、爆量。
+| 層 | 內容 | 頁面 |
+|----|------|------|
+| 事件（tier 1–2） | 這根 K 才發生的交叉／翻轉／突破：趨勢轉多空、超賣反彈啟動、高檔轉弱、動能轉多空、多空對撞 | 預設展開 |
+| 狀態（tier 3） | 讀數極端但沒有事件：超賣／超買觀察、強勢／弱勢延續 | 緊湊列 |
+| 盤整（tier 4） | 只有 Squeeze 壓縮或單一資金流讀數 | 預設收起 |
 
-**注意**：一檔股票同時亮 6 個超買訊號，不代表比亮 2 個更該賣 —— RSI/KDJ/Stoch RSI/Williams %R/CCI 本質上都在測同一件事，會一起亮。**要看的是不同類別同時亮**（例如：超買 + 爆量 + 跌破支撐）。
+後端 `_summarize()` 對每檔算：
+
+- `setup` / `setup_label` / `tier` / `direction`：型態。先看結構事件（SuperTrend、Ichimoku、
+  均線交叉、Squeeze 釋放、52 週高低），再看「超賣＋動能事件」這種反轉確認，再看純動能事件
+  （MACD、KD 交叉），最後才是震盪讀數與 ADX。
+- `headline`：主角訊號的中文短句；`supporting`：其餘佐證，**震盪族摺成「N 個震盪指標超賣」一行**。
+- `score`：Σ 方向 × 權重（結構事件 2–3、動能 1–2、狀態 0.5–1.5）；RSI/KDJ/Stoch RSI/Williams %R/
+  CCI/MFI 本質上在測同一件事，整族合計封頂 2 分。`attention` = |score| + 爆量加 1；
+  `trend_strength` = attention ＋ ADX 項 ＋ 5 日幅度項，是預設排序鍵（後端已排好，War Room feed 同序）。
+- 每個訊號多帶 `kind`（event/state）、`family`、`weight`、`zh`；原本的 `indicator/type/severity/value/desc`
+  照舊，War Room 的 SIGNAL FEED 不受影響。另外多了 `change_1d_pct` / `change_5d_pct`。
+
+前端列：代號｜價格與 1d/5d｜型態徽章｜標題＋佐證｜多空票數｜估值狀態（與個股頁標頭同欄位，
+虧損股不顯示）。點列展開全部指標；War Room overview 有的持倉會標「持倉」並可只看持倉。
 
 快取 5 分鐘，要強制重掃：
 

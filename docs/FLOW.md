@@ -169,6 +169,29 @@ prompt 講一百次也擋不住，所以用純程式在落地前掃一遍，違�
 DECISIONS 的 `trigger` / `thesis` 會被直接印進第一層，所以它們也要過同一套守則
 （否則正文改了、第一層照抄原句，等於守則只做一半）。
 
+### 3-1. 術語中文化　`scripts/zh_terms.py`
+
+DECISIONS 的英文 enum（`action=trim`、`risk_level=high`、`market_regime=risk-off`、
+狀態機 `acknowledged`）是給程式讀的 schema，卻常被原封不動印進人看的句子
+（「明日：trim」「（risk=high）」「與宏觀 risk-off 脫鉤」）。兩層處理：
+
+| 層 | 做法 |
+|----|------|
+| 結構化欄位 | 呼叫端印之前先過 `zh_action()` / `zh_risk()` / `zh_regime()` / `zh_setup()`（首選） |
+| 模型自由書寫 | `localize()` 在 `war_room.py` 落地前掃全份報告與 Telegram 文字（收尾網） |
+
+`localize()` 跳過 ``` 圍籬、行內程式碼、URL、JSON 鍵值對，且只比對**小寫**單字，
+所以股票代號（NOW / C / ADD）、分析師評級（Buy / Sell / Outperform）不會被誤傷。
+journal / 狀態機 / 前端 enum 一律維持英文——只有使用者看到的那一面變中文。
+前端徽章的對照表在 `frontend/src/components/opsTheme.js`，改動時兩邊要一起改。
+
+改既有報告（預設只列差異，`--write` 才動檔案）：
+
+```bash
+uv run python scripts/zh_terms.py ~/.arthur-digest/stock/*/"🎖️ War Room.md"
+uv run python scripts/zh_terms.py --write ~/.arthur-digest/stock/*/"🎖️ War Room.md"
+```
+
 ## 4. 完整性 manifest：缺什麼要寫出來　`scripts/daily_manifest.py`
 
 事故原型：主報告連續缺檔（8/19、8/20、8/22）、Market Scan 從未成功落地，
@@ -539,7 +562,7 @@ bucket 權重： 低估+催化 1.15 ＞ 動能突破 1.05 ＞ Mimi 進場 1.0 �
 
 ### C.3 輸出
 
-`data/market-news/{date}.json` → portal 每日報告「市場新聞」分頁。**預設不推 Telegram**（要推得加 `--telegram`）。
+`data/market-news/{date}.json` → stock-radar 戰情室（/war-room）的「新聞線」面板。**預設不推 Telegram**（要推得加 `--telegram`）。
 
 ---
 
@@ -740,6 +763,7 @@ launchd 啟動的服務**讀寫 `~/Documents` 會被 macOS TCC 擋**（表現為
 | **執行狀態機（觸發≠成交）** | `scripts/exec_state.py` |
 | **時效標頭／幣別標註** | `scripts/report_meta.py` |
 | **產出驗證（落地前守則）** | `scripts/report_guard.py` |
+| **術語中文化** | `scripts/zh_terms.py` |
 | **三層報告組裝** | `scripts/war_room_report.py` |
 | **完整性 manifest** | `scripts/daily_manifest.py` |
 | **組合層風險** | `scripts/portfolio_risk.py` |
@@ -752,8 +776,8 @@ launchd 啟動的服務**讀寫 `~/Documents` 會被 macOS TCC 擋**（表現為
 | D 核心管線 | `digest/stock/horizon/src/orchestrator.py`、`src/ai/{summarizer,analyzer,enricher}.py` |
 | D 來源設定 | `digest/stock/horizon/data/config.json` |
 | F AI 卡批次 | `backend/app/routers/ai_report.py` + `~/Library/Scripts/stock-digest-portfolio.sh` |
-| portal 讀取端 | `backend/app/routers/stock_digest.py`（讀鏡像目錄，分頁：今日市場報告／Portfolio／個股與產業／盤後復盤／機會掃描） |
-| stock-radar 每日報告面板 | `frontend/src/components/DailyDigestPanel.jsx`：總覽／**持倉復盤**（`/api/war-room/review`，A 的三層報告 + F 的逐檔 AI 卡對照）／市場個股／市場新聞；`frontend/src/components/reviewMerge.js` 做決策×AI 卡合併與分歧判定 |
+| portal 讀取端 | `backend/app/routers/stock_digest.py`（讀鏡像目錄；今日市場報告／Portfolio／個股與產業 → 戰情室「市場日報」面板，盤後復盤／機會掃描 → /review） |
+| stock-radar 日報層 | 2026-09-07 起每日報告頁併進戰情室：`frontend/src/components/DailyWire.jsx`（新聞線／市場日報兩面板）＋ `warRoomDaily.js`（日期對齊、策展觸發）；持倉復盤在 `pages/PostMarketReview.jsx`（`/api/war-room/review`，A 的三層報告 + F 的逐檔 AI 卡對照，`reviewMerge.js` 做合併與分歧判定）；Portfolio 頁只留 `WarRoomTeaser.jsx` 摘要卡 |
 
 ## 附錄五：手動補跑
 

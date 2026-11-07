@@ -1,314 +1,281 @@
-# StockRadar
+# Stock Radar
 
-**Valuation · Signals · Portfolio — in one place.**
+[![Quality](https://github.com/yankesswang/Stock-Radar/actions/workflows/quality.yml/badge.svg)](https://github.com/yankesswang/Stock-Radar/actions/workflows/quality.yml)
 
-A full-stack stock analysis platform that tracks 150+ stocks across 18 sectors. StockRadar scrapes financial data from multiple sources, computes PE-based fair values, and surfaces everything through an interactive React web app — with candlestick charts, a technical signal watchlist, and live portfolio tracking via Google Sheets.
+Local-first investment research workspace for valuation, technical signals,
+portfolio risk, earnings intelligence, and post-market decision support.
 
-## Features
+Stock Radar combines a FastAPI analytics backend with a React operations
+console. It is designed for an individual research workflow: market data stays
+local, scheduled analysis runs on the same machine, and external integrations
+are optional.
 
-| Category | Details |
-|----------|---------|
-| **Valuation** | PE-based fair price, 5-year PE median, current/next-year EPS estimates, over/undervalued status |
-| **Metrics** | 60+ financial ratios — margins, ROE/ROA/ROIC, debt, dividends, short interest |
-| **Charts** | Candlestick + 14 overlays / 18 oscillator panels — Ichimoku, SuperTrend, Keltner, Donchian, PSAR, anchored VWAP, ADX/DMI, TTM Squeeze, Stoch RSI, MFI, CMF, RS vs SPY ([usage guide](docs/indicators.md)) |
-| **Risk analytics** | EWMA volatility, rolling beta/alpha, percentile ranks vs own history, ATR-based stops, pivot points, volume profile, auto-Fibonacci, aggregated technical rating |
-| **Support & Resistance** | Swing-high/low detection with clustering, drawn as solid price lines |
-| **Signal Watchlist** | Parallel scan of all tracked tickers for RSI/KDJ/MACD/BB signals |
-| **Portfolio** | Google Sheets sync — live P&L, valuation overlay, sector allocation |
-| **Search** | Global search from any page (⌘K), debounced, keyboard-navigable |
-| **Screener** | Sortable/filterable table across all valuation columns |
-| **DCF** | Discounted cash flow calculator with sensitivity matrix |
-| **Scraping** | Parallel scrapers with caching (StockAnalysis.com, MacroTrends, yfinance) |
+> Stock Radar is a research tool, not financial advice or an order-execution
+> system. Validate market data and decisions independently before trading.
 
-## Quick Start
+## Highlights
 
-### 1. Clone & install
+- **War Room** — portfolio directives, market regime, risk flags, opportunity
+  tracking, daily reports, and decision history in one operational view.
+- **Valuation** — PE history, analyst forecasts, DCF scenarios, peer comparison,
+  and 60+ financial metrics.
+- **Technical research** — candlesticks, support/resistance, trend lines,
+  relative strength, volatility, volume profile, and multi-indicator signals.
+- **Portfolio intelligence** — manual portfolios and optional Google Sheets
+  synchronization with live P&L, allocation, and risk context.
+- **Earnings workflow** — calendar, filings, segment data, non-GAAP metrics,
+  conclusions, theses, and source-aware notes.
+- **Automated briefings** — scheduled post-market review, opportunity scanning,
+  news curation, integrity manifests, and Telegram notifications.
+- **Local-first safety** — SQLite storage, protected mutation endpoints,
+  single-leader background jobs, request IDs, and durable asynchronous jobs.
 
-```bash
-git clone <repo-url>
-cd stock-radar
+## Architecture
 
-# Python backend
-uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
-uv pip install -r backend/requirements.txt
-
-# Frontend
-cd frontend && npm install && cd ..
+```mermaid
+flowchart LR
+    Sources["Market and filing sources"] --> Pipelines["Python ingestion and analysis"]
+    Pipelines --> Data["SQLite and local snapshots"]
+    Data --> API["FastAPI API"]
+    API --> Web["React and Vite workspace"]
+    API --> Jobs["Scheduler and notification leader"]
+    Jobs --> Reports["Reports and Telegram"]
+    Sheets["Google Sheets (optional)"] <--> API
+    Claude["Claude API (optional)"] --> Pipelines
 ```
 
-### 2. Configure (optional — for portfolio sync)
+| Layer | Technology | Responsibility |
+|---|---|---|
+| Web | React 19, Vite, Tailwind, Recharts, Lightweight Charts | Research and operations UI |
+| API | FastAPI, Pydantic, SQLAlchemy | Typed endpoints, orchestration, persistence |
+| Storage | SQLite, Alembic, JSON/CSV snapshots | Local state and reproducible schema changes |
+| Analysis | pandas, NumPy, yfinance, custom scrapers | Valuation, indicators, rankings, reports |
+| Automation | asyncio scheduler, file-backed jobs | Daily pipelines and notifications |
+
+## Requirements
+
+- Python 3.10–3.13
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 22 or later and npm
+- macOS or Linux recommended for scheduled workflows
+
+Optional integrations require their own credentials: Google Sheets, Telegram,
+Anthropic, and Cloudflare Tunnel.
+
+## Quick start
+
+### 1. Install dependencies
+
+```bash
+git clone https://github.com/yankesswang/Stock-Radar.git
+cd Stock-Radar
+
+uv sync --dev --frozen
+npm --prefix frontend ci
+```
+
+### 2. Configure the backend
 
 ```bash
 cp backend/.env.example backend/.env
-# Edit backend/.env and set GSHEET_ID to your Google Sheet ID
 ```
 
-Your Google Sheet must be publicly readable (Share → Anyone with the link → Viewer).
-See [Sheet layout](#google-sheet-layout) for the expected column format.
+The application works without optional integrations. Configure only the
+services you need:
 
-### 3. Load data into SQLite
+| Variable | Purpose | Required |
+|---|---|---|
+| `DATABASE_URL` | SQLAlchemy connection URL; defaults to local SQLite | No |
+| `GSHEET_ID` | Read-only portfolio spreadsheet | No |
+| `GSHEET_WRITEBACK_ENABLED` | Enable bidirectional Sheets synchronization | No |
+| `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` | Notification delivery | No |
+| `ANTHROPIC_API_KEY` | AI-assisted reports and analysis | No |
+| `MIMI_DOC_PATH` | Local strategy-note source | No |
+| `ADMIN_API_TOKEN` | Protect state-changing API requests | Recommended |
+| `BACKGROUND_JOBS_ENABLED` | Run scheduler and notification loops | No; defaults to `true` |
+
+Never commit `backend/.env`, service-account JSON, database files, or access
+tokens.
+
+### 3. Initialize the database
 
 ```bash
+uv run alembic upgrade head
 uv run python -m backend.load_data
 ```
 
-### 4. Run the app
+`backend.load_data` imports the available local snapshots. It is safe to start
+with an empty dataset and populate sources later.
+
+### 4. Start the application
 
 ```bash
-# Terminal 1 — API (http://localhost:2000)
-uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 2000 --reload
-
-# Terminal 2 — Frontend (http://localhost:5000)
-cd frontend && npm run dev -- --port 5000
+./start.sh
 ```
 
-Or use the convenience script:
+Default local addresses:
+
+- Web: <http://localhost:4000>
+- API: <http://localhost:6000>
+- API documentation: <http://localhost:6000/docs>
+
+Override ports with `STOCKS_FRONTEND_PORT` and `STOCKS_BACKEND_PORT`.
+If `cloudflared` is installed, `start.sh` also starts a temporary public tunnel.
+
+To run services separately:
 
 ```bash
-bash start.sh
+# API
+uv run uvicorn backend.app.main:app --host 127.0.0.1 --port 6000 --reload
+
+# Web
+STOCKS_BACKEND_PORT=6000 npm --prefix frontend run dev -- --port 4000
 ```
 
-## Project Structure
+## Security model
 
+Read requests are available to the configured CORS origins. State-changing
+`/api` requests follow these rules:
+
+1. With no `ADMIN_API_TOKEN`, mutations are accepted only from loopback.
+2. With a token configured, every mutation must provide either
+   `X-API-Key: <token>` or `Authorization: Bearer <token>`.
+3. The web client reads the token from the browser local-storage key
+   `stock-radar-admin-token`.
+
+For remote access, configure `ADMIN_API_TOKEN`, terminate TLS at a trusted
+gateway, and restrict network exposure. The development tunnel is not a
+production deployment configuration.
+
+## Data and background jobs
+
+Schema changes are managed exclusively through Alembic:
+
+```bash
+uv run alembic current
+uv run alembic upgrade head
 ```
+
+Only one API process acquires the background-job leader lock. Other workers can
+serve HTTP requests without duplicating scheduled reports or notifications.
+
+Long-running data reloads return immediately with `202 Accepted`:
+
+```bash
+curl -X POST http://localhost:6000/api/data/reload \
+  -H "X-API-Key: $STOCK_RADAR_ADMIN_TOKEN"
+
+curl http://localhost:6000/api/data/jobs/<job-id>
+```
+
+The daily and weekly reporting workflow is documented in
+[`docs/FLOW.md`](docs/FLOW.md).
+
+## Common workflows
+
+Refresh analysis from existing source data:
+
+```bash
+uv run python main.py
+```
+
+Run scraping followed by analysis:
+
+```bash
+uv run python main.py --scrape
+```
+
+Refresh the discovery universe or live prices:
+
+```bash
+uv run python scripts/refresh_discovery_universe.py
+uv run python scripts/refresh_prices.py
+```
+
+Run a post-market report manually:
+
+```bash
+uv run python scripts/war_room.py
+uv run python scripts/war_room_report.py
+```
+
+Individual data-source scripts live under `src/scrapers/` and `scripts/`.
+Generated data is intentionally excluded from version control unless it is a
+small, curated project input.
+
+## API overview
+
+FastAPI publishes the complete OpenAPI contract at `/docs`. Major endpoint
+groups include:
+
+| Prefix | Purpose |
+|---|---|
+| `/api/stocks` | Stock profiles, charts, ratios, forecasts, DCF, options, filings |
+| `/api/valuations` | Valuation list and screening data |
+| `/api/signals` | Technical signal scanning and watchlists |
+| `/api/portfolio` | Portfolios, holdings, deposits, and Google Sheets sync |
+| `/api/war-room` | Decisions, journals, risk context, and daily operations |
+| `/api/opportunities` | Discovery and ranked market setups |
+| `/api/earnings` | Calendar and earnings workflow |
+| `/api/stock-chat` | Contextual research sessions |
+| `/api/data` | Dataset status, reload jobs, and job status |
+| `/api/health` | Liveness check |
+
+## Quality checks
+
+Run the same checks used by CI:
+
+```bash
+# Backend
+uv run ruff check .
+uv run pytest
+
+# Frontend
+npm --prefix frontend run lint -- --quiet
+npm --prefix frontend test
+npm --prefix frontend run build
+npm --prefix frontend audit --omit=dev
+```
+
+GitHub Actions runs backend and frontend checks independently on every push and
+pull request.
+
+## Repository layout
+
+```text
 stock-radar/
-├── backend/                    # FastAPI backend
-│   ├── .env                    # ← gitignored: your personal config (GSHEET_ID, etc.)
-│   ├── .env.example            # Template — copy to .env and fill in values
-│   ├── requirements.txt
-│   ├── load_data.py            # Import JSON snapshots → SQLite
-│   └── app/
-│       ├── config.py           # Settings (reads backend/.env)
-│       ├── database.py         # SQLAlchemy + SQLite
-│       ├── models.py           # ORM models
-│       └── routers/
-│           ├── stocks.py       # /api/stocks
-│           ├── valuations.py   # /api/valuations
-│           ├── search.py       # /api/search
-│           ├── chart.py        # /api/stocks/{ticker}/chart
-│           ├── signals.py      # /api/signals/watchlist
-│           ├── portfolio.py    # /api/portfolio + /api/portfolio/gsheet
-│           ├── screener.py     # /api/screener
-│           ├── dcf.py          # /api/stocks/{ticker}/dcf
-│           ├── pe.py           # /api/stocks/{ticker}/pe
-│           ├── ratios.py       # /api/stocks/{ticker}/ratios
-│           ├── forecast.py     # /api/stocks/{ticker}/forecast
-│           ├── compare.py      # /api/compare
-│           └── scrape.py       # /api/scrape (trigger on-demand)
-│
-├── frontend/                   # React + Vite SPA
+├── backend/
+│   ├── app/
+│   │   ├── main.py            # FastAPI application and lifecycle
+│   │   ├── routers/           # HTTP endpoint groups
+│   │   └── services/          # Persistence and integration services
+│   └── load_data.py           # Snapshot-to-database import
+├── frontend/
 │   └── src/
-│       ├── App.jsx             # Routing (wouter)
-│       ├── components/
-│       │   ├── Navbar.jsx      # Top nav with global search
-│       │   ├── GlobalSearch.jsx# ⌘K search dropdown
-│       │   └── PriceChartPanel.jsx  # Candlestick + indicator chart
-│       └── pages/
-│           ├── Home.jsx
-│           ├── ValuationList.jsx    # Screener table
-│           ├── StockDetail.jsx      # Per-stock detail + embedded chart
-│           ├── StockMetrics.jsx
-│           ├── StockRatios.jsx
-│           ├── StockForecast.jsx
-│           ├── StockDCF.jsx
-│           ├── StockPE.jsx
-│           ├── StockStatistics.jsx
-│           ├── SignalWatchlist.jsx  # Technical signal scanner
-│           ├── GSheetPortfolio.jsx  # Google Sheets portfolio view
-│           ├── PortfolioList.jsx    # Manual portfolio list
-│           └── PortfolioDetail.jsx  # Manual portfolio detail
-│
-├── src/                        # Core Python package (scrapers + analysis)
-│   ├── config.py               # Stock lists, sector definitions
-│   ├── runner.py               # Parallel scraper executor
-│   ├── scrapers/
-│   │   ├── ratio_scraper.py
-│   │   ├── pe_scraper.py
-│   │   ├── forecast_scraper.py
-│   │   └── statistics_scraper.py
-│   └── analysis/
-│       └── valuation_analyzer.py
-│
-├── scripts/                    # Standalone utility scripts
-├── docs/                       # Technical documentation
-│   ├── DCF_README.md
-│   ├── indicators.md           # ← 進階指標使用說明（怎麼看、怎麼搭配）
-│   └── support_resistance.md
-├── data/                       # Scraped JSON snapshots (gitignored)
-│   ├── pe/
-│   ├── ratio/
-│   └── forecast/
-├── valuation/                  # Generated Excel reports (gitignored)
-├── main.py                     # CLI entry point
-└── requirements.txt
+│       ├── components/        # Shared research and operations UI
+│       ├── lib/               # API client and browser infrastructure
+│       └── pages/             # Route-level views
+├── migrations/                # Alembic revisions
+├── scripts/                   # Reporting, earnings, refresh, and QA workflows
+├── src/                       # Core analysis and scraper package
+├── tests/                     # Backend tests
+├── data/                      # Local and curated datasets
+├── docs/                      # Operational and indicator documentation
+├── pyproject.toml             # Python dependencies and tool configuration
+└── uv.lock                    # Reproducible Python dependency lock
 ```
 
-## API Reference
+## Documentation
 
-### Stocks & Valuations
+- [Daily and weekly pipeline](docs/FLOW.md)
+- [Technical indicator guide](docs/indicators.md)
+- [Support and resistance methodology](docs/support_resistance.md)
+- [DCF model notes](docs/DCF_README.md)
+- [Earnings pipeline](scripts/earnings/README.md)
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/health` | Health check |
-| GET | `/api/search?q=AAPL` | Ticker/name search |
-| GET | `/api/stocks` | All stocks |
-| GET | `/api/valuations` | Valuation list (paginated, filterable) |
-| GET | `/api/stocks/{ticker}` | Stock detail |
-| GET | `/api/stocks/{ticker}/chart` | OHLCV + indicators + S/R levels |
-| GET | `/api/stocks/{ticker}/ratios` | Financial ratios |
-| GET | `/api/stocks/{ticker}/forecast` | EPS/revenue forecasts |
-| GET | `/api/stocks/{ticker}/pe` | Historical PE data |
-| GET | `/api/stocks/{ticker}/dcf` | DCF valuation |
-| GET | `/api/stocks/{ticker}/statistics` | Key statistics |
-| GET | `/api/compare?tickers=AAPL,MSFT` | Side-by-side comparison |
-| GET | `/api/screener` | Screener with filters |
+## Contributing
 
-### Signals
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/signals/watchlist` | Scan all tickers for technical signals (cached 5 min) |
-| DELETE | `/api/signals/watchlist/cache` | Bust the signal cache |
-
-### Portfolio
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/portfolio/gsheet` | Read portfolio from Google Sheet + valuation overlay |
-| GET | `/api/portfolio` | List manual portfolios |
-| POST | `/api/portfolio` | Create portfolio |
-| GET | `/api/portfolio/{id}` | Portfolio detail with live prices |
-| PUT | `/api/portfolio/{id}` | Update portfolio |
-| DELETE | `/api/portfolio/{id}` | Delete portfolio |
-| POST | `/api/portfolio/{id}/holdings` | Add holding |
-| PUT | `/api/portfolio/{id}/holdings/{hid}` | Update holding |
-| DELETE | `/api/portfolio/{id}/holdings/{hid}` | Delete holding |
-
-## Scraping
-
-### Refresh all data
-
-```bash
-uv run python main.py --scrape      # Scrape + analyze + save to DB
-uv run python main.py               # Analyze with existing data only
-```
-
-### Individual scrapers
-
-```bash
-uv run python -m src.runner                          # All scrapers in parallel
-uv run python -m src.scrapers.ratio_scraper          # Ratios/metrics only
-uv run python -m src.scrapers.pe_scraper             # PE history only
-uv run python -m src.scrapers.forecast_scraper       # Forecasts only
-```
-
-### Pro-locked forecast years
-
-StockAnalysis shows the fiscal-year labels but blanks FY+1 and beyond behind
-Pro, so `next_year_eps` used to come back empty. `src/scrapers/forecast_fallback.py`
-fills those cells from two keyless sources — Nasdaq's analyst earnings-forecast
-API (EPS, ~FY+3) and yfinance `revenue_estimate` (revenue, FY+1 only).
-
-Values are **rebased**, not pasted: the fallback's year-over-year change is
-applied to the StockAnalysis level. The sources disagree on EPS definition
-(ADBE FY2026: StockAnalysis 24.41 vs Nasdaq 19.81) and `compute_valuation`
-multiplies `next_year_eps` by a PE median built from StockAnalysis's own
-history, so a raw paste would skew the fair price by the definition gap.
-
-Every filled cell is recorded under `fallback` in the saved JSON with its raw
-source value, rebasing method, and analyst count. Fills resting on fewer than
-3 analysts carry `thin_coverage: true`. Disable with `--no-fallback`.
-
-Around a fiscal-year rollover the source may have already dropped the one year
-StockAnalysis still shows — a June filer in August, say — leaving no overlapping
-year to calibrate against. Those years are left empty by default rather than
-guessing at the level; `--allow-unanchored` takes them raw instead, marked
-`method: "raw"` with `anchor_year: null` and a loud note. Don't feed a raw fill
-into a PE-median fair value without checking the EPS definition first.
-
-```bash
-uv run python scripts/scrape_forecast.py --ticker ADBE   # shows what was filled
-uv run python scripts/test_forecast_fallback.py          # offline checks
-```
-
-The Growth tab labels these columns with the actual fiscal year (`EPS 2027`,
-not `EPS Next Year`) and puts the fill's provenance in the ⓘ hint, so a filled
-number is never indistinguishable from a StockAnalysis one.
-
-### Load snapshots into SQLite
-
-```bash
-uv run python -m backend.load_data           # Latest snapshot only
-uv run python -m backend.load_data --force   # Drop & reload all
-```
-
-## Valuation Methodology
-
-Fair price is estimated two ways:
-
-**1. PE Median Fair Value** — `pe_median_5y × current_eps`
-
-**2. Growth-based Fair Value** — PE multiplier applied to current/next-year EPS estimates:
-
-| 5Y EPS Growth | PE Multiplier |
-|---------------|---------------|
-| < 5% | 0.8× |
-| 5–10% | 1.0× |
-| 10–15% | 1.1× |
-| 15–20% | 1.2× |
-| 20–30% | 1.5× |
-| > 30% | 2.0× |
-
-Stocks are classified as **Undervalued**, **Fairly Valued**, or **Overvalued** based on the percentage difference between current price and fair price.
-
-## Google Sheet Layout
-
-The portfolio sync (`/api/portfolio/gsheet`) expects a public Google Sheet with this layout:
-
-| Col | Content |
-|-----|---------|
-| A (0) | Account section header: `etoro` or `firstrade` |
-| B (1) | Ticker symbol (e.g. `AAPL`) |
-| C (2) | Current price |
-| E (4) | Number of shares |
-| I (8) | Position market value |
-| J (9) | P&L % |
-| K (10) | Portfolio weight % |
-
-Section headers (`etoro`, `firstrade`) can appear on the same row as the first ticker in that section.
-Rows where column B does not match `^[A-Z]{1,5}$` are ignored.
-
-Set your Sheet ID in `backend/.env`:
-```
-GSHEET_ID=your_google_sheet_id_here
-```
-
-## Data Sources
-
-| Source | Data |
-|--------|------|
-| StockAnalysis.com | 60+ financial ratios, EPS/revenue forecasts |
-| MacroTrends.net | 5-year historical PE ratios |
-| Yahoo Finance (yfinance) | Live prices, beta, OHLCV for charts |
-
-## Configuration
-
-| File | Purpose |
-|------|---------|
-| `src/config.py` | Stock lists, sector definitions, 150+ tickers |
-| `backend/app/config.py` | DB URL, CORS origins, fiscal year, `GSHEET_ID` |
-| `backend/.env` | Personal overrides — **gitignored, never commit** |
-| `src/analysis/valuation_analyzer.py` | PE multiplier table |
-
-## Tech Stack
-
-**Backend:** Python 3.11+, FastAPI, SQLAlchemy, SQLite, yfinance, pandas, BeautifulSoup
-**Frontend:** React 18, Vite, Tailwind CSS, Recharts, lightweight-charts v5, wouter, axios, lucide-react
-
-## Notes
-
-- Signal watchlist scans all ~182 tracked tickers in parallel and caches results for 5 minutes
-- Full scraping run (all 182 stocks) takes 30–60 minutes due to polite rate-limiting delays
-- Chart data is fetched live from yfinance; S/R levels are computed server-side from 5 years of daily OHLCV
-- The SQLite database (`backend/stock_valuation.db`) is gitignored — it contains your personal portfolio data
+Keep changes focused and include tests for new domain logic. Database changes
+must include an Alembic revision. Before opening a pull request, run the quality
+checks above and confirm that no credentials or generated portfolio databases
+are staged.
