@@ -13,6 +13,12 @@ are optional.
 > Stock Radar is a research tool, not financial advice or an order-execution
 > system. Validate market data and decisions independently before trading.
 
+## Product preview
+
+![Stock Radar Signal Radar interface](docs/assets/signal-radar-ui.jpg)
+
+<p align="center"><sub>Signal Radar ranks public-market setups by trend strength, technical events, momentum, and valuation context. Market data shown is illustrative and time-sensitive.</sub></p>
+
 ## Highlights
 
 - **War Room** — portfolio directives, market regime, risk flags, opportunity
