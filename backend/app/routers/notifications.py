@@ -2,7 +2,6 @@ from pathlib import Path
 import asyncio
 import csv
 import json
-import os
 import sys
 import time
 from datetime import date, datetime, time as dt_time
@@ -24,20 +23,11 @@ if str(_GUARD_LIB) not in sys.path:
 import claude_guard as _guard  # noqa: E402
 from ..database import SessionLocal, get_db
 from ..models import Stock
+from ..services.notification_config import line_access_token, telegram_config
 from .earnings import get_earnings_calendar
 
 router = APIRouter()
 
-TELEGRAM_ENV_FALLBACKS = [
-    "/Users/yankesswang/Desktop/Projects/Arthur_App/.env",
-    "/Users/yankesswang/openclaw_backup/.env",
-]
-LINE_ENV_FALLBACKS = [
-    "/Users/yankesswang/Desktop/Projects/Arthur_App/.env",
-    "/Users/yankesswang/openclaw_backup/.env",
-    "/Users/yankesswang/.config/digest/.env",
-    "/Users/yankesswang/.hn-daily-digest/.env",
-]
 MARKET_MOVE_CACHE_TTL = 10 * 60
 PRICE_MOVE_THRESHOLD_PCT = 5.0
 VOLUME_CONFIRMED_MOVE_THRESHOLD_PCT = 3.0
@@ -65,75 +55,29 @@ class TelegramNotification(BaseModel):
     body: str = Field(min_length=1, max_length=1000)
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
-
-
-def _telegram_config() -> tuple[str, str]:
-    token = settings.TELEGRAM_TOKEN.strip()
-    chat_id = settings.TELEGRAM_CHAT_ID.strip() or settings.TELEGRAM_ADMIN_ID.strip()
-
-    if not token or not chat_id:
-        env_paths = [Path(settings.TELEGRAM_ENV_FILE).expanduser()]
-        env_paths.extend(Path(path) for path in TELEGRAM_ENV_FALLBACKS)
-
-        env_values: dict[str, str] = {}
-        for env_path in env_paths:
-            env_values = _read_env_file(env_path)
-            if env_values:
-                break
-
-        token = token or env_values.get("TELEGRAM_TOKEN", "").strip()
-        chat_id = (
-            chat_id
-            or env_values.get("TELEGRAM_CHAT_ID", "").strip()
-            or env_values.get("TELEGRAM_ADMIN_ID", "").strip()
-            or env_values.get("ADMIN_ID", "").strip()
-        )
-
-    return token, chat_id
-
-
-def _line_access_token() -> str:
-    token = (
-        os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-        or os.environ.get("LINE_ACCESS_TOKEN", "").strip()
-        or os.environ.get("CHANNEL_ACCESS_TOKEN", "").strip()
-    )
-    if token:
-        return token
-
-    env_paths = [Path(settings.TELEGRAM_ENV_FILE).expanduser()]
-    env_paths.extend(Path(path).expanduser() for path in LINE_ENV_FALLBACKS)
-
-    for env_path in env_paths:
-        env_values = _read_env_file(env_path)
-        token = (
-            env_values.get("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-            or env_values.get("LINE_ACCESS_TOKEN", "").strip()
-            or env_values.get("CHANNEL_ACCESS_TOKEN", "").strip()
-        )
-        if token:
-            return token
-
-    return ""
+def _quiet_defer(url, **kw):
+    """靜音時段（預設 23:00–07:00）把推播排進佇列，07:00 再送；見 Arthur_App/scripts/lib/quiet_hours.py。"""
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _lib = str(_P.home() / "Projects" / "Arthur_App" / "scripts" / "lib")
+        if _lib not in _sys.path:
+            _sys.path.append(_lib)
+        from quiet_hours import maybe_defer
+        return maybe_defer(url, **kw)
+    except Exception:
+        return False
 
 
 def _send_telegram_message(text: str) -> None:
-    token, chat_id = _telegram_config()
+    token, chat_id = telegram_config()
     if not token or not chat_id:
         raise HTTPException(status_code=503, detail="Telegram is not configured.")
 
+    if _quiet_defer(f"https://api.telegram.org/bot{token}/sendMessage",
+                    data={"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"},
+                    label="stock-radar"):
+        return
     try:
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -155,10 +99,14 @@ def _send_line_message(text: str, *, important_report: bool = False) -> None:
     if not important_report:
         print("[notifications] LINE skipped: non-report notification")
         return
-    token = _line_access_token()
+    token = line_access_token()
     if not token:
         raise HTTPException(status_code=503, detail="LINE is not configured.")
 
+    if _quiet_defer("https://api.line.me/v2/bot/message/broadcast",
+                    json={"messages": [{"type": "text", "text": text[:5000]}]},
+                    headers={"Authorization": f"Bearer {token}"}, label="stock-radar:line"):
+        return
     try:
         response = requests.post(
             "https://api.line.me/v2/bot/message/broadcast",

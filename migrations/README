@@ -1,0 +1,4 @@
+StockRadar database migrations.
+
+Existing installations can run `uv run alembic upgrade head`; the baseline
+revision creates only missing ORM tables and then records the schema version.

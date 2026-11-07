@@ -1,0 +1,1 @@
+"""StockRadar backend tests."""

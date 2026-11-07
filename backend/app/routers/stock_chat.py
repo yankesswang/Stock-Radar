@@ -15,6 +15,10 @@
   單檔    ticker=NVDA           → 逐檔區塊（技術面/財報/…）＋需要時的大盤背景
   跨標的  問句點名多個代號       → 每檔各撈一份，prompt 裡照 ticker 分段
   大盤    ticker 留空            → 指數/總經/板塊/市場新聞/我的組合曝險
+  族群    問句點名產業主題       → 那組股票的漲跌排行＋主題新聞（「資安股為什麼跌」）
+  個股頁問大盤                    → 看問句的主詞決定（classify_intent）：只問大盤就不撈這檔，
+                                     「Fed 降息對這檔的影響」這種兩邊都講的就兩邊都撈
+          （產業分組來自 DB 的 industries 表，跟上面兩種範圍疊加，不另開 session 範圍）
 
 Endpoints（ticker 一律是可選參數，不在路徑上）:
   GET    /api/stock-chat/stream?q=&ticker=      — SSE 串流問答（前端用）
@@ -31,6 +35,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -45,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import SessionLocal, get_db
-from ..models import ChatMessage, ChatSession, Stock
+from ..models import ChatMessage, ChatSession, Industry, Stock
 
 _LIB_DIR = settings.PROJECT_ROOT.parent / "scripts" / "lib"
 if str(_LIB_DIR) not in sys.path:
@@ -53,28 +58,6 @@ if str(_LIB_DIR) not in sys.path:
 import claude_guard as _guard  # noqa: E402
 
 router = APIRouter()
-
-
-def _ensure_schema() -> None:
-    """補上舊 DB 缺的欄位。
-
-    create_all 只建新表、不會改既有表，所以「跨標的問答」加的 chat_messages.tickers
-    在已經聊過天的機器上不會自己長出來。這裡開機時補一次（SQLite ADD COLUMN 很便宜）。
-    """
-    from sqlalchemy import inspect, text
-
-    from ..database import engine
-
-    try:
-        cols = {c["name"] for c in inspect(engine).get_columns("chat_messages")}
-    except Exception:
-        return                       # 表還沒建 —— create_all 等一下就會用新結構建好
-    if "tickers" not in cols:
-        with engine.begin() as con:
-            con.execute(text("ALTER TABLE chat_messages ADD COLUMN tickers VARCHAR DEFAULT ''"))
-
-
-_ensure_schema()
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 _TICKER_RE = re.compile(r"[A-Z0-9.\-]{1,12}")
@@ -664,6 +647,244 @@ def _sec_macro_notes() -> str | None:
     return "\n".join(L)
 
 
+# ══ 主題 / 產業族群 ═══════════════════════════════════════════════════════════
+# 「網路安全股為什麼跌」這種問題既沒點名代號、也不是 11 個 SPDR 板塊之一，
+# 以前只會拿到指數/總經/市場新聞，模型只能回「資料裡沒有」。族群的成分股其實
+# 已經在 stocks 表裡分好組（industries：資安、記憶體、國防航太…），這裡把口語
+# 對到那些組名，再撈整組的漲跌排行與新聞。
+
+@dataclass(frozen=True)
+class ThemeDef:
+    token: str                  # 拿去比對 industries.name 的字（完全相同優先，否則子字串）
+    aliases: tuple[str, ...]    # 問句裡可能的講法（比對時問句已轉小寫）
+    query: str                  # Google News 查這個主題用的英文關鍵字
+
+
+_THEMES: tuple[ThemeDef, ...] = (
+    ThemeDef("資安", ("資安", "網路安全", "網安", "資訊安全", "cyber", "零信任", "防火牆"),
+             "cybersecurity stocks"),
+    ThemeDef("ai半導體", ("ai半導體", "ai 半導體", "ai晶片", "ai 晶片", "算力"), "AI chip stocks"),
+    ThemeDef("半導體", ("半導體", "晶片股", "semiconductor", "晶圓"), "semiconductor stocks"),
+    ThemeDef("記憶體", ("記憶體", "dram", "nand", "hbm", "儲存股"), "memory chip stocks"),
+    ThemeDef("光通訊", ("光通訊", "矽光子", "cpo", "光模組"), "optical networking stocks"),
+    ThemeDef("SaaS", ("saas", "軟體股", "雲端股", "software stock"), "software stocks"),
+    ThemeDef("國防航太", ("國防", "軍工", "航太", "defense"), "defense stocks"),
+    ThemeDef("太空", ("太空", "衛星", "space stock"), "space stocks"),
+    ThemeDef("無人機", ("無人機", "drone"), "drone stocks"),
+    ThemeDef("機器人", ("機器人", "robot"), "robotics stocks"),
+    ThemeDef("液冷", ("液冷", "散熱", "電源", "儲能"), "AI data center power cooling stocks"),
+    ThemeDef("加密", ("加密", "幣股", "比特幣", "bitcoin", "crypto", "礦企"), "crypto stocks"),
+    ThemeDef("支付", ("支付", "payment", "金流"), "payments stocks"),
+    ThemeDef("銀行", ("銀行", "bank"), "bank stocks"),
+    ThemeDef("券商", ("券商", "資管", "broker"), "brokerage asset manager stocks"),
+    ThemeDef("保險", ("保險", "insurance"), "insurance stocks"),
+    ThemeDef("生技", ("生技", "醫藥", "藥廠", "biotech", "pharma"), "biotech pharma stocks"),
+    ThemeDef("原油", ("原油", "石油", "油股", "oil stock"), "oil stocks"),
+    ThemeDef("原物料", ("原物料", "礦業", "mining"), "mining stocks"),
+    ThemeDef("電力", ("電力", "公用事業", "utility", "utilities"), "utility stocks"),
+    ThemeDef("REIT", ("reit", "不動產"), "REIT stocks"),
+    ThemeDef("旅遊", ("旅遊", "travel"), "travel stocks"),
+    ThemeDef("航空郵輪", ("航空", "郵輪", "airline", "cruise"), "airline cruise stocks"),
+    ThemeDef("電信媒體", ("電信", "媒體", "telecom"), "telecom media stocks"),
+    ThemeDef("零售", ("零售", "retail"), "retail stocks"),
+    ThemeDef("食品", ("食品", "消費必需", "staples"), "consumer staples food stocks"),
+    ThemeDef("中概", ("中概", "中國股", "china adr"), "China ADR stocks"),
+    ThemeDef("大科技", ("大科技", "七巨頭", "mag7", "mag 7", "巨頭"), "Magnificent Seven stocks"),
+)
+
+# 組名太籠統、問句裡出現也不代表在問那組
+_THEME_NAME_SKIP = {"其他", "傳統", "成長股", "工業", "宏觀 / 事件交易 / 大盤"}
+_THEME_MAX_TICKERS = 20
+_THEME_TTL = 300                       # 族群報價快取秒數；movers 與 news 兩塊共用一份
+_theme_cache: dict[str, tuple[float, list[dict]]] = {}
+_theme_lock = threading.Lock()
+
+
+def _industry_names() -> list[str]:
+    db = SessionLocal()
+    try:
+        return [n for (n,) in db.query(Industry.name).join(Stock).distinct().all()]
+    except Exception:
+        return []
+    finally:
+        db.close()
+
+
+def _match_industries(token: str, names: list[str]) -> list[str]:
+    t = token.lower()
+    exact = [n for n in names if n.lower() == t]
+    return exact or [n for n in names if t in n.lower()]
+
+
+_OWN_GROUP_WORDS = ("族群", "同族群", "同類股", "類股", "同產業")
+
+
+def _industry_of(ticker: str) -> str | None:
+    db = SessionLocal()
+    try:
+        row = (db.query(Industry.name).join(Stock)
+               .filter(func.upper(Stock.ticker) == ticker.upper()).first())
+        return row[0] if row else None
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
+def detect_themes(question: str, page_ticker: str | None = None) -> list[str]:
+    """問句點到哪些產業族群 → industries.name 清單（最多兩組，再多 prompt 就太長）。
+
+    在個股頁只說「族群」沒講名字（「族群今天怎麼了」「這檔在同族群裡算強嗎」），
+    指的就是這檔自己所屬的那組。
+    """
+    q = question.lower()
+    names = _industry_names()
+    if not names:
+        return []
+    out: list[str] = []
+    for th in _THEMES:
+        if any(a in q for a in th.aliases):
+            out += [n for n in _match_industries(th.token, names) if n not in out]
+    # 別名表沒收、但問句直接寫了組名（例如新加的組）也要認
+    for n in names:
+        if n not in _THEME_NAME_SKIP and len(n) >= 2 and n.lower() in q and n not in out:
+            out.append(n)
+    if not out and page_ticker and any(w in q for w in _OWN_GROUP_WORDS):
+        if (own := _industry_of(page_ticker)) and own not in _THEME_NAME_SKIP:
+            out.append(own)
+    return out[:2]
+
+
+def _theme_query(theme: str) -> str | None:
+    for th in _THEMES:
+        if th.token.lower() == theme.lower() or th.token.lower() in theme.lower():
+            return th.query
+    return None
+
+
+def _daily_closes(symbol: str):
+    """近三個月日收盤；跟 _last_two_closes 同樣 chart API 優先、yfinance 後備。"""
+    from .chart import _fetch_yahoo_chart_df
+    import yfinance as yf
+
+    for fetch in (lambda: _fetch_yahoo_chart_df(symbol, "3m", "1d"),
+                  lambda: yf.Ticker(symbol).history(period="3mo", auto_adjust=True)):
+        try:
+            df = fetch()
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        closes = df["Close"].dropna().astype(float)
+        if len(closes):
+            return closes
+    return None
+
+
+def _chg(closes, back: int) -> float | None:
+    if closes is None or len(closes) <= back:
+        return None
+    base = float(closes.iloc[-1 - back])
+    return (float(closes.iloc[-1]) - base) / base * 100 if base else None
+
+
+def _theme_rows(theme: str) -> list[dict]:
+    """族群成分股的價格與 1日/5日/1月 漲跌，照今日漲跌由弱到強排。"""
+    with _theme_lock:        # 同一題的 movers / news 兩塊平行跑，鎖住讓第二塊直接吃快取
+        hit = _theme_cache.get(theme)
+        if hit and time.time() - hit[0] < _THEME_TTL:
+            return hit[1]
+
+        db = SessionLocal()
+        try:
+            members = (db.query(Stock.ticker, Stock.company_name).join(Industry)
+                       .filter(Industry.name == theme).order_by(Stock.ticker).all())
+        finally:
+            db.close()
+        members = members[:_THEME_MAX_TICKERS]
+        if not members:
+            return []
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            series = list(ex.map(_daily_closes, [t for t, _ in members]))
+        rows = []
+        for (t, name), c in zip(members, series):
+            rows.append({
+                "ticker": t, "name": name,
+                "price": float(c.iloc[-1]) if c is not None and len(c) else None,
+                "d1": _chg(c, 1), "d5": _chg(c, 5), "m1": _chg(c, 21),
+            })
+        rows.sort(key=lambda r: (r["d1"] is None, r["d1"] if r["d1"] is not None else 0))
+        _theme_cache[theme] = (time.time(), rows)
+        return rows
+
+
+def _pct(v: float | None) -> str:
+    return f"{v:+.2f}%" if v is not None else "—"
+
+
+def _sec_theme_movers(theme: str) -> str | None:
+    rows = _theme_rows(theme)
+    quoted = [r for r in rows if r["price"] is not None]
+    if not quoted:
+        return None
+    try:
+        from .earnings_notes import _positions
+        pos = _positions()
+    except Exception:
+        pos = {}
+
+    d1s = sorted(r["d1"] for r in quoted if r["d1"] is not None)
+    median = d1s[len(d1s) // 2] if d1s else None
+    down = sum(1 for v in d1s if v < 0)
+    spy = _daily_closes("SPY")
+    L = [f"## {theme} 族群漲跌（我 stocks 表裡的分組，{len(quoted)} 檔，依今日漲跌由弱到強）",
+         f"- 族群今日中位數 {_pct(median)}｜下跌 {down} 檔 / 上漲 {len(d1s) - down} 檔"
+         f"｜同期 SPY 今日 {_pct(_chg(spy, 1))}、5日 {_pct(_chg(spy, 5))}、1月 {_pct(_chg(spy, 21))}"]
+    for r in quoted:
+        p = pos.get(r["ticker"].upper())
+        mine = f"｜我持有 {p['shares']:g} 股（均價 ${p['avg_cost']}）" if p else ""
+        L.append(f"- {r['ticker']}{' ' + r['name'] if r['name'] else ''}: ${r['price']:.2f}"
+                 f"｜今日 {_pct(r['d1'])}｜5日 {_pct(r['d5'])}｜1月 {_pct(r['m1'])}{mine}")
+    missing = [r["ticker"] for r in rows if r["price"] is None]
+    if missing:
+        L.append(f"- 取不到報價：{', '.join(missing)}")
+    return "\n".join(L)
+
+
+def _sec_theme_news(theme: str) -> str | None:
+    """主題新聞：族群層級一次 + 跌最多的三檔各一次（Google News）。"""
+    from .news import _fetch_news
+
+    queries: list[tuple[str, str, int]] = []
+    if q := _theme_query(theme):
+        queries.append((f"{theme}（{q}）", q, 8))
+    for r in [r for r in _theme_rows(theme) if r["d1"] is not None][:3]:
+        queries.append((f"{r['ticker']}（今日 {_pct(r['d1'])}）", f"{r['ticker']} stock", 4))
+    if not queries:
+        return None
+
+    def fetch(item):
+        try:
+            return _fetch_news(item[1], limit=item[2])
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        results = list(ex.map(fetch, queries))
+    L = [f"## {theme} 族群新聞（Google News）"]
+    n = 0
+    for (label, _, _), news in zip(queries, results):
+        if not news:
+            continue
+        L.append(f"### {label}")
+        for it in news:
+            n += 1
+            meta = " · ".join(x for x in [it.get("source"), (it.get("published_at") or "")[:10]] if x)
+            L.append(f"- [新聞{n}] {it['title']}" + (f"（{meta}）" if meta else ""))
+    return "\n".join(L) if n else None
+
+
 # ══ 區塊登記表 ═════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True)
@@ -671,9 +892,9 @@ class SectionDef:
     key: str
     label: str
     keywords: tuple[str, ...]
-    build: Callable[..., str | None]   # scope=stock 吃 ticker；scope=market 不吃參數
+    build: Callable[..., str | None]   # scope=stock 吃 ticker；theme 吃產業名；market 不吃參數
     topic: str                          # 歸到哪個主題（問答紀錄頁的分類）
-    scope: str = "stock"                # stock（逐檔）| market（大盤共用）
+    scope: str = "stock"                # stock（逐檔）| market（大盤共用）| theme（逐族群）
     default: bool = False               # 問題沒點到任何區塊時要不要帶
 
 
@@ -726,7 +947,7 @@ MARKET_SECTIONS: tuple[SectionDef, ...] = (
                                      "降息", "通膨", "cpi", "匯率", "美元", "油價", "黃金", "曲線",
                                      "倒掛", "景氣", "衰退"),
                _sec_macro, "總經", scope="market", default=True),
-    SectionDef("sector_rs", "板塊強弱", ("板塊", "類股", "sector", "輪動", "強勢", "弱勢", "rs",
+    SectionDef("sector_rs", "板塊強弱", ("板塊", "類股", "族群", "sector", "輪動", "強勢", "弱勢", "rs", "相對強弱",
                                          "科技股", "金融股", "能源", "醫療", "防禦"),
                _sec_sector_rs, "大盤", scope="market"),
     SectionDef("sector_exposure", "我的板塊曝險", ("曝險", "集中", "分散", "壓太多", "配置", "權重", "組合"),
@@ -740,7 +961,13 @@ MARKET_SECTIONS: tuple[SectionDef, ...] = (
                _sec_macro_notes, "我的觀點", scope="market"),
 )
 
-SECTIONS: tuple[SectionDef, ...] = STOCK_SECTIONS + MARKET_SECTIONS
+# 族群區塊不靠關鍵字觸發：detect_themes 認出族群就兩塊一起帶（問族群幾乎都是在問「誰跌、為什麼」）
+THEME_SECTIONS: tuple[SectionDef, ...] = (
+    SectionDef("theme_movers", "族群漲跌", (), _sec_theme_movers, "大盤", scope="theme"),
+    SectionDef("theme_news", "族群新聞", (), _sec_theme_news, "新聞", scope="theme"),
+)
+
+SECTIONS: tuple[SectionDef, ...] = STOCK_SECTIONS + MARKET_SECTIONS + THEME_SECTIONS
 _BY_KEY = {s.key: s for s in SECTIONS}
 
 MARKET = "MARKET"          # 沒有個股範圍時的 session scope 標記
@@ -756,7 +983,9 @@ _NOT_TICKERS = {
     "GDP", "CPI", "PPI", "PMI", "FED", "ETF", "USD", "TWD", "YOY", "QOQ", "RSI", "MACD",
     "KD", "MA", "ADX", "ATR", "VIX", "US", "TW", "Q1", "Q2", "Q3", "Q4", "FY", "AND", "THE",
 }
-_CAND_RE = re.compile(r"\b([A-Za-z]{1,5}(?:\.[A-Za-z]{2})?)\b")
+# 不用 \b：Python 的 \b 把中文字也當成字元，「對比amd」「NVDA跟AMD」這種中英緊貼的
+# 寫法會整個抓不到代號。改成「前後不是英數」就好。
+_CAND_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{1,5}(?:\.[A-Za-z]{2})?)(?![A-Za-z0-9])")
 
 
 def resolve_tickers(question: str, page_ticker: str | None) -> list[str]:
@@ -793,23 +1022,71 @@ def resolve_tickers(question: str, page_ticker: str | None) -> list[str]:
     return out[:4]          # 四檔已經是一個很長的 prompt 了
 
 
-def route_sections(question: str, has_ticker: bool) -> tuple[list[str], list[str]]:
+def _kw_hit(keyword: str, q: str) -> bool:
+    """關鍵字命中。英數短詞要有字母邊界 —— 不然 ma 會吃到 market、pe 吃到 peer、
+    rs 吃到 rsi、fed 吃到 feed。中文照舊子字串比對。"""
+    if keyword.isascii() and keyword.replace(" ", "").isalnum():
+        return re.search(rf"(?<![a-z]){re.escape(keyword)}(?![a-z])", q) is not None
+    return keyword in q
+
+
+# 問句的「主詞」是大盤 / 總經 / 族群的講法。刻意不拿區塊關鍵字表來判斷：那張表裡
+# 「支撐」「為什麼跌」「新聞」兩邊都能用，主詞得看這些不會拿來講單一個股的詞。
+_MARKET_SUBJECTS = (
+    "大盤", "指數", "市場", "美股", "台股", "股市", "總經", "經濟", "景氣", "衰退",
+    "利率", "殖利率", "公債", "美債", "聯準會", "fed", "fomc", "升息", "降息", "通膨",
+    "cpi", "ppi", "pce", "非農", "就業", "失業", "gdp", "匯率", "美元", "油價", "黃金",
+    "vix", "恐慌", "spy", "qqq", "nasdaq", "那斯達克", "標普", "s&p", "道瓊", "羅素",
+    "板塊", "類股", "族群", "輪動", "資金流", "風險偏好", "關稅", "地緣", "選舉",
+    "market", "macro", "economy", "sector", "index",
+)
+# 含大盤字眼、其實在講個股的詞（毛利率裡有「利率」、黃金交叉裡有「黃金」…），比對主詞前先拿掉
+_NOT_MARKET_RE = re.compile(r"毛利率|淨利率|營利率|營益率|黃金交叉|死亡交叉|護城河|市場份額|市占|市值")
+# 把話題拉回這檔的講法（代號本身另外判斷）
+# 「公司」「個股」在大盤問句裡多半是泛指（「哪些公司受惠於降息」），不算
+_STOCK_REFS = ("這檔", "這支", "這隻", "這家", "這間", "該股", "我的部位", "我的成本")
+_IT_RE = re.compile(r"(?<!其)它")      # 「它」要是代名詞，不是「其它」
+
+
+def classify_intent(question: str, page_ticker: str | None, named: list[str],
+                    themes: list[str]) -> str:
+    """個股頁上的問題在問誰：stock（這檔）| market（大盤/總經/族群）| both。
+
+    沒有大盤主詞 → stock（跟以前一樣）。有大盤主詞時，要有把話題拉回這檔的講法
+    （點名代號、「這檔」「它」…）才算 both，否則就是單純在個股頁問大盤。
+    """
+    if not page_ticker:
+        return "market"
+    q = question.lower()
+    bare = _NOT_MARKET_RE.sub(" ", q)
+    market = bool(themes) or any(_kw_hit(w, bare) for w in _MARKET_SUBJECTS)
+    if not market:
+        return "stock"
+    about_page = (page_ticker.upper() in named or any(w in q for w in _STOCK_REFS)
+                  or _IT_RE.search(q) is not None)
+    return "both" if about_page else "market"
+
+
+def route_sections(question: str, has_ticker: bool,
+                   market_context: bool = False) -> tuple[list[str], list[str]]:
     """問題 → (逐檔要撈的區塊, 大盤要撈的區塊)。
 
     兩張表各自比對：問個股也可能要大盤背景（「這檔在現在的利率環境下…」），
     問大盤也可能點到個股。都沒命中時，有標的就用個股預設組、沒標的就用大盤預設組。
+    market_context：有標的、但問題的主詞也包含大盤（classify_intent = both），
+    大盤預設組照樣帶上，不然「Fed 降息對這檔影響」只撈得到殖利率一塊。
     """
     q = question.lower()
 
-    def hits(table):
-        return [s.key for s in table if s.keywords and any(k in q for k in s.keywords)]
+    def hits(table, text):
+        return [s.key for s in table if s.keywords and any(_kw_hit(k, text) for k in s.keywords)]
 
-    stock_keys = hits(STOCK_SECTIONS) if has_ticker else []
-    market_keys = hits(MARKET_SECTIONS)
+    stock_keys = hits(STOCK_SECTIONS, q) if has_ticker else []
+    market_keys = hits(MARKET_SECTIONS, _NOT_MARKET_RE.sub(" ", q))   # 毛利率不是在問利率
 
     if has_ticker and not stock_keys:
         stock_keys = [s.key for s in STOCK_SECTIONS if s.default]
-    if not has_ticker:
+    if not has_ticker or market_context:
         # 大盤範圍的預設組（指數 / 總經 / 市場新聞）一律帶上，不是只在沒命中時才帶：
         # 問「今天大盤怎樣」只回指數漲跌是沒用的，得知道今天發生什麼、利率在哪。
         # 逐檔區塊沒這樣做 —— 那邊每一塊都是一次外部抓取，帶多了就慢。
@@ -871,13 +1148,22 @@ _RULES = """你是 Arthur 的投資研究助理，在 stock-radar 裡回答問�
 5. 提到我自己的筆記／論點／持倉時要標明那是我的，並且明講現在的數據跟當初的判斷是否一致。
 6. 不要重述整段資料，我看得到頁面；只講能回答問題的那部分。
 7. 結尾用一行「依據：」列出你用到的資料區塊名稱。
-8. 不要使用任何工具或讀取檔案，直接根據提供的資料回答。"""
+8. 不要使用任何工具或讀取檔案，直接根據提供的資料回答。
+9. 問某個族群／類股為什麼漲跌時：先點名動最大的幾檔與幅度、族群中位數對比 SPY（是族群自己的事還是大盤拖累），
+   再用新聞標題歸納原因；新聞看不出原因就直說，不要把無關新聞硬湊成理由。"""
 
 
-def _build_prompt(tickers: list[str], question: str, blocks: dict[str, str],
-                  missing: list[str], first_turn: bool) -> str:
+def _build_prompt(tickers: list[str], themes: list[str], question: str, blocks: dict[str, str],
+                  missing: list[str], first_turn: bool, page_ticker: str | None = None,
+                  intent: str = "stock") -> str:
     now = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d %H:%M 台北時間")
     scope = "、".join(tickers) if tickers else "大盤 / 總經（不限單一個股）"
+    if themes:
+        scope += f"；族群：{'、'.join(themes)}"
+    if page_ticker and intent == "market":
+        scope += f"（我人在 {page_ticker} 的頁面上，但這題問的是大盤，直接回答大盤，不必硬扯到 {page_ticker}）"
+    elif page_ticker and intent == "both":
+        scope += f"（這題同時問大盤與 {page_ticker}：先講大盤/總經面，再落到對 {page_ticker} 的具體影響）"
     L: list[str] = []
     if first_turn:
         L += [_RULES, "", f"# 這次的範圍：{scope}", f"資料時間：{now}", ""]
@@ -899,9 +1185,18 @@ def _build_prompt(tickers: list[str], question: str, blocks: dict[str, str],
             if k in blocks:
                 L += [blocks[k], ""]
 
+    for th in themes:
+        if not any(k.startswith(f"{th}:") for k in blocks):
+            continue
+        L.append(f"# ══ {th} 族群 ══")
+        for s in THEME_SECTIONS:
+            k = f"{th}:{s.key}"
+            if k in blocks:
+                L += [blocks[k], ""]
+
     market = [k for k in blocks if k.startswith("*:")]
     if market:
-        if tickers:
+        if tickers or themes:
             L.append("# ══ 大盤 / 總經背景 ══")
         for s in SECTIONS:
             k = f"*:{s.key}"
@@ -1061,15 +1356,27 @@ def _prepare(page_ticker: str | None, question: str, session_id: int | None,
             db.commit()
             db.refresh(sess)
 
-        tickers = resolve_tickers(question, page_ticker)
+        # 族群看的是問句本身，不受手動勾選的區塊影響（勾選列本來就沒有族群區塊）
+        themes = detect_themes(question, page_ticker)
+        named = resolve_tickers(question, None)          # 問句自己點名的，不含頁面那檔
+        intent = classify_intent(question, page_ticker, named, themes)
+        # 在個股頁單純問大盤：這檔的技術面/估值/持倉都不撈，不然答案會被拉回這檔
+        tickers = named if intent == "market" else resolve_tickers(question, page_ticker)
         forced = [k for k in (force_sections or []) if k in _BY_KEY]
         if forced:
             stock_keys = [k for k in forced if _BY_KEY[k].scope == "stock"]
             market_keys = [k for k in forced if _BY_KEY[k].scope == "market"]
+            if stock_keys and not tickers and page_ticker:
+                tickers = [page_ticker]              # 手動勾了逐檔區塊，就是要這檔
         else:
-            stock_keys, market_keys = route_sections(question, bool(tickers))
+            stock_keys, market_keys = route_sections(question, bool(tickers),
+                                                     market_context=intent != "stock")
+        if themes and "sector_rs" not in market_keys:
+            market_keys.append("sector_rs")      # 族群漲跌要能對照所屬大板塊
 
-        want = [f"{t}:{k}" for t in tickers for k in stock_keys] + [f"*:{k}" for k in market_keys]
+        want = ([f"{t}:{k}" for t in tickers for k in stock_keys]
+                + [f"{th}:{s.key}" for th in themes for s in THEME_SECTIONS]
+                + [f"*:{k}" for k in market_keys])
         already = [k for k in (sess.sent_sections or "").split(",") if k]
         first_turn = not sess.claude_session_id
         # 續問只補這輪新點到的區塊；報價每輪都重撈（價格會動）
@@ -1078,7 +1385,8 @@ def _prepare(page_ticker: str | None, question: str, session_id: int | None,
 
         blocks = gather(todo)
         missing = [k for k in todo if k not in blocks]
-        prompt = _build_prompt(tickers, question, blocks, missing, first_turn)
+        prompt = _build_prompt(tickers, themes, question, blocks, missing, first_turn,
+                               page_ticker=page_ticker, intent=intent)
 
         user_msg = ChatMessage(session_id=sess.id, ticker=scope_label, role="user",
                                content=question, topics=",".join(_topics_for(want)),
@@ -1091,6 +1399,8 @@ def _prepare(page_ticker: str | None, question: str, session_id: int | None,
             "session_pk": sess.id,
             "scope_label": scope_label,
             "tickers": tickers,
+            "themes": themes,
+            "intent": intent,
             "resume_id": sess.claude_session_id or None,
             "prompt": prompt,
             "keys": want,
@@ -1292,6 +1602,10 @@ _STOCK_SUGGESTIONS = [
               "要多少 EPS 成長才撐得起現在的價格？"]),
     ("我的觀點", ["我當初的論點現在還成立嗎？哪裡變了？",
                   "以我的成本，現在該加碼、續抱還是減碼？"]),
+    ("大盤", ["今天大盤在幹嘛？主線是什麼？",
+              "現在的利率與總經環境，對 {T} 是順風還逆風？",
+              "{T} 所屬族群今天的強弱排行？它在裡面算強還是弱？",
+              "今天市場新聞裡，有哪些會影響到這檔？"]),
 ]
 
 _MARKET_SUGGESTIONS = [
@@ -1302,6 +1616,8 @@ _MARKET_SUGGESTIONS = [
               "利率、美元、油價這三個現在指向什麼情境？"]),
     ("跨標的", ["NVDA 跟 AMD 現在誰的估值比較合理？",
                 "我持倉裡哪幾檔的技術面最弱？"]),
+    ("族群", ["今天資安股為什麼跌？哪幾檔跌最多？",
+              "記憶體族群這個月的強弱排行？"]),
     ("我的部位", ["我的板塊曝險集中在哪？風險是什麼？",
                   "以現在的大盤環境，我的組合該調整什麼？"]),
 ]
@@ -1343,6 +1659,8 @@ def stream_ask(
             "question_id": prep["user_message_id"],
             "scope": prep["scope_label"],
             "tickers": prep["tickers"],
+            "themes": prep["themes"],
+            "intent": prep["intent"],
             "sections": [_label_of(k) for k in prep["keys"]],
             "used": [_label_of(k) for k in prep["used"]],
             "missing": [_label_of(k) for k in prep["missing"]],
@@ -1399,6 +1717,7 @@ def ask(body: dict = Body(...)) -> dict:
     return {
         "session_id": prep["session_pk"], "message_id": mid,
         "scope": prep["scope_label"], "tickers": prep["tickers"],
+        "themes": prep["themes"], "intent": prep["intent"],
         "question": question, "answer": answer,
         "sections": [_label_of(k) for k in prep["used"]],
         "missing": [_label_of(k) for k in prep["missing"]],
