@@ -23,9 +23,21 @@
     "name": "Analog Devices, Inc.",
     "sector": "Technology"
   },
+  "AMAT": {
+    "name": "Applied Materials, Inc.",
+    "sector": "Technology"
+  },
+  "AMD": {
+    "name": "Advanced Micro Devices, Inc.",
+    "sector": "Technology"
+  },
   "AMZN": {
     "name": "Amazon.com, Inc.",
     "sector": "Consumer Cyclical"
+  },
+  "AMZU": {
+    "name": "Direxion Daily AMZN Bull 2X ETF",
+    "sector": null
   },
   "ARM": {
     "name": "Arm Holdings plc",
@@ -37,6 +49,10 @@
   },
   "CAMT": {
     "name": "Camtek Ltd.",
+    "sector": "Technology"
+  },
+  "CRWD": {
+    "name": "CrowdStrike Holdings, Inc.",
     "sector": "Technology"
   },
   "DHI": {
@@ -55,6 +71,10 @@
     "name": "International Business Machines",
     "sector": "Technology"
   },
+  "INTC": {
+    "name": "Intel Corporation",
+    "sector": "Technology"
+  },
   "JBL": {
     "name": "Jabil Inc.",
     "sector": "Technology"
@@ -63,9 +83,17 @@
     "name": "Eli Lilly and Company",
     "sector": "Healthcare"
   },
+  "LRCX": {
+    "name": "Lam Research Corporation",
+    "sector": "Technology"
+  },
   "META": {
     "name": "Meta Platforms, Inc.",
     "sector": "Communication Services"
+  },
+  "MKSI": {
+    "name": "MKS Inc.",
+    "sector": "Technology"
   },
   "MSFT": {
     "name": "Microsoft Corporation",
@@ -87,8 +115,16 @@
     "name": "Ouster, Inc.",
     "sector": "Technology"
   },
+  "PLTR": {
+    "name": "Palantir Technologies Inc.",
+    "sector": "Technology"
+  },
   "QCOM": {
     "name": "QUALCOMM Incorporated",
+    "sector": "Technology"
+  },
+  "ROG": {
+    "name": "Rogers Corporation",
     "sector": "Technology"
   },
   "SANM": {
@@ -103,12 +139,20 @@
     "name": "SoFi Technologies, Inc.",
     "sector": "Financial Services"
   },
+  "STNG": {
+    "name": "Scorpio Tankers Inc.",
+    "sector": "Energy"
+  },
   "TSLA": {
     "name": "Tesla, Inc.",
     "sector": "Consumer Cyclical"
   },
   "TSM": {
     "name": "Taiwan Semiconductor Manufactur",
+    "sector": "Technology"
+  },
+  "TWLO": {
+    "name": "Twilio Inc.",
     "sector": "Technology"
   },
   "TXN": {
@@ -129,6 +173,10 @@
   },
   "WDAY": {
     "name": "Workday, Inc.",
+    "sector": "Technology"
+  },
+  "ZS": {
+    "name": "Zscaler, Inc.",
     "sector": "Technology"
   }
 }
