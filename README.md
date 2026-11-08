@@ -13,11 +13,57 @@ are optional.
 > Stock Radar is a research tool, not financial advice or an order-execution
 > system. Validate market data and decisions independently before trading.
 
-## Product preview
+## Product tour
 
-![Stock Radar Signal Radar interface](docs/assets/signal-radar-ui.jpg)
+### Signal Radar
 
-<p align="center"><sub>Signal Radar ranks public-market setups by trend strength, technical events, momentum, and valuation context. Market data shown is illustrative and time-sensitive.</sub></p>
+![Signal Radar ranking public-market technical setups](docs/assets/signal-radar-ui.jpg)
+
+Scan the tracked universe for trend changes, momentum events, overbought and
+oversold conditions, volume confirmation, and valuation context. Results are
+ranked by signal strength instead of presented as an unfiltered alert stream.
+
+### Stock research workspace
+
+![NVDA stock research workspace with technical summary](docs/assets/stock-research-ui.jpg)
+
+Each ticker has a unified research workspace with price action, technical
+ratings, volatility, support and resistance, market context, fundamentals,
+valuation, filings, news, and analyst revisions.
+
+### Scenario-based DCF
+
+![Scenario-based DCF valuation interface](docs/assets/dcf-analysis-ui.jpg)
+
+DCF analysis exposes pessimistic, moderate, and optimistic assumptions rather
+than returning a single opaque target. The interface shows confidence, scenario
+weights, implied value, current price, and the complete calculation bridge.
+
+### Financial statements and derived fundamentals
+
+![SEC financial statement and fundamental analysis interface](docs/assets/financial-statements-ui.jpg)
+
+Review annual or quarterly income statements, balance sheets, cash flows, and
+derived ratios from SEC filings and XBRL company facts. Period-over-period
+changes remain visible beside the reported values.
+
+### Sector relative strength
+
+![Sector relative-strength comparison interface](docs/assets/sector-rs-ui.jpg)
+
+Compare SPDR sectors against SPY or directly against each other. Relative
+strength scores, multi-horizon returns, trend direction, and rotation curves
+make leadership changes easier to identify.
+
+### Earnings calendar
+
+![Earnings calendar and upcoming event list](docs/assets/earnings-calendar-ui.jpg)
+
+Track upcoming earnings across the research universe in calendar and agenda
+views, then move directly into the associated ticker workspace, conclusions,
+and thesis history.
+
+<p align="center"><sub>UI screenshots use public-market data captured from a local development instance. Prices, rankings, and event dates are illustrative and time-sensitive.</sub></p>
 
 ## Highlights
 
