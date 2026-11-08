@@ -149,6 +149,10 @@ services you need:
 Never commit `backend/.env`, service-account JSON, database files, or access
 tokens.
 
+Portfolio, alert, and watchlist features can be initialized from the sanitized
+templates in [`data/examples`](data/examples). See [`data/README.md`](data/README.md)
+for the local-only file policy and copy commands.
+
 ### 3. Initialize the database
 
 ```bash
@@ -308,26 +312,31 @@ stock-radar/
 │       ├── lib/               # API client and browser infrastructure
 │       └── pages/             # Route-level views
 ├── migrations/                # Alembic revisions
-├── scripts/                   # Reporting, earnings, refresh, and QA workflows
+├── scripts/                   # Stable operational entry points and command index
 ├── src/                       # Core analysis and scraper package
 ├── tests/                     # Backend tests
-├── data/                      # Local and curated datasets
-├── docs/                      # Operational and indicator documentation
+├── data/
+│   ├── examples/              # Sanitized local-data templates
+│   └── README.md              # Data ownership and generation policy
+├── docs/                      # Architecture and analysis documentation
+├── CONTRIBUTING.md            # Development and review standards
+├── SECURITY.md                # Security and disclosure policy
 ├── pyproject.toml             # Python dependencies and tool configuration
 └── uv.lock                    # Reproducible Python dependency lock
 ```
 
 ## Documentation
 
+- [Documentation index](docs/README.md)
 - [Daily and weekly pipeline](docs/FLOW.md)
 - [Technical indicator guide](docs/indicators.md)
 - [Support and resistance methodology](docs/support_resistance.md)
 - [DCF model notes](docs/DCF_README.md)
+- [Operational script catalog](scripts/README.md)
 - [Earnings pipeline](scripts/earnings/README.md)
+- [Data and privacy policy](data/README.md)
 
 ## Contributing
 
-Keep changes focused and include tests for new domain logic. Database changes
-must include an Alembic revision. Before opening a pull request, run the quality
-checks above and confirm that no credentials or generated portfolio databases
-are staged.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, test, commit, migration, and
+data-safety guidelines. Security issues should follow [`SECURITY.md`](SECURITY.md).

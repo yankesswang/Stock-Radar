@@ -1,0 +1,3 @@
+portfolio,account,ticker,shares,avg_cost,leverage,notes
+Core,Example Brokerage,SPY,10,500,1,Example position
+Core,Example Brokerage,CASH,1,5000,1,Available cash
