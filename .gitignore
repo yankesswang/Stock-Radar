@@ -32,6 +32,11 @@ backend/.env
 
 # ── Personal portfolio data ───────────────────────────────────────────────────
 Portfolio_management/
+data/alerts.json
+data/portfolio.csv
+data/portfolio_deposits.json
+data/portfolio_meta.json
+data/watchlists.json
 
 # ── Scraped data files (large, regeneratable) ────────────────────────────────
 data/pe/
