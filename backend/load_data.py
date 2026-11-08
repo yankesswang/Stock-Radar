@@ -115,106 +115,20 @@ def compute_valuation(
     pe_median: float | None,
     fiscal_year: int = 2025,
 ) -> dict:
+    """舊 key 名（eps5y / currentPrice…）轉接到 src.db_service.compute_valuation。
+
+    以前這裡有一份一模一樣的實作；2026-09 估值加了 ADR 幣別換算與 PE 中位數失真保護，
+    兩份分開維護的話，按「重新載入資料」就會用舊邏輯把修正蓋回去，所以只留一份。
     """
-    Replicate the valuation logic from Valuation_Analyzer_Pure.calculate_valuations()
-    and process_company().
-    """
-    yr = str(fiscal_year)[-2:]  # e.g. "25"
-    yr_next = str(fiscal_year + 1)[-2:]  # e.g. "26"
-
-    # Growth rate: prefer eps_5y from ratio, fallback to current_growth from forecast
-    eps_5y = ratio_data.get("eps5y")
-    past_growth = forecast_annual.get("current_growth")
-    growth = eps_5y or past_growth or 0
-    if growth is None:
-        growth = 0
-
-    # Estimated PE = growth * multiplier
-    estimated_pe = growth
-    if 0 < growth < 5:
-        estimated_pe *= 0.8
-    elif 5 <= growth < 10:
-        estimated_pe *= 1.0
-    elif 10 <= growth < 15:
-        estimated_pe *= 1.1
-    elif 15 <= growth < 20:
-        estimated_pe *= 1.2
-    elif 20 <= growth < 30:
-        estimated_pe *= 1.5
-    else:
-        estimated_pe *= 2.0
-
-    estimated_pe = round(estimated_pe, 2) if estimated_pe else 0.0
-
-    # EPS
-    eps_current = forecast_annual.get("current_eps") or 0.0
-    eps_next = forecast_annual.get("next_year_eps") or 0.0
-
-    # Fair prices
-    current_year_fair = round(eps_current * estimated_pe) if eps_current else 0
-    next_year_fair = round(eps_next * estimated_pe) if eps_next else 0
-
-    # PE median calculations
-    pe_med = pe_median or 0
-    pe_median_price = round(pe_med * eps_current) if eps_current else 0
-    next_year_pe_median_price = round(pe_med * eps_next) if eps_next else 0
-
-    # Current price
-    current_price = ratio_data.get("currentPrice") or 0
-
-    # Market cap display
-    mc = ratio_data.get("marketcap")
-    if mc:
-        if mc >= 1e12:
-            market_cap_display = f"{round(mc / 1e12, 2)}T"
-        else:
-            market_cap_display = f"{round(mc / 1e9, 2)}B"
-    else:
-        market_cap_display = "N/A"
-
-    # Valuation status (current year)
-    valuation_status = "N/A"
-    valuation_diff_pct = None
-    if current_price and pe_median_price:
-        valuation_status = "overvalued" if current_price > pe_median_price else "undervalued"
-        valuation_diff_pct = round(
-            (pe_median_price - current_price) / pe_median_price * 100, 1
-        )
-
-    # Valuation status (next year)
-    next_year_valuation_status = "N/A"
-    next_year_valuation_diff_pct = None
-    if current_price and next_year_pe_median_price:
-        next_year_valuation_status = (
-            "overvalued" if current_price > next_year_pe_median_price else "undervalued"
-        )
-        next_year_valuation_diff_pct = round(
-            (next_year_pe_median_price - current_price)
-            / next_year_pe_median_price
-            * 100,
-            1,
-        )
-
-    return {
-        "estimated_pe": estimated_pe,
-        "current_year_eps": eps_current,
-        "current_year_fair_price": current_year_fair,
-        "next_year_eps": eps_next,
-        "next_year_fair_price": next_year_fair,
-        "pe_median_5y": pe_med,
-        "pe_median_price": pe_median_price,
-        "next_year_pe_median_price": next_year_pe_median_price,
-        "current_price": current_price,
-        "market_cap_display": market_cap_display,
-        "valuation_status": valuation_status,
-        "valuation_diff_pct": valuation_diff_pct,
-        "next_year_valuation_status": next_year_valuation_status,
-        "next_year_valuation_diff_pct": next_year_valuation_diff_pct,
-        "revenue_growth_5y": ratio_data.get("revenue5y"),
-        "eps_growth_5y": eps_5y,
-        "eps_growth_past": past_growth,
-    }
-
+    from src.db_service import compute_valuation as _compute
+    return _compute(forecast_annual, {
+        "eps_5y": ratio_data.get("eps5y"),
+        "revenue_5y": ratio_data.get("revenue5y"),
+        "current_price": ratio_data.get("currentPrice"),
+        "market_cap": ratio_data.get("marketcap"),
+        "pe_forward": ratio_data.get("pe_forward"),
+        "eps_usd_factor": ratio_data.get("eps_usd_factor", 1.0),
+    }, pe_median, fiscal_year)
 
 def load_all(force: bool = False):
     """Main loader: read JSON files and populate SQLite."""
@@ -470,19 +384,22 @@ def load_all(force: bool = False):
                 if not forecast:
                     continue
 
-                # Build ratio dict for the compute function
-                ratio_dict = {
-                    "eps5y": metric.eps_5y,
-                    "revenue5y": metric.revenue_5y,
-                    "currentPrice": metric.current_price,
-                    "marketcap": metric.market_cap,
-                }
-
                 forecast_annual = {
                     "current_eps": forecast.current_eps,
                     "current_growth": forecast.current_eps_growth,
                     "next_year_eps": forecast.next_year_eps,
                     "next_year_growth": forecast.next_year_eps_growth,
+                }
+
+                # Build ratio dict for the compute function
+                from src.db_service import eps_usd_factor
+                ratio_dict = {
+                    "eps5y": metric.eps_5y,
+                    "revenue5y": metric.revenue_5y,
+                    "currentPrice": metric.current_price,
+                    "marketcap": metric.market_cap,
+                    "pe_forward": metric.pe_forward,
+                    "eps_usd_factor": eps_usd_factor(db, stock.ticker, forecast_annual, metric, snap_date),
                 }
 
                 pe_median_val = pe_rec.pe_median if pe_rec else None

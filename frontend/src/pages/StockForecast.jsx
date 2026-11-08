@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
 import {
     BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
     Legend, Cell,
 } from 'recharts';
 import {
-    ArrowLeft, TrendingUp, TrendingDown, Target, Users, ChevronDown,
+    TrendingUp, TrendingDown, Target, Users, ChevronDown,
     ArrowUpRight, ArrowDownRight, Minus,
 } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 import { CHART_GRID, CHART_AXIS } from '../components/chartTheme';
 
 function fmt(val, type) {
@@ -63,24 +64,9 @@ export default function StockForecast() {
             .finally(() => setLoading(false));
     }, [ticker]);
 
-    if (loading) {
-        return (
-            <div className="container py-20 flex justify-center">
-                <div className="w-6 h-6 border-2 border-[var(--accent-purple)] border-t-transparent rounded-full animate-spin" />
-            </div>
-        );
-    }
+    if (loading) return <StockPageFallback ticker={ticker} />;
 
-    if (error) {
-        return (
-            <div className="container py-20 text-center">
-                <p className="text-[var(--text-muted)] text-base">{error}</p>
-                <Link href={`/stock/${ticker}`} className="text-sm text-[var(--accent-purple)] hover:underline mt-4 inline-block">
-                    Back to {ticker}
-                </Link>
-            </div>
-        );
-    }
+    if (error) return <StockPageFallback ticker={ticker} error={error} />;
 
     const pt = data.price_target;
     const ratings = data.analyst_ratings;
@@ -107,24 +93,10 @@ export default function StockForecast() {
 
     return (
         <div className="container py-10 space-y-8 animate-fade-in">
-            {/* Navigation */}
-            <Link
-                href={`/stock/${ticker}`}
-                className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-            >
-                <ArrowLeft size={14} /> Back to {ticker}
-            </Link>
-
-            {/* Header */}
-            <div className="pb-6 border-b border-[var(--glass-border)]">
-                <div className="flex items-center gap-3 mb-2">
-                    <h1 className="text-3xl font-extrabold tracking-tight">{ticker}</h1>
-                    <span className="badge badge-neutral">Analyst Forecast</span>
-                </div>
-                <p className="text-[15px] text-[var(--text-muted)]">
-                    {totalAnalysts} analysts covering &middot; Data as of {data.date}
-                </p>
-            </div>
+            <StockPageHeader
+                ticker={ticker}
+                meta={<>{totalAnalysts} 位分析師覆蓋 · 資料日 {data.date}</>}
+            />
 
             {/* Price Target Cards */}
             {pt && (

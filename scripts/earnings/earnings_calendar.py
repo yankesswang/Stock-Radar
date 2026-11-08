@@ -26,6 +26,7 @@ import pathlib
 import re
 import sys
 import urllib.request
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import registry
@@ -53,6 +54,44 @@ def watched_tickers():
         return [r["ticker"] for r in con.execute("SELECT ticker FROM companies ORDER BY ticker")]
 
 
+def next_report_date(yf, ticker, today):
+    """Next scheduled report date (US Eastern), or None.
+
+    Uses get_earnings_dates(), whose index is the tz-aware timestamp of the call.
+    Ticker.calendar is only a fallback: its date is UTC-rounded, so after-close
+    reporters come back a day late, and it keeps showing the last report's date
+    for weeks after the fact.
+    """
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=12)
+        if df is not None and not df.empty:
+            future = [idx for idx in df.index if idx.date().isoformat() >= today]
+            if future:
+                return min(future).date().isoformat()
+    except Exception as e:
+        print(f"{ticker}: get_earnings_dates error {e}", file=sys.stderr)
+    # Yahoo's calendarEvents epochs, converted in US/Eastern. yfinance 0.2.x
+    # parses them with fromtimestamp() in the host timezone, which on a Taipei
+    # box (UTC+8) pushes every after-close report to the next calendar day.
+    try:
+        raw = yf.Ticker(ticker)._quote._fetch(modules=["calendarEvents"])
+        epochs = raw["quoteSummary"]["result"][0]["calendarEvents"]["earnings"]["earningsDate"]
+        et = ZoneInfo("America/New_York")
+        future = sorted(d for d in (dt.datetime.fromtimestamp(int(e), et).date().isoformat()
+                                    for e in epochs) if d >= today)
+        if future:
+            return future[0]
+    except Exception as e:
+        print(f"{ticker}: calendarEvents error {e}", file=sys.stderr)
+    try:
+        dates = (yf.Ticker(ticker).calendar or {}).get("Earnings Date") or []
+        future = [d for d in dates if str(d) >= today]
+        return str(min(future)) if future else None
+    except Exception as e:
+        print(f"{ticker}: yfinance error {e}", file=sys.stderr)
+        return None
+
+
 def update():
     try:
         import yfinance as yf
@@ -60,14 +99,7 @@ def update():
         sys.exit("yfinance not installed")
     today = dt.date.today().isoformat()
     for t in watched_tickers():
-        nxt = None
-        try:
-            cal = yf.Ticker(t).calendar or {}
-            dates = cal.get("Earnings Date") or []
-            future = [d for d in dates if str(d) >= today]
-            nxt = str(min(future)) if future else (str(max(dates)) if dates else None)
-        except Exception as e:
-            print(f"{t}: yfinance error {e}", file=sys.stderr)
+        nxt = next_report_date(yf, t, today)
         with connect() as con:
             con.execute(
                 "INSERT INTO earnings_calendar (ticker, next_report_date, source, updated_at) "
@@ -82,10 +114,15 @@ def update():
 def latest_earnings_8k(cik):
     """Most recent earnings filing date, or None.
 
-    US filers: 8-K carrying Item 2.02 (Results of Operations).
+    US filers: 8-K carrying Item 2.02 (Results of Operations). The item code
+    alone is not enough — companies furnish plenty of non-quarterly things
+    under 2.02: Tesla's quarterly production & deliveries release, Workday's
+    restructuring charge plus guidance reiteration. Both of those triggered a
+    full (wasted) note run in Oct 2026, so 8-Ks go through the same text check
+    as 6-Ks.
     Foreign private issuers (ARM, TSM, ASX…): 6-K, which has no item codes at
-    all, so instead require an exhibit whose filename looks like an earnings
-    release (ex99 / results / earnings) — a bare 6-K can be any announcement.
+    all, so the text check is the only signal — a bare 6-K can be any
+    announcement.
     """
     url = f"https://data.sec.gov/submissions/CIK{cik:010d}.json"
     req = urllib.request.Request(url, headers=UA)
@@ -93,27 +130,48 @@ def latest_earnings_8k(cik):
         sub = json.load(r)
     rec = sub["filings"]["recent"]
     items = rec.get("items", [""] * len(rec["form"]))
+    checked = 0
     for i in range(len(rec["form"])):
         form = rec["form"][i]
-        if form == "8-K" and "2.02" in (items[i] or ""):
-            return rec["filingDate"][i]
-        if form == "6-K" and _is_6k_earnings(cik, rec["accessionNumber"][i]):
+        if form == "8-K" and "2.02" not in (items[i] or ""):
+            continue
+        if form not in ("8-K", "6-K"):
+            continue
+        # Verification costs up to 4 SEC requests per candidate, so give up
+        # rather than walk years of 6-Ks for a company that never qualifies.
+        if checked >= _MAX_CANDIDATES:
+            return None
+        checked += 1
+        if _is_earnings_release(cik, rec["accessionNumber"][i]):
             return rec["filingDate"][i]
     return None
 
 
-_EARNINGS_WORDS = re.compile(
-    r"(unaudited|net revenue|operating income|earnings per|diluted|"
-    r"gross margin|first quarter|second quarter|third quarter|fourth quarter)", re.I)
+_MAX_CANDIDATES = 6
 
 
-def _is_6k_earnings(cik, accession):
-    """Does this 6-K report results?
+# Terms that only a real earnings release carries, because it reproduces the
+# financial statements. Deliberately excludes bare quarter names ("third
+# quarter"): those show up in forward-looking-statement boilerplate, which is
+# how Workday's restructuring 8-K scored 4/4 on the old word list.
+_STATEMENT_WORDS = re.compile(
+    r"(unaudited|net revenues?|total revenues?|net sales|"
+    r"operating income|operating loss|earnings per|per diluted share|"
+    r"diluted|gross margin|gross profit|net income|cost of revenue|"
+    r"balance sheets?|statements? of operations|cash flows?|"
+    r"stockholders.{0,3} equity|deferred revenue)", re.I)
+
+# Measured over the 48 companies in the registry with a verified report date:
+# every real release scored >= 8, the two false positives scored 2 and 0.
+_STATEMENT_MIN = 5
+
+
+def _is_earnings_release(cik, accession):
+    """Does this filing actually report quarterly results?
 
     Filenames are useless here: TSM uses a2q26e_withguidance..., ASX uses
     dp250875_6k... So read the exhibit text and require several distinct
-    earnings terms — a 6-K can just as easily be a monthly revenue update,
-    a treasurer change, or a dividend notice.
+    financial-statement terms.
     """
     acc = accession.replace("-", "")
     base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}"
@@ -132,7 +190,7 @@ def _is_6k_earnings(cik, accession):
         except Exception:
             continue
         text = re.sub(r"<[^>]+>", " ", raw)
-        if len({w.lower() for w in _EARNINGS_WORDS.findall(text)}) >= 4:
+        if len({w.lower() for w in _STATEMENT_WORDS.findall(text)}) >= _STATEMENT_MIN:
             return True
     return False
 

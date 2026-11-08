@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Briefcase, Plus, Trash2, ChevronRight, TrendingUp, RefreshCw } from 'lucide-react';
 
 export default function PortfolioList() {

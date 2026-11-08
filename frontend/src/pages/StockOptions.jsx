@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useRoute, Link } from 'wouter';
-import axios from 'axios';
-import { ArrowLeft, Loader2, TrendingUp, TrendingDown } from 'lucide-react';
+import { useRoute } from 'wouter';
+import axios from '../lib/apiClient';
+import { Loader2, TrendingUp, TrendingDown } from 'lucide-react';
+import StockPageHeader, { StockPageFallback } from '../components/StockPageHeader';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ function ivColor(iv) {
 
 // ── IV Surface table ──────────────────────────────────────────────────────────
 
-function IVSurface({ surface, expirations, onSelectExpiry, selectedExpiry }) {
+function IVSurface({ surface, onSelectExpiry, selectedExpiry }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -79,7 +80,7 @@ function IVSurface({ surface, expirations, onSelectExpiry, selectedExpiry }) {
 
 // ── Options chain table ───────────────────────────────────────────────────────
 
-function ChainTable({ chain, side, currentPrice }) {
+function ChainTable({ chain, side }) {
   const rows = chain?.[side] || [];
   const isCall = side === 'calls';
 
@@ -177,18 +178,9 @@ export default function StockOptions() {
     : '';
 
   return (
-    <div className="container py-6 space-y-6">
+    <div className="container py-10 space-y-6 animate-fade-in">
 
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Link href={`/stock/${ticker}`} className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
-          <ArrowLeft size={18} />
-        </Link>
-        <div>
-          <h1 className="text-xl font-bold">{ticker} · Options</h1>
-          <p className="text-sm text-[var(--text-muted)]">IV surface · Chain data via yfinance</p>
-        </div>
-      </div>
+      <StockPageHeader ticker={ticker} meta="IV 曲面 · 選擇權鏈資料來自 yfinance" />
 
       {loading && (
         <div className="glass rounded-xl p-16 flex items-center justify-center gap-3 text-[var(--text-muted)]">
@@ -237,7 +229,6 @@ export default function StockOptions() {
             </div>
             <IVSurface
               surface={summary.iv_surface}
-              expirations={summary.expirations}
               onSelectExpiry={setExpiry}
               selectedExpiry={selectedExpiry}
             />
@@ -283,7 +274,7 @@ export default function StockOptions() {
                   <span className="text-sm">Loading chain…</span>
                 </div>
               ) : (
-                <ChainTable chain={chain} side={chainSide} currentPrice={chain?.current_price} />
+                <ChainTable chain={chain} side={chainSide} />
               )}
             </div>
           )}

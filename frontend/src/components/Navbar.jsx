@@ -10,15 +10,14 @@ import {
   Bell,
   Target,
   Globe2,
-  Newspaper,
-  LineChart,
-  Layers,
-  Sparkles,
   ChevronDown,
+  LayoutList,
   Menu,
   X,
+  MessageSquare,
 } from 'lucide-react';
 import GlobalSearch from './GlobalSearch';
+import ThemeToggle from './ThemeToggle';
 
 // Most-used links stay flat on the bar.
 const PRIMARY = [
@@ -28,34 +27,33 @@ const PRIMARY = [
 ];
 
 // Everything else is grouped into dropdowns — each item appears exactly once.
+//
+// 「分析」原本平攤 11 個項目，其中三組是同一件事的不同切面（市場／戰情／財報）。
+// 現在一個切面群只放一個入口，同群的其他頁走頁內分頁（components/ClusterTabs.jsx），
+// 順序就是看盤的順序：大盤 → 今天發生什麼 → 我要做什麼 → 為什麼 → 橫向比較。
 const GROUPS = [
   {
     label: '分析',
     icon: Radar,
     items: [
-      { href: '/war-room', label: 'War Room', icon: Radar },
-      { href: '/compare', label: 'Compare', icon: BarChart3 },
-      { href: '/earnings', label: 'Earnings', icon: CalendarDays },
-      { href: '/signals', label: 'Signals', icon: Radar },
-      { href: '/sectors', label: '板塊 RS', icon: Layers },
-      { href: '/alerts', label: 'Alerts', icon: Bell },
+      { href: '/macro', label: '市場', icon: Globe2, hint: 'Macro · 板塊 RS',
+        match: ['/macro', '/sectors'] },
+      { href: '/war-room', label: 'War Room', icon: Radar, hint: '戰情室 · 盤後復盤 · 訊號雷達 · 新聞線／市場日報',
+        match: ['/war-room', '/review', '/signals'] },
+      { href: '/earnings', label: '財報', icon: CalendarDays, hint: '行事曆 · 結論 · 論點追蹤',
+        match: ['/earnings'] },
+      { href: '/compare', label: 'Compare', icon: BarChart3, hint: '同業橫向比較' },
     ],
   },
   {
-    label: '總經 / 日報',
-    icon: Globe2,
+    // 自己維護的清單與通知 —— 是輸入，不是分析結果，所以不掛在「分析」下面。
+    label: '監控',
+    icon: Bell,
     items: [
-      { href: '/macro', label: 'Macro', icon: Globe2 },
-      { href: '/market-digest', label: '市場日報', icon: LineChart },
-      { href: '/finance-digest', label: '投資日報', icon: Newspaper },
-      { href: '/ai-report', label: 'AI 持倉日報', icon: Sparkles },
-    ],
-  },
-  {
-    label: 'Mimi',
-    icon: Target,
-    items: [
+      { href: '/alerts', label: '價格警報', icon: Bell },
+      { href: '/watchlists', label: '觀察清單', icon: LayoutList },
       { href: '/mimi-watchlist', label: 'Mimi 清單', icon: Target },
+      { href: '/qa', label: '問答紀錄', icon: MessageSquare, hint: '個股問答的統一紀錄' },
     ],
   },
 ];
@@ -68,6 +66,9 @@ export default function Navbar() {
     if (matchPrefix) return location.startsWith(matchPrefix);
     return location === href || (href !== '/' && location.startsWith(href));
   };
+  // 群組項目代表整個切面群（市場 = /macro + /sectors …），在群內任一頁都要亮著
+  const itemActive = (it) =>
+    (it.match || []).some((m) => location.startsWith(m)) || isActive(it.href, it.matchPrefix);
 
   // Close the mobile drawer whenever the route changes (a link was tapped).
   useEffect(() => {
@@ -107,9 +108,11 @@ export default function Navbar() {
               ))}
 
               {GROUPS.map((group) => (
-                <NavGroup key={group.label} group={group} isActive={isActive} />
+                <NavGroup key={group.label} group={group} itemActive={itemActive} />
               ))}
             </div>
+
+            <ThemeToggle className="hidden xl:inline-flex h-9 w-9" size={15} />
 
             <Link
               href="/add-stock"
@@ -123,7 +126,8 @@ export default function Navbar() {
               Add
             </Link>
 
-            {/* Mobile hamburger (hidden on desktop) */}
+            {/* Mobile: theme toggle + hamburger (hidden on desktop) */}
+            <ThemeToggle className="xl:hidden h-10 w-10" size={17} />
             <button
               type="button"
               onClick={() => setMobileOpen((v) => !v)}
@@ -161,7 +165,7 @@ export default function Navbar() {
                       <MobileLink
                         key={it.href}
                         href={it.href}
-                        active={isActive(it.href, it.matchPrefix)}
+                        active={itemActive(it)}
                         icon={it.icon}
                       >
                         {it.label}
@@ -224,9 +228,9 @@ function NavLink({ href, active, children, icon: Icon }) {
 }
 
 // Hover-opened dropdown (the inner padding bridges button→panel so it stays open).
-function NavGroup({ group, isActive }) {
+function NavGroup({ group, itemActive }) {
   const { label, icon: Icon, items } = group;
-  const anyActive = items.some((it) => isActive(it.href, it.matchPrefix));
+  const anyActive = items.some(itemActive);
   return (
     <div className="relative group shrink-0">
       <button
@@ -243,20 +247,26 @@ function NavGroup({ group, isActive }) {
       <div className="absolute right-0 top-full pt-2 hidden group-hover:block z-[60]">
         <div className="min-w-[190px] rounded-xl border border-[var(--glass-border)] bg-[var(--bg-secondary)] shadow-2xl shadow-[rgba(10,11,13,0.22)] p-1.5">
           {items.map((it) => {
-            const active = isActive(it.href, it.matchPrefix);
+            const active = itemActive(it);
             const ItemIcon = it.icon;
             return (
               <Link
                 key={it.href}
                 href={it.href}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium cursor-pointer transition-colors ${
+                className={`flex items-start gap-2.5 rounded-lg px-3 py-2 text-xs font-medium cursor-pointer transition-colors ${
                   active
                     ? 'bg-[rgba(0,82,255,0.11)] text-[var(--accent-cyan)]'
                     : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[rgba(0,82,255,0.06)]'
                 }`}
               >
-                {ItemIcon && <ItemIcon size={13} />}
-                {it.label}
+                {ItemIcon && <ItemIcon size={13} className="mt-0.5 shrink-0" />}
+                <span className="min-w-0">
+                  {it.label}
+                  {/* 群內有哪幾個分頁，在下拉就說清楚 —— 不然「市場」看不出含板塊 RS */}
+                  {it.hint && (
+                    <span className="block text-[10.5px] font-normal text-[var(--text-muted)]">{it.hint}</span>
+                  )}
+                </span>
               </Link>
             );
           })}

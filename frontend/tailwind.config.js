@@ -1,5 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  // 暗色靠 <html data-theme="dark">（src/theme.js 設定），不看 prefers-color-scheme，
+  // 使用者的選擇才蓋得過系統。
+  darkMode: ['selector', '[data-theme="dark"]'],
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",

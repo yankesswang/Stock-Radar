@@ -21,9 +21,16 @@ from fastapi import APIRouter, HTTPException, Query
 router = APIRouter()
 
 _GOOGLE_NEWS_RSS = (
-    "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+    "https://news.google.com/rss/search?q={query}&hl={hl}&gl={gl}&ceid={ceid}"
 )
 _HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockRadar/1.0)"}
+
+# 語系 → Google News 的 (hl, gl, ceid)。台股用美國英文 feed 幾乎抓不到東西，
+# scripts/market_news.py 對 .TW 標的會指定 zh-TW。
+_LANGS = {
+    "en": ("en-US", "US", "US:en"),
+    "zh-TW": ("zh-TW", "TW", "TW:zh-Hant"),
+}
 
 # 簡單記憶體快取，避免短時間內重複抓同一檔（Google News 會擋）
 _CACHE: dict[str, tuple[float, list[dict]]] = {}
@@ -39,8 +46,9 @@ def _parse_pubdate(raw: str | None) -> str | None:
         return raw
 
 
-def _fetch_news(query: str, limit: int) -> list[dict]:
-    url = _GOOGLE_NEWS_RSS.format(query=quote(query))
+def _fetch_news(query: str, limit: int, lang: str = "en") -> list[dict]:
+    hl, gl, ceid = _LANGS.get(lang, _LANGS["en"])
+    url = _GOOGLE_NEWS_RSS.format(query=quote(query), hl=hl, gl=gl, ceid=ceid)
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=15)
         resp.raise_for_status()

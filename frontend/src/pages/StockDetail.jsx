@@ -1,13 +1,16 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRoute } from 'wouter';
-import axios from 'axios';
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, TableProperties, Ratio, Target, DollarSign, Activity, RefreshCw, CandlestickChart, Users, Newspaper, Sparkles, FileText } from 'lucide-react';
+import axios from '../lib/apiClient';
+import { TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import StockPageHeader from '../components/StockPageHeader';
+import StockConclusions from '../components/StockConclusions';
+import { useStockTabs } from '../components/useStockHeader';
 import AnalystRevisionPanel from '../components/AnalystRevisionPanel';
 import PriceChartPanel from '../components/PriceChartPanel';
 import KeyMetricsSummary from '../components/KeyMetricsSummary';
 import StockNewsPanel from '../components/StockNewsPanel';
 import GroupSelect from '../components/GroupSelect';
-import { Link } from 'wouter';
+import TechStrip from '../components/TechStrip';
 
 // ── Auto-scrape panel shown when no valuation data exists yet ─────────────────
 function ScrapePanel({ ticker, onDone }) {
@@ -94,12 +97,17 @@ function ScrapePanel({ ticker, onDone }) {
 }
 
 export default function StockDetail() {
-    const [match, params] = useRoute("/stock/:ticker");
+    const [, params] = useRoute("/stock/:ticker");
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [livePrice, setLivePrice] = useState(null);
     const [groups, setGroups] = useState([]);
     const [changingGroup, setChangingGroup] = useState(false);
+    // 圖表元件載入完回傳的技術面資料（隨圖表區間切換更新），餵給上方的技術指標速覽
+    const [tech, setTech] = useState(null);
+    const onAnalytics = useCallback((payload) => setTech(payload), []);
+    // 各切面的結論與有無資料（跟分頁列共用同一份快取）
+    const tabsInfo = useStockTabs(params?.ticker);
 
     const ticker = params?.ticker;
 
@@ -129,7 +137,19 @@ export default function StockDetail() {
             .finally(() => setChangingGroup(false));
     };
 
-    useEffect(() => { loadData(); }, [ticker]);
+    useEffect(() => { setTech(null); loadData(); }, [ticker]);
+
+    // 子頁分頁列的「新聞」連到 /stock/T#news：這頁載完後把新聞區塊捲進視野。
+    // 上面的走勢圖、指標、分析師面板各自非同步載入，新聞區塊會一路被往下推，
+    // 所以捲一次不夠，之後幾秒內再對齊幾次，直到版面穩定
+    useEffect(() => {
+        if (loading || !data.length || window.location.hash !== '#news') return;
+        const go = (smooth) => document.getElementById('news')
+            ?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+        go(true);
+        const timers = [600, 1500, 3000].map((ms) => setTimeout(() => go(false), ms));
+        return () => timers.forEach(clearTimeout);
+    }, [loading, data.length, ticker]);
 
     // Available sector/group names for the inline "change group" dropdown.
     useEffect(() => {
@@ -149,216 +169,48 @@ export default function StockDetail() {
     }
 
     const latest = data[data.length - 1];
-    const isUndervalued = latest.valuation_status === 'undervalued';
+    // 還沒拿到即時報價前，先用估值快照裡的收盤價把標頭填起來
+    const headerPrice = livePrice ?? (latest.current_price != null ? { price: latest.current_price } : null);
 
     return (
         <div className="container py-10 space-y-8 animate-fade-in">
-            {/* Back button */}
-            <Link href="/valuations" className="inline-flex items-center gap-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">
-                <ArrowLeft size={14} /> Back to Valuations
-            </Link>
+            {/* 標頭與分頁列跟 11 個子頁共用；這頁自己抓了估值歷史與現價，直接餵進去 */}
+            <StockPageHeader
+                ticker={ticker}
+                info={latest}
+                price={headerPrice}
+                industryNode={
+                    <GroupSelect
+                        value={latest.industry}
+                        options={groups}
+                        loading={changingGroup}
+                        onChange={changeGroup}
+                        size="badge"
+                        align="left"
+                        ariaLabel={`Change sector for ${latest.ticker}`}
+                    />
+                }
+            />
 
-            {/* Header */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 pb-8 border-b border-[var(--glass-border)]">
-                <div>
-                    <div className="flex items-center gap-3 mb-3">
-                        <h1 className="text-4xl font-extrabold tracking-tight">{latest.ticker}</h1>
-                        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${
-                            isUndervalued
-                                ? 'bg-[rgba(52,211,153,0.1)] text-[var(--accent-success)] border border-[rgba(52,211,153,0.15)]'
-                                : 'bg-[rgba(248,113,113,0.1)] text-[var(--accent-danger)] border border-[rgba(248,113,113,0.15)]'
-                        }`}>
-                            {isUndervalued ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                            {latest.valuation_status?.toUpperCase()} {Math.abs(latest.valuation_diff_pct)}%
-                        </div>
-                    </div>
-                    <p className="text-lg text-[var(--text-secondary)] mb-2">{latest.company_name}</p>
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <GroupSelect
-                            value={latest.industry}
-                            options={groups}
-                            loading={changingGroup}
-                            onChange={changeGroup}
-                            size="badge"
-                            align="left"
-                            ariaLabel={`Change sector for ${latest.ticker}`}
-                        />
-                        {latest.market_cap_display && (
-                            <span className="badge badge-neutral">{latest.market_cap_display} Cap</span>
-                        )}
-                    </div>
-                    <nav className="mt-3 flex items-center gap-1.5 flex-wrap">
-                        <Link
-                            href={`/stock/${ticker}/ai`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-semibold text-[#0052ff] bg-[rgba(0,82,255,0.08)] border border-[rgba(0,82,255,0.25)] hover:bg-[rgba(0,82,255,0.14)] transition-colors"
-                        >
-                            <Sparkles size={13} /> AI 分析
-                        </Link>
-                        {[
-                            { href: `/stock/${ticker}/metrics`,    icon: BarChart3,        label: 'Metrics' },
-                            { href: `/stock/${ticker}/statistics`, icon: TableProperties,  label: 'Statistics' },
-                            { href: `/stock/${ticker}/ratios`,     icon: Ratio,            label: 'Ratios' },
-                            { href: `/stock/${ticker}/forecast`,   icon: Target,           label: 'Forecast' },
-                            { href: `/stock/${ticker}/dcf`,        icon: DollarSign,       label: 'DCF' },
-                            { href: `/stock/${ticker}/pe`,         icon: Activity,         label: 'PE History' },
-                            { href: `/stock/${ticker}/options`,    icon: CandlestickChart, label: 'Options / IV' },
-                            { href: `/stock/${ticker}/peers`,      icon: Users,            label: 'Peers' },
-                            { href: `/stock/${ticker}/earnings-notes`, icon: FileText,     label: '財報筆記' },
-                            { href: '#news',                       icon: Newspaper,        label: 'News', anchor: true },
-                        ].map(({ href, icon: Icon, label, anchor }) => {
-                            const cls = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium text-[var(--text-secondary)] bg-[var(--bg-secondary)] border border-[var(--glass-border)] hover:text-[#0052ff] hover:border-[rgba(0,82,255,0.35)] hover:bg-[rgba(0,82,255,0.06)] transition-colors';
-                            return anchor
-                                ? <a key={label} href={href} className={cls}><Icon size={13} /> {label}</a>
-                                : <Link key={label} href={href} className={cls}><Icon size={13} /> {label}</Link>;
-                        })}
-                    </nav>
-                </div>
-                <div className="text-left md:text-right">
-                    <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-1">
-                        {livePrice ? 'Live Price' : 'Current Price'}
-                    </div>
-                    <div className="text-4xl font-extrabold font-mono tabular-nums tracking-tight">
-                        ${livePrice?.price?.toFixed(2) ?? latest.current_price?.toFixed(2)}
-                    </div>
-                    {livePrice && (
-                        <div className={`flex items-center gap-1.5 mt-1 text-sm font-semibold ${
-                            livePrice.change >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                        }`}>
-                            {livePrice.change >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                            {livePrice.change >= 0 ? '+' : ''}{livePrice.change?.toFixed(2)} ({livePrice.change_percent?.toFixed(2)}%)
-                        </div>
-                    )}
-                </div>
-            </div>
+            {/* 技術面呈現沿用指數頁（MarketDetail）那一套：先一列八格的指標速覽，
+                再走勢圖置頂、圖層與完整技術分析收進折疊區。個股頁原本是把四張分析卡
+                全攤開擺在圖前面，第一眼看不到價格 */}
+            <TechStrip tech={tech} />
+            <PriceChartPanel ticker={ticker} chartFirst onAnalytics={onAnalytics} />
+
+            {/* 各切面的一句話結論：四個合理價來源對現價、AI 立場、最新財報筆記。證據在各自的分頁；
+                以前這裡的兩張估值卡、三張 StatCard、同業摘要卡講的都是其中一部分，而且互相重複 */}
+            <StockConclusions ticker={ticker} tabs={tabsInfo} price={livePrice?.price ?? latest.current_price} />
 
             {/* Key Metrics Summary */}
             <KeyMetricsSummary ticker={ticker} />
-
-            {/* PE Valuation Comparison */}
-            {(() => {
-                const currentPrice = livePrice?.price ?? latest.current_price;
-                const peFairValue = latest.pe_median_price;
-                const nextYearFairValue = latest.next_year_fair_price;
-
-                const peDiff = peFairValue ? ((currentPrice - peFairValue) / peFairValue * 100).toFixed(1) : null;
-                const nextYearDiff = nextYearFairValue ? ((currentPrice - nextYearFairValue) / nextYearFairValue * 100).toFixed(1) : null;
-
-                const isPeUndervalued = peDiff && parseFloat(peDiff) < 0;
-                const isNextYearUndervalued = nextYearDiff && parseFloat(nextYearDiff) < 0;
-
-                return (
-                    <div className="card !p-6">
-                        <h3 className="text-base font-semibold mb-4 text-[var(--text-secondary)]">
-                            {livePrice ? 'Live Valuation Analysis' : 'Valuation Analysis'}
-                        </h3>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {/* PE Fair Value Comparison */}
-                            <div className="p-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--glass-border)]">
-                                <div className="flex justify-between items-start mb-3">
-                                    <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider">vs PE Fair Value</div>
-                                    <div className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                                        isPeUndervalued
-                                            ? 'bg-[rgba(52,211,153,0.15)] text-[var(--accent-success)]'
-                                            : 'bg-[rgba(248,113,113,0.15)] text-[var(--accent-danger)]'
-                                    }`}>
-                                        {isPeUndervalued ? 'Undervalued' : 'Overvalued'}
-                                    </div>
-                                </div>
-                                <div className="flex items-baseline gap-2">
-                                    <span className="text-2xl font-bold font-mono">${peFairValue}</span>
-                                    <span className={`text-sm font-semibold ${
-                                        isPeUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                                    }`}>
-                                        {isPeUndervalued ? '' : '+'}{peDiff}%
-                                    </span>
-                                </div>
-                                <div className="text-xs text-[var(--text-muted)] mt-1">
-                                    Based on 5Y Median PE: {latest.pe_median_5y}
-                                </div>
-                            </div>
-
-                            {/* Next Year Fair Value Comparison */}
-                            <div className="p-4 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--glass-border)]">
-                                <div className="flex justify-between items-start mb-3">
-                                    <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider">vs Next Year Fair Value</div>
-                                    {nextYearDiff != null && (
-                                        <div className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                                            isNextYearUndervalued
-                                                ? 'bg-[rgba(52,211,153,0.15)] text-[var(--accent-success)]'
-                                                : 'bg-[rgba(248,113,113,0.15)] text-[var(--accent-danger)]'
-                                        }`}>
-                                            {isNextYearUndervalued ? 'Undervalued' : 'Overvalued'}
-                                        </div>
-                                    )}
-                                </div>
-                                {nextYearDiff == null ? (
-                                    <div className="text-sm text-[var(--text-muted)] py-2">
-                                        無下一年度 EPS 預估資料
-                                    </div>
-                                ) : (
-                                    <>
-                                        <div className="flex items-baseline gap-2">
-                                            <span className="text-2xl font-bold font-mono">${nextYearFairValue}</span>
-                                            <span className={`text-sm font-semibold ${
-                                                isNextYearUndervalued ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'
-                                            }`}>
-                                                {isNextYearUndervalued ? '' : '+'}{nextYearDiff}%
-                                            </span>
-                                        </div>
-                                        <div className="text-xs text-[var(--text-muted)] mt-1">
-                                            Based on Next Year EPS: ${latest.next_year_eps}
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                );
-            })()}
-
-            {/* Stats Grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <StatCard
-                    label="Fair Value (PE)"
-                    value={`$${latest.pe_median_price}`}
-                    sub={`Median PE: ${latest.pe_median_5y}`}
-                    accent="var(--accent-success)"
-                />
-                <StatCard
-                    label="EPS (Current)"
-                    value={`$${latest.current_year_eps}`}
-                    sub={`Growth: ${latest.eps_growth_past}%`}
-                    accent="var(--accent-cyan)"
-                />
-                <StatCard
-                    label="EPS (Next Year)"
-                    value={`$${latest.next_year_eps}`}
-                    sub={latest.next_year_eps && latest.current_year_eps
-                        ? `YoY Growth: ${((latest.next_year_eps - latest.current_year_eps) / latest.current_year_eps * 100).toFixed(1)}%`
-                        : null}
-                    accent="var(--accent-amber)"
-                />
-            </div>
 
             {/* Analyst revisions — replaces the old price-vs-fair-value history chart,
                 which only restated what the valuation cards above already show. */}
             <AnalystRevisionPanel key={ticker} ticker={ticker} />
 
-            {/* Price Chart */}
-            <PriceChartPanel ticker={ticker} />
-
             {/* Latest News (same source as Stock Digest — Google News RSS) */}
             <StockNewsPanel ticker={ticker} company={latest.company_name} />
-        </div>
-    );
-}
-
-function StatCard({ label, value, sub, accent }) {
-    return (
-        <div className="card group">
-            <div className="text-[var(--text-muted)] text-xs uppercase tracking-wider mb-2">{label}</div>
-            <div className="text-2xl font-bold font-mono tabular-nums mb-1">{value}</div>
-            <div className="text-xs font-medium" style={{ color: accent }}>{sub}</div>
         </div>
     );
 }

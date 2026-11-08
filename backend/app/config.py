@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     CURRENT_FISCAL_YEAR: int = 2025
     CORS_ORIGINS: list[str] = ["http://localhost:5000", "http://localhost:5173", "http://localhost:3000"]
 
+    # Only one API process may own scheduled/notification jobs. Other workers
+    # still serve HTTP, but become followers when this OS lock is held.
+    BACKGROUND_JOBS_ENABLED: bool = True
+    BACKGROUND_JOB_LOCK_FILE: Path = Path("/tmp/stock-radar-background-jobs.lock")
+
+    # Mutation endpoints remain loopback-only when no token is configured.
+    # Set this when the API is intentionally exposed through a remote gateway.
+    ADMIN_API_TOKEN: str = ""
+
     # Google Sheet IDs for portfolio sync (set in backend/.env)
     GSHEET_ID: str = ""
     GSHEET_MOM_ID: str = ""

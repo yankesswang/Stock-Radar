@@ -7,8 +7,16 @@ import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import sys as _sys
+
 import yfinance as yf
 from fastapi import APIRouter, HTTPException
+
+from ..config import settings
+
+if str(settings.PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(settings.PROJECT_ROOT))
+from src.quotes import get_price as _get_price  # noqa: E402
 
 router = APIRouter()
 
@@ -84,8 +92,10 @@ def get_options_summary(ticker: str):
         if not expirations:
             raise HTTPException(status_code=404, detail=f"No options data for {ticker}")
 
-        hist = t.history(period="1d")
-        current_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
+        # 不要用 history(period="1d")["Close"].iloc[-1]：當日 K 棒收盤後好幾個小時
+        # 都還沒結算（close 是 NaN），沒 dropna 就直接拿到 NaN，價內價外、max pain
+        # 距離整排跟著壞；而且 history() 走限流那條路，被擋下來整頁就 500。
+        current_price = _get_price(ticker)
 
         # Fetch first 6 expirations in parallel
         summaries = []
@@ -136,8 +146,10 @@ def get_options_chain(ticker: str, expiry: str):
         t = yf.Ticker(ticker)
         chain = t.option_chain(expiry)
 
-        hist = t.history(period="1d")
-        current_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
+        # 不要用 history(period="1d")["Close"].iloc[-1]：當日 K 棒收盤後好幾個小時
+        # 都還沒結算（close 是 NaN），沒 dropna 就直接拿到 NaN，價內價外、max pain
+        # 距離整排跟著壞；而且 history() 走限流那條路，被擋下來整頁就 500。
+        current_price = _get_price(ticker)
 
         # Max pain: strike where total OI loss (calls+puts) is minimized
         all_strikes = sorted(

@@ -1,0 +1,339 @@
+# lint_note_format.py T1 英文詞白名單：沒有中文譯名的產品代號、平台名、機構名。
+# 一行一個，不分大小寫。部門名／KPI 縮寫（Security、NRR、RPO、WAF）不准放這裡，那些要翻。
+# 股票代號不用填，腳本會從 registry companies 與 backend stocks 表自動帶入。
+Blackwell
+Rubin
+Vera
+Hopper
+Grace
+CUDA
+NVLink
+OpenAI
+Anthropic
+Nasdaq
+
+# 美國醫療體系專有名詞（UNH 2026Q3 加）：政府計畫名與子公司品牌名，中文無通用譯名，
+# 性質同 Nasdaq。部門的「功能性」名稱（如 Security）仍要翻，這裡只收專有名詞。
+Medicare
+Medicaid
+Advantage
+Optum
+UnitedHealthcare
+UnitedHealth
+HEDIS
+
+# 手術機器人平台／機種代號（ISRG 2026Q3 加）：公司自定的產品線與機種名，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell／Hopper。達文西（da Vinci）、單孔平台（SP）有中文譯名，不收。
+Ion
+XiR
+EndoWrist
+
+# 記憶體型別縮寫（LRCX FY2027Q1 加）：中文語境沒人翻譯，性質同腳本 TERM_ALLOW 裡已有的
+# NAND／HBM／DDR，只是當初漏收。SLC／TLC／QLC 是同一組分層命名。
+DRAM
+SLC
+TLC
+QLC
+
+# Meta 產品與平台名（META 2026Q3 加）：個人代理產品線與旗下 App 名稱，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell。部門名（應用程式家族、實境實驗室）仍要翻，這裡只收產品名。
+Muse
+Wonder
+Instagram
+Facebook
+WhatsApp
+Threads
+Reels
+Quest
+
+# Tesla 產品與設施名（TSLA 2026Q3 加）：車款、機器人、儲能與廠房的專有名稱，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell。部門名（汽車、能源、服務）仍要翻，這裡只收專有名詞。
+Cybercab
+Cybertruck
+Optimus
+Robotaxi
+Megapack
+Megafactory
+Megapod
+Powerwall
+Terafab
+Roadster
+Supercharger
+Model
+FSD
+GWh
+LFP
+SpaceX
+
+# 會計準則名與 SAP 產品名（SAP 2026Q3 加）：IFRS／non-IFRS 是會計準則名，性質同腳本
+# TERM_ALLOW 裡已有的 GAAP／Non-GAAP，外國發行人（SAP、ASML、TSM）的筆記每段都會用到。
+# Joule 是 SAP 自定的產品名，中文無通用譯名，性質同 NVDA 的 Blackwell。
+IFRS
+non-IFRS
+Joule
+# 2026-10-30 GOOGL/MSFT 財報筆記：晶片與平台產品名，無中文譯名
+TPU
+Gemini
+Waymo
+YouTube
+Azure
+Copilot
+BigQuery
+Dynamics
+LinkedIn
+Xbox
+Windows
+Argon
+Carbon
+Foundry
+Fabric
+GitHub
+MAI
+
+# 幣別代號（ASX 2026Q3 加）：外國發行人（ASX、TSM、SAP、ASML）的筆記每行都要標幣別，
+# NT$ / US$ 被切成 nt / us 之後會被當英文詞誤殺。性質同 TERM_ALLOW 裡已有的 GWh／TB 單位。
+NT
+US
+NTD
+USD
+EUR
+JPY
+RMB
+CNY
+
+# AbbVie 藥品與管線代號（ABBV 2026Q3 加）：商品名與開發代號，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell、ISRG 的 Ion。治療領域名（免疫、神經科學、腫瘤、醫美）仍要翻。
+Skyrizi
+Rinvoq
+Humira
+Vraylar
+Botox
+Juvederm
+Venclexta
+Imbruvica
+Elahere
+Epkinly
+Qulipta
+Ubrelvy
+Vyalev
+Juvmo
+Mavyret
+Creon
+Linzess
+Apogee
+etentamig
+zumilokibart
+lutikizumab
+tavapadon
+emraclidine
+Entyvio
+Boey
+
+# D.R. Horton 子公司與分部專有名詞（DHI FY2026Q4 加）：Forestar 是獨立上市的土地開發子公司名，
+# 性質同 Optum。分部的功能性名稱（房建、租賃、金融服務）仍要翻。
+Forestar
+
+# Intel 公司名、處理器家族與製程／封裝代號（INTC 2026Q3 加）：產品線與機種代號，
+# 中文無通用譯名，性質同 NVDA 的 Blackwell。部門名（資料中心、用戶端、晶圓代工）仍要翻。
+Intel
+Xeon
+Granite
+Clearwater
+Diamond
+Coral
+Panther
+Wildcat
+Nova
+Rapids
+Lake
+Forest
+EMIB
+PDK
+x86
+Oracle
+Classiq
+
+# Eli Lilly 藥品商品名（LLY 2026Q3 加）：原廠商品名，台灣多數未取中文譯名，
+# 性質同 NVDA 的 Blackwell。成分名（替爾泊肽、瑞他魯肽）與已有中文名的（猛健樂）仍用中文。
+Zepbound
+Foundayo
+Jaypirca
+Ebglyss
+Kisunla
+Omvoh
+Inluriyo
+Onswik
+Verzenio
+Jardiance
+Olumiant
+Taltz
+Ozempic
+Curevo
+AtaiBeckley
+Merida
+EloraTZP
+Lilly
+
+# Roblox 公司自定義的核心指標名（RBLX 2026Q3 加）：SKILL 鐵律 2b 的第三種例外明文點名
+# 「Roblox 的 bookings」，第一次出現用括號補中文（預訂金額）即可，之後照用原文。
+# 這不是一般 KPI 縮寫，是公司財報主指標、營收與它是兩條不同的線，翻成中文反而會跟營收混淆。
+bookings
+
+# 平台與產品名（RDDT 2026Q3 加）：公司名與廣告產品線名，中文無通用譯名，
+# 性質同 Nasdaq 與 NVDA 的 Blackwell。用戶指標（日活躍、週活躍、每用戶營收）仍要翻。
+Reddit
+Google
+Max
+
+# 油輪船型與航運核心指標（STNG 2026Q3 加）：LR2／MR／Handymax／VLCC 是國際通用的船型級距代號，
+# 中文航運媒體一律照用原文（寫成「LR2 型」），性質同腳本 TERM_ALLOW 裡已有的 HBM／NAND／DDR。
+# TCE 是航運業的營收口徑（等效期租日租金），地位同 EBITDA，第一次出現括號補中文即可。
+# 部門／業務的功能性名稱（成品油運輸、原油運輸、期租、現貨）仍要翻，這裡只收船型與指標代號。
+LR2
+LR1
+LR3
+MR
+Handymax
+VLCC
+TCE
+DWT
+CPP
+STI
+Volare
+
+# Apple 產品線與平台名（AAPL FY2026Q4 加）：iPhone／Mac／iPad 這類產品名中文語境直接用原文，
+# 沒有通用譯名，性質同 NVDA 的 Blackwell。部門名（服務、穿戴）與營運術語（財測、量產爬坡）
+# 仍要翻，這裡只收產品與平台名。
+iPhone
+iPad
+Mac
+MacBook
+iMac
+AirPods
+HomePod
+HomeView
+Siri
+iCloud
+AppleCare
+Arcade
+Duo
+Neo
+Studio
+
+# Palantir 產品與專案代號（PLTR 2026Q3 加）：平台名與政府專案代號，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell。部門名（美國商用、美國政府）仍要翻，這裡只收專有名詞。
+AIP
+Ontology
+Foundry
+Maven
+TITAN
+Nemotron
+DORA
+
+# Twilio 產品與平台名（TWLO 2026Q3 加）：產品線與通訊協定代號，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell。部門名（簡訊、語音、電子郵件）仍要翻，這裡只收專有名詞。
+Twilio
+Flex
+SIGNAL
+RCS
+SendGrid
+Segment
+
+# AMD 產品線與機種代號（AMD 2026Q3 加）：公司自定的平台名與晶片代號，中文無通用譯名，
+# 性質同 NVDA 的 Blackwell／Rubin。部門名（資料中心、客戶與遊戲、嵌入式）仍要翻，這裡只收產品名。
+Instinct
+EPYC
+Helios
+Helion
+Venice
+Turin
+ROCm
+Ryzen
+Radeon
+Versal
+Threadripper
+MI308
+MI350p
+MI355X
+MI430X
+MI450
+MI455
+MI455X
+MI500
+MI600
+Taalas
+Vultr
+EuroHPC
+LUMI-AI
+OCP
+
+# Ouster 產品線與夥伴名（OUST 2026Q3 加）：公司自定的感測器世代、軟體平台與代工／客戶公司名，
+# 中文無通用譯名，性質同 NVDA 的 Blackwell。產品類別（光達、相機、運算）仍要翻，這裡只收專有名詞。
+Rev6
+Rev7
+Rev8
+OS1
+Stereolabs
+BlueCity
+ZED
+Jetson
+Orin
+Thor
+Isaac
+Benchmark
+Fabrinet
+Forterra
+GeoCue
+TrueView
+Seneca
+NDAA
+
+# Arm 架構、產品線與夥伴晶片代號（ARM FY2027Q2 加）：公司自定的架構版本、運算子系統
+# 世代與客戶自研晶片名，中文無通用譯名，性質同 NVDA 的 Blackwell。部門／終端市場名
+#（雲端 AI、邊緣 AI、實體 AI）與 KPI（年化合約價值）仍要翻，這裡只收專有名詞。
+Armv9
+Neoverse
+AGI
+Graviton
+Axion
+Cobalt
+Zena
+Googlebook
+Signal65
+
+# Camtek 機種、購併標的與封裝製程代號（CAMT 2026Q3 加）：公司自定的機種名與業界製程
+# 專有名詞，中文無通用譯名，性質同 NVDA 的 Blackwell。製程類別（檢測、量測、先進封裝）
+# 與 KPI（接單、在手訂單）仍要翻，這裡只收專有名詞。
+Camtek
+Eagle
+Hawk
+CoWoS
+
+# Cognex 產品線與被併公司名（CGNX 2026Q3 加）：產品機種代號與收購標的公司名，
+# 中文無通用譯名，性質同 NVDA 的 Blackwell。終端市場名（物流、包裝、半導體）仍要翻。
+RealSense
+In-Sight
+Moritex
+
+# Qualcomm 產品與平台名（QCOM FY2026Q4 加）：晶片平台、CPU 核心與基礎設施產品線代號，
+# 中文無通用譯名，性質同 NVDA 的 Blackwell。部門名（QCT／QTL）仍要翻成晶片部門／授權部門。
+Snapdragon
+Oryon
+Dragonwing
+Dragonfly
+Starlink
+Trainium
+
+# 無人機產業公司名與計畫名（UMAC 2026Q3 加）：客戶、被投資公司與國防計畫的專有名稱，
+# 中文無通用譯名，性質同 Nasdaq。零件類別（馬達、電池、飛控）仍要翻，這裡只收專有名詞。
+Powerus
+Xtend
+XTIA
+Neros
+Zipline
+Gauntlet
+
+# 通訊量測公司名與產品／規格名（VIAV FY2027Q1 加）：被併購事業體名、公司自定機種名與
+# 國際標準名，中文無通用譯名。部門名（網路與服務致能、光學安全與性能）仍要翻。
+Spirent
+DOCSIS

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   Bell, BellOff, Plus, Trash2, RefreshCw, Target, TrendingUp,
   CheckCircle, AlertTriangle, X, Check,

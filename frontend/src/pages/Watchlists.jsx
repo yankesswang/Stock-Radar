@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   BookMarked, Plus, Trash2, RefreshCw, X, Check,
   TrendingUp, TrendingDown, Loader2, Zap, CheckCircle2,

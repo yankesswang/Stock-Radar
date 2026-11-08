@@ -35,7 +35,7 @@ def _safe(val):
         return None
 
 
-def _compute_last_bars(ticker: str, n: int = 3) -> list[dict] | None:
+def _compute_last_bars(ticker: str, n: int = 6) -> list[dict] | None:
     """Fetch ~1 year of daily data and return the last n bars with indicators.
 
     A year (not 3 months) because ADX/Ichimoku/Aroon need the longer lookback,
@@ -133,6 +133,41 @@ def _compute_last_bars(ticker: str, n: int = 3) -> list[dict] | None:
         return None
 
 
+# ── Signal taxonomy ──────────────────────────────────────────────────────────
+# 每個訊號除了原本的 indicator/type/severity/value/desc，再帶四個欄位：
+#   kind    "event" = 這根 K 才發生的狀態改變（交叉／翻轉／突破），稀有、資訊量高
+#           "state" = 持續中的讀數（超買超賣／趨勢強度），常見、彼此高度相關
+#   family  同一族的指標其實在講同一件事：oscillator 六個一起超賣不等於六個獨立證據，
+#           算分時整族合計上限 2 分，前端也把它們摺成一行「N 個震盪指標超賣」
+#   weight  分數權重（結構性事件 2–3、動能事件 1–2、狀態讀數 0.5–1.5）
+#   zh      可直接當標題用的中文短句
+#
+# 實測（2026-09）：240 檔裡 234 檔都有訊號、平均 3.4 個、97 檔多空混雜 ——
+# 只列徽章、依數量排序，等於沒有排序。這一層就是為了把「事件」從「狀態雜訊」裡撈出來。
+
+OSC_FAMILY_CAP = 2.0
+
+SETUP_META = {
+    # tier 1：行動級 —— 結構改變或反轉確認
+    "trend_up":   {"label": "趨勢轉多", "tier": 1, "dir": "bullish"},
+    "trend_down": {"label": "趨勢轉空", "tier": 1, "dir": "bearish"},
+    "bounce":     {"label": "超賣反彈啟動", "tier": 1, "dir": "bullish"},
+    "fading":     {"label": "高檔轉弱", "tier": 1, "dir": "bearish"},
+    # tier 2：動能事件，尚未有結構確認
+    "mom_up":     {"label": "動能轉多", "tier": 2, "dir": "bullish"},
+    "mom_down":   {"label": "動能轉空", "tier": 2, "dir": "bearish"},
+    "conflict":   {"label": "多空對撞", "tier": 2, "dir": "neutral"},
+    # tier 3：狀態觀察 —— 讀數極端但還沒有事件
+    "oversold":   {"label": "超賣觀察", "tier": 3, "dir": "bullish"},
+    "overbought": {"label": "超買觀察", "tier": 3, "dir": "bearish"},
+    "strong":     {"label": "強勢延續", "tier": 3, "dir": "bullish"},
+    "weak":       {"label": "弱勢延續", "tier": 3, "dir": "bearish"},
+    # tier 4：盤整／零星
+    "coiling":    {"label": "蓄勢盤整", "tier": 4, "dir": "neutral"},
+    "noise":      {"label": "零星訊號", "tier": 4, "dir": "neutral"},
+}
+
+
 def _detect_signals(bars: list[dict]) -> list[dict]:
     if len(bars) < 2:
         return []
@@ -140,51 +175,66 @@ def _detect_signals(bars: list[dict]) -> list[dict]:
     prev = bars[-2]
     signals = []
 
-    def add(indicator, stype, severity, value, desc):
+    def add(indicator, stype, severity, value, desc, *, kind, family, weight, zh):
         signals.append({"indicator": indicator, "type": stype,
-                         "severity": severity, "value": value, "desc": desc})
+                        "severity": severity, "value": value, "desc": desc,
+                        "kind": kind, "family": family, "weight": weight, "zh": zh})
 
     # RSI
     r = last.get("rsi")
     if r is not None:
-        if r >= 70:   add("RSI", "Overbought",  "bearish", f"{r:.1f}", f"RSI {r:.1f} above 70")
-        elif r <= 30: add("RSI", "Oversold",     "bullish", f"{r:.1f}", f"RSI {r:.1f} below 30")
+        if r >= 70:   add("RSI", "Overbought",  "bearish", f"{r:.1f}", f"RSI {r:.1f} above 70",
+                          kind="state", family="oscillator", weight=1.0, zh=f"RSI 超買 {r:.0f}")
+        elif r <= 30: add("RSI", "Oversold",     "bullish", f"{r:.1f}", f"RSI {r:.1f} below 30",
+                          kind="state", family="oscillator", weight=1.0, zh=f"RSI 超賣 {r:.0f}")
 
     # Williams %R
     w = last.get("willr")
     if w is not None:
-        if w >= -20:   add("Williams %R", "Overbought", "bearish", f"{w:.1f}", f"%R {w:.1f} above -20")
-        elif w <= -80: add("Williams %R", "Oversold",   "bullish", f"{w:.1f}", f"%R {w:.1f} below -80")
+        if w >= -20:   add("Williams %R", "Overbought", "bearish", f"{w:.1f}", f"%R {w:.1f} above -20",
+                           kind="state", family="oscillator", weight=0.5, zh="%R 超買")
+        elif w <= -80: add("Williams %R", "Oversold",   "bullish", f"{w:.1f}", f"%R {w:.1f} below -80",
+                           kind="state", family="oscillator", weight=0.5, zh="%R 超賣")
 
     # KDJ J-line
     jv = last.get("j")
     if jv is not None:
-        if jv >= 80:   add("KDJ", "Overbought", "bearish", f"J={jv:.1f}", f"J-line {jv:.1f} above 80")
-        elif jv <= 20: add("KDJ", "Oversold",   "bullish", f"J={jv:.1f}", f"J-line {jv:.1f} below 20")
+        if jv >= 80:   add("KDJ", "Overbought", "bearish", f"J={jv:.1f}", f"J-line {jv:.1f} above 80",
+                           kind="state", family="oscillator", weight=0.5, zh="KDJ 超買")
+        elif jv <= 20: add("KDJ", "Oversold",   "bullish", f"J={jv:.1f}", f"J-line {jv:.1f} below 20",
+                           kind="state", family="oscillator", weight=0.5, zh="KDJ 超賣")
 
     # KDJ KD crossover
     lk, ld, pk, pd_ = last.get("k"), last.get("d"), prev.get("k"), prev.get("d")
     if all(v is not None for v in [lk, ld, pk, pd_]):
-        if pk <= pd_ and lk > ld: add("KDJ", "Golden Cross", "bullish", f"K={lk:.1f}", "K crossed above D")
-        elif pk >= pd_ and lk < ld: add("KDJ", "Death Cross", "bearish", f"K={lk:.1f}", "K crossed below D")
+        if pk <= pd_ and lk > ld: add("KDJ", "Golden Cross", "bullish", f"K={lk:.1f}", "K crossed above D",
+                                      kind="event", family="momentum", weight=1.0, zh="KD 黃金交叉")
+        elif pk >= pd_ and lk < ld: add("KDJ", "Death Cross", "bearish", f"K={lk:.1f}", "K crossed below D",
+                                        kind="event", family="momentum", weight=1.0, zh="KD 死亡交叉")
 
     # MACD crossover
     lm, ls, pm, ps = last.get("macd"), last.get("signal"), prev.get("macd"), prev.get("signal")
     if all(v is not None for v in [lm, ls, pm, ps]):
-        if pm <= ps and lm > ls: add("MACD", "Bullish Crossover", "bullish", f"{lm:.3f}", "MACD crossed above signal")
-        elif pm >= ps and lm < ls: add("MACD", "Bearish Crossover", "bearish", f"{lm:.3f}", "MACD crossed below signal")
+        if pm <= ps and lm > ls: add("MACD", "Bullish Crossover", "bullish", f"{lm:.3f}", "MACD crossed above signal",
+                                     kind="event", family="momentum", weight=2.0, zh="MACD 黃金交叉")
+        elif pm >= ps and lm < ls: add("MACD", "Bearish Crossover", "bearish", f"{lm:.3f}", "MACD crossed below signal",
+                                       kind="event", family="momentum", weight=2.0, zh="MACD 死亡交叉")
 
     # MACD histogram flip
     lh, ph = last.get("hist"), prev.get("hist")
     if lh is not None and ph is not None:
-        if ph < 0 and lh >= 0: add("MACD", "Histogram Flip ↑", "bullish", f"{lh:.3f}", "Histogram turned positive")
-        elif ph > 0 and lh <= 0: add("MACD", "Histogram Flip ↓", "bearish", f"{lh:.3f}", "Histogram turned negative")
+        if ph < 0 and lh >= 0: add("MACD", "Histogram Flip ↑", "bullish", f"{lh:.3f}", "Histogram turned positive",
+                                   kind="event", family="momentum", weight=1.5, zh="MACD 柱轉正")
+        elif ph > 0 and lh <= 0: add("MACD", "Histogram Flip ↓", "bearish", f"{lh:.3f}", "Histogram turned negative",
+                                     kind="event", family="momentum", weight=1.5, zh="MACD 柱轉負")
 
     # Bollinger Bands
     bu, bl, cl = last.get("bb_upper"), last.get("bb_lower"), last.get("close")
     if bu is not None and cl is not None:
-        if cl >= bu: add("BB", "Upper Band Touch", "bearish", f"{cl:.2f}", f"Price ≥ upper band ({bu:.2f})")
-        elif bl is not None and cl <= bl: add("BB", "Lower Band Touch", "bullish", f"{cl:.2f}", f"Price ≤ lower band ({bl:.2f})")
+        if cl >= bu: add("BB", "Upper Band Touch", "bearish", f"{cl:.2f}", f"Price ≥ upper band ({bu:.2f})",
+                         kind="state", family="volatility", weight=1.0, zh="觸及布林上軌")
+        elif bl is not None and cl <= bl: add("BB", "Lower Band Touch", "bullish", f"{cl:.2f}", f"Price ≤ lower band ({bl:.2f})",
+                                              kind="state", family="volatility", weight=1.0, zh="觸及布林下軌")
 
     # ── Advanced indicators ──────────────────────────────────────────────────
     def both(*keys):
@@ -193,92 +243,285 @@ def _detect_signals(bars: list[dict]) -> list[dict]:
     # SuperTrend flip — the ATR trailing-stop regime change
     if both("st_dir"):
         if prev["st_dir"] < 0 and last["st_dir"] > 0:
-            add("SuperTrend", "Flip ↑", "bullish", f"{last.get('st'):.2f}", "SuperTrend turned bullish")
+            add("SuperTrend", "Flip ↑", "bullish", f"{last.get('st'):.2f}", "SuperTrend turned bullish",
+                kind="event", family="trend", weight=2.5, zh="SuperTrend 翻多")
         elif prev["st_dir"] > 0 and last["st_dir"] < 0:
-            add("SuperTrend", "Flip ↓", "bearish", f"{last.get('st'):.2f}", "SuperTrend turned bearish")
+            add("SuperTrend", "Flip ↓", "bearish", f"{last.get('st'):.2f}", "SuperTrend turned bearish",
+                kind="event", family="trend", weight=2.5, zh="SuperTrend 翻空")
 
     # TTM Squeeze release — volatility expansion starting
     if both("sqz_on"):
         mom = last.get("sqz_mom") or 0
         if prev["sqz_on"] == 1 and last["sqz_on"] == 0:
-            add("TTM Squeeze", "Fired ↑" if mom >= 0 else "Fired ↓",
-                "bullish" if mom >= 0 else "bearish", f"{mom:.2f}", "Squeeze released")
+            up = mom >= 0
+            add("TTM Squeeze", "Fired ↑" if up else "Fired ↓",
+                "bullish" if up else "bearish", f"{mom:.2f}", "Squeeze released",
+                kind="event", family="volatility", weight=2.5,
+                zh="Squeeze 向上釋放" if up else "Squeeze 向下釋放")
         elif last["sqz_on"] == 1:
-            add("TTM Squeeze", "Squeezing", "neutral", f"{mom:.2f}", "BB inside Keltner — coiling")
+            add("TTM Squeeze", "Squeezing", "neutral", f"{mom:.2f}", "BB inside Keltner — coiling",
+                kind="state", family="volatility", weight=0.0, zh="Squeeze 壓縮中")
 
     # ADX trend regime
     adx_v, dip, dim = last.get("adx"), last.get("di_plus"), last.get("di_minus")
     if adx_v is not None and dip is not None and dim is not None and adx_v >= 25:
-        add("ADX", "Strong Uptrend" if dip > dim else "Strong Downtrend",
-            "bullish" if dip > dim else "bearish", f"{adx_v:.1f}", f"ADX {adx_v:.1f} — trending")
+        up = dip > dim
+        add("ADX", "Strong Uptrend" if up else "Strong Downtrend",
+            "bullish" if up else "bearish", f"{adx_v:.1f}", f"ADX {adx_v:.1f} — trending",
+            kind="state", family="trend", weight=1.5,
+            zh=f"ADX {adx_v:.0f} 上升趨勢" if up else f"ADX {adx_v:.0f} 下降趨勢")
 
     # Stochastic RSI / MFI / CCI / CMF
     sk = last.get("stochrsi_k")
     if sk is not None:
-        if sk >= 80:   add("Stoch RSI", "Overbought", "bearish", f"{sk:.1f}", "Stoch RSI above 80")
-        elif sk <= 20: add("Stoch RSI", "Oversold",   "bullish", f"{sk:.1f}", "Stoch RSI below 20")
+        if sk >= 80:   add("Stoch RSI", "Overbought", "bearish", f"{sk:.1f}", "Stoch RSI above 80",
+                           kind="state", family="oscillator", weight=0.5, zh="Stoch RSI 超買")
+        elif sk <= 20: add("Stoch RSI", "Oversold",   "bullish", f"{sk:.1f}", "Stoch RSI below 20",
+                           kind="state", family="oscillator", weight=0.5, zh="Stoch RSI 超賣")
     mfi = last.get("mfi")
     if mfi is not None:
-        if mfi >= 80:   add("MFI", "Overbought", "bearish", f"{mfi:.1f}", "Money flow overheated")
-        elif mfi <= 20: add("MFI", "Oversold",   "bullish", f"{mfi:.1f}", "Money flow washed out")
+        if mfi >= 80:   add("MFI", "Overbought", "bearish", f"{mfi:.1f}", "Money flow overheated",
+                            kind="state", family="oscillator", weight=1.0, zh="資金流 MFI 超買")
+        elif mfi <= 20: add("MFI", "Oversold",   "bullish", f"{mfi:.1f}", "Money flow washed out",
+                            kind="state", family="oscillator", weight=1.0, zh="資金流 MFI 超賣")
     cci = last.get("cci")
     if cci is not None:
-        if cci >= 100:    add("CCI", "Overbought", "bearish", f"{cci:.0f}", "CCI above +100")
-        elif cci <= -100: add("CCI", "Oversold",   "bullish", f"{cci:.0f}", "CCI below -100")
+        if cci >= 100:    add("CCI", "Overbought", "bearish", f"{cci:.0f}", "CCI above +100",
+                              kind="state", family="oscillator", weight=0.5, zh="CCI 超買")
+        elif cci <= -100: add("CCI", "Oversold",   "bullish", f"{cci:.0f}", "CCI below -100",
+                              kind="state", family="oscillator", weight=0.5, zh="CCI 超賣")
     cmf = last.get("cmf")
     if cmf is not None:
-        if cmf >= 0.2:    add("CMF", "Accumulation", "bullish", f"{cmf:.2f}", "Sustained accumulation")
-        elif cmf <= -0.2: add("CMF", "Distribution", "bearish", f"{cmf:.2f}", "Sustained distribution")
+        if cmf >= 0.2:    add("CMF", "Accumulation", "bullish", f"{cmf:.2f}", "Sustained accumulation",
+                              kind="state", family="flow", weight=1.0, zh="資金持續流入")
+        elif cmf <= -0.2: add("CMF", "Distribution", "bearish", f"{cmf:.2f}", "Sustained distribution",
+                              kind="state", family="flow", weight=1.0, zh="資金持續流出")
 
     # Ichimoku cloud break
     if both("ich_a", "ich_b", "close"):
         top, bot = max(last["ich_a"], last["ich_b"]), min(last["ich_a"], last["ich_b"])
         ptop, pbot = max(prev["ich_a"], prev["ich_b"]), min(prev["ich_a"], prev["ich_b"])
         if prev["close"] <= ptop and last["close"] > top:
-            add("Ichimoku", "Cloud Breakout ↑", "bullish", f"{last['close']:.2f}", "Broke above the cloud")
+            add("Ichimoku", "Cloud Breakout ↑", "bullish", f"{last['close']:.2f}", "Broke above the cloud",
+                kind="event", family="trend", weight=3.0, zh="突破一目均衡雲")
         elif prev["close"] >= pbot and last["close"] < bot:
-            add("Ichimoku", "Cloud Breakdown ↓", "bearish", f"{last['close']:.2f}", "Broke below the cloud")
+            add("Ichimoku", "Cloud Breakdown ↓", "bearish", f"{last['close']:.2f}", "Broke below the cloud",
+                kind="event", family="trend", weight=3.0, zh="跌破一目均衡雲")
 
     # Parabolic SAR flip
     if both("psar", "close"):
         if prev["close"] < prev["psar"] and last["close"] > last["psar"]:
-            add("Parabolic SAR", "Flip ↑", "bullish", f"{last['psar']:.2f}", "SAR flipped bullish")
+            add("Parabolic SAR", "Flip ↑", "bullish", f"{last['psar']:.2f}", "SAR flipped bullish",
+                kind="event", family="trend", weight=2.0, zh="SAR 翻多")
         elif prev["close"] > prev["psar"] and last["close"] < last["psar"]:
-            add("Parabolic SAR", "Flip ↓", "bearish", f"{last['psar']:.2f}", "SAR flipped bearish")
+            add("Parabolic SAR", "Flip ↓", "bearish", f"{last['psar']:.2f}", "SAR flipped bearish",
+                kind="event", family="trend", weight=2.0, zh="SAR 翻空")
 
     # Golden / death cross
     if both("ma50", "ma200"):
         if prev["ma50"] <= prev["ma200"] and last["ma50"] > last["ma200"]:
-            add("Moving Average", "Golden Cross", "bullish", f"{last['ma50']:.2f}", "MA50 crossed above MA200")
+            add("Moving Average", "Golden Cross", "bullish", f"{last['ma50']:.2f}", "MA50 crossed above MA200",
+                kind="event", family="trend", weight=3.0, zh="均線黃金交叉 50/200")
         elif prev["ma50"] >= prev["ma200"] and last["ma50"] < last["ma200"]:
-            add("Moving Average", "Death Cross", "bearish", f"{last['ma50']:.2f}", "MA50 crossed below MA200")
+            add("Moving Average", "Death Cross", "bearish", f"{last['ma50']:.2f}", "MA50 crossed below MA200",
+                kind="event", family="trend", weight=3.0, zh="均線死亡交叉 50/200")
 
     # 52-week extremes & volume anomaly
     hi52, lo52 = last.get("high_52w"), last.get("low_52w")
     if cl is not None and hi52 and cl >= hi52 * 0.99:
-        add("Price Action", "52W High", "bullish", f"{cl:.2f}", "At / near 52-week high")
+        add("Price Action", "52W High", "bullish", f"{cl:.2f}", "At / near 52-week high",
+            kind="event", family="price", weight=2.0, zh="逼近 52 週新高")
     if cl is not None and lo52 and cl <= lo52 * 1.01:
-        add("Price Action", "52W Low", "bearish", f"{cl:.2f}", "At / near 52-week low")
+        add("Price Action", "52W Low", "bearish", f"{cl:.2f}", "At / near 52-week low",
+            kind="event", family="price", weight=2.0, zh="逼近 52 週新低")
     rvol = last.get("rvol")
     if rvol is not None and rvol >= 2:
-        add("Volume", "Volume Spike", "neutral", f"{rvol:.1f}x", f"Volume {rvol:.1f}x the 20-day average")
+        add("Volume", "Volume Spike", "neutral", f"{rvol:.1f}x", f"Volume {rvol:.1f}x the 20-day average",
+            kind="event", family="volume", weight=1.0, zh=f"量能放大 {rvol:.1f}x")
 
     return signals
+
+
+def _summarize(signals: list[dict], change_5d: float | None = None) -> dict:
+    """把一檔的訊號清單壓成一句話：setup（型態）、headline（標題）、score、佐證數。
+
+    分數：非震盪族 = Σ 方向 × 權重；震盪族多／空各自合計、封頂 OSC_FAMILY_CAP。
+    型態：先看結構事件（trend/volatility fired/price），再看「超賣＋動能事件」這種
+    反轉確認，再看純動能事件，最後才是狀態讀數與盤整。
+    trend_strength（預設排序鍵）：|score| ＋ 爆量 1 ＋ ADX 強度（(ADX−20)/10，封頂 2）
+    ＋ 5 日漲跌幅度（|5d|/4，封頂 2）；後兩項只在與型態同向時加分、反向扣一半
+    —— 訊號多、趨勢硬、真的往那個方向在動的排最前面。
+    """
+    bull = [s for s in signals if s["severity"] == "bullish"]
+    bear = [s for s in signals if s["severity"] == "bearish"]
+
+    def is_struct(s):
+        return s["kind"] == "event" and s["family"] in ("trend", "volatility", "price")
+
+    def is_mom(s):
+        return s["kind"] == "event" and s["family"] == "momentum"
+
+    struct_up = [s for s in bull if is_struct(s)]
+    struct_dn = [s for s in bear if is_struct(s)]
+    mom_up    = [s for s in bull if is_mom(s)]
+    mom_dn    = [s for s in bear if is_mom(s)]
+    osc_under = [s for s in bull if s["family"] == "oscillator"]
+    osc_over  = [s for s in bear if s["family"] == "oscillator"]
+    bb_lower  = any(s["indicator"] == "BB" and s["severity"] == "bullish" for s in signals)
+    bb_upper  = any(s["indicator"] == "BB" and s["severity"] == "bearish" for s in signals)
+    adx = next((s for s in signals if s["indicator"] == "ADX"), None)
+    adx_dir = None if adx is None else ("up" if adx["severity"] == "bullish" else "down")
+    squeezing = any(s["type"] == "Squeezing" for s in signals)
+    vol_spike = any(s["indicator"] == "Volume" for s in signals)
+
+    # score
+    score = 0.0
+    osc_b = osc_s = 0.0
+    for s in signals:
+        sign = 1 if s["severity"] == "bullish" else -1 if s["severity"] == "bearish" else 0
+        if s["family"] == "oscillator":
+            if sign > 0: osc_b += s["weight"]
+            elif sign < 0: osc_s += s["weight"]
+        else:
+            score += sign * s["weight"]
+    score += min(osc_b, OSC_FAMILY_CAP) - min(osc_s, OSC_FAMILY_CAP)
+
+    # setup
+    if struct_up and struct_dn:
+        setup = "conflict"
+    elif struct_up:
+        setup = "trend_up"
+    elif struct_dn:
+        setup = "trend_down"
+    elif (len(osc_under) >= 2 or bb_lower) and mom_up:
+        setup = "bounce"
+    elif (len(osc_over) >= 2 or bb_upper) and mom_dn:
+        setup = "fading"
+    elif mom_up and mom_dn:
+        setup = "conflict"
+    elif mom_up:
+        setup = "mom_up"
+    elif mom_dn:
+        setup = "mom_down"
+    elif len(osc_under) >= 2 or (osc_under and bb_lower):
+        setup = "oversold"
+    elif len(osc_over) >= 2 or (osc_over and bb_upper):
+        setup = "overbought"
+    elif adx_dir == "up":
+        setup = "strong"
+    elif adx_dir == "down":
+        setup = "weak"
+    elif squeezing:
+        setup = "coiling"
+    else:
+        setup = "noise"
+    meta = SETUP_META[setup]
+
+    # headline：型態決定的主角；其餘訊號摺成 supporting（震盪族合併成一行）
+    def osc_line(group, word):
+        names = "、".join(dict.fromkeys(s["indicator"] for s in group))
+        return f"{len(group)} 個震盪指標{word}（{names}）"
+
+    used = set()
+    headline = None
+    if setup in ("oversold", "bounce") and len(osc_under) >= 2:
+        headline = osc_line(osc_under, "超賣")
+        used.update(id(s) for s in osc_under)
+        if setup == "bounce":
+            lead = max(mom_up, key=lambda s: s["weight"])
+            headline = f"{lead['zh']}，{headline}"
+            used.add(id(lead))
+    elif setup in ("overbought", "fading") and len(osc_over) >= 2:
+        headline = osc_line(osc_over, "超買")
+        used.update(id(s) for s in osc_over)
+        if setup == "fading":
+            lead = max(mom_dn, key=lambda s: s["weight"])
+            headline = f"{lead['zh']}，{headline}"
+            used.add(id(lead))
+    elif setup == "conflict":
+        up = max(struct_up or mom_up, key=lambda s: s["weight"])
+        dn = max(struct_dn or mom_dn, key=lambda s: s["weight"])
+        headline = f"{up['zh']} vs {dn['zh']}"
+        used.update((id(up), id(dn)))
+    else:
+        pool = {
+            "trend_up": struct_up, "trend_down": struct_dn,
+            "mom_up": mom_up, "mom_down": mom_dn,
+        }.get(setup)
+        if not pool:
+            pool = [s for s in signals if s["weight"] > 0] or signals
+        lead = max(pool, key=lambda s: (s["weight"], s["kind"] == "event"))
+        headline = lead["zh"]
+        used.add(id(lead))
+
+    rest = [s for s in signals if id(s) not in used]
+    supporting = []
+    for sev, word in (("bullish", "超賣"), ("bearish", "超買")):
+        grp = [s for s in rest if s["family"] == "oscillator" and s["severity"] == sev]
+        if len(grp) >= 2:
+            supporting.append({"severity": sev, "zh": osc_line(grp, word)})
+            rest = [s for s in rest if s not in grp]
+    supporting += [{"severity": s["severity"], "zh": s["zh"]} for s in rest]
+
+    events = [s for s in signals if s["kind"] == "event"]
+    attention = abs(score) + (1.0 if vol_spike else 0.0)
+    # ADX 與 5 日幅度只在「跟型態方向一致」時加分；反向是矛盾，扣一半——
+    # 趨勢轉空但五天漲 9% 不叫強勢空頭。中性型態（對撞／盤整）取絕對值。
+    setup_dir = meta["dir"]
+    def aligned(sign):
+        if setup_dir == "neutral" or sign == 0:
+            return 1.0
+        return 1.0 if (sign > 0) == (setup_dir == "bullish") else -0.5
+    adx_term = 0.0
+    if adx is not None:
+        try:
+            raw = max(0.0, min((float(adx["value"]) - 20.0) / 10.0, 2.0))
+            adx_term = raw * aligned(1 if adx_dir == "up" else -1)
+        except (TypeError, ValueError):
+            adx_term = 0.0
+    move_term = 0.0
+    if change_5d is not None:
+        move_term = min(abs(change_5d) / 4.0, 2.0) * aligned(1 if change_5d > 0 else -1 if change_5d < 0 else 0)
+    trend_strength = max(0.0, attention + adx_term + move_term)
+    return {
+        "setup":        setup,
+        "setup_label":  meta["label"],
+        "tier":         meta["tier"],
+        "direction":    meta["dir"],
+        "headline":     headline,
+        "supporting":   supporting,
+        "score":        round(score, 2),
+        "attention":    round(attention, 2),
+        "trend_strength": round(trend_strength, 2),
+        "event_count":  len(events),
+        "bull_count":   len(bull),
+        "bear_count":   len(bear),
+        "trend_ctx":    adx_dir,
+        "volume_spike": vol_spike,
+    }
 
 
 def _scan_all(stocks_meta: dict) -> list[dict]:
     results = []
 
     def process(ticker):
-        bars = _compute_last_bars(ticker, n=3)
+        bars = _compute_last_bars(ticker, n=6)
         if not bars:
             return None
         sigs = _detect_signals(bars)
         if not sigs:
             return None
         entry = dict(stocks_meta[ticker])
-        entry["signals"]     = sigs
+        entry["signals"]      = sigs
         entry["latest_close"] = bars[-1].get("close")
+        closes = [b.get("close") for b in bars]
+        def chg(back):
+            if len(closes) > back and closes[-1] and closes[-1 - back]:
+                return round((closes[-1] - closes[-1 - back]) / closes[-1 - back] * 100, 2)
+            return None
+        entry["change_1d_pct"] = chg(1)
+        entry["change_5d_pct"] = chg(5)
+        entry["summary"]       = _summarize(sigs, entry["change_5d_pct"])
         return entry
 
     with ThreadPoolExecutor(max_workers=20) as ex:
@@ -288,7 +531,8 @@ def _scan_all(stocks_meta: dict) -> list[dict]:
             if r:
                 results.append(r)
 
-    results.sort(key=lambda x: (-len(x["signals"]), x["ticker"]))
+    # 預設依趨勢強度由強到弱（訊號分數＋ADX＋5 日幅度），不分層 —— 分層是前端的另一種檢視。
+    results.sort(key=lambda x: (-x["summary"]["trend_strength"], x["summary"]["tier"], x["ticker"]))
     return results
 
 

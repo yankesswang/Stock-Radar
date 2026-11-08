@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # --- Pagination ---
@@ -34,7 +34,7 @@ class IndustrySummary(IndustryOut):
     avg_profit_margin: Optional[float] = None
     overvalued_count: int = 0
     undervalued_count: int = 0
-    top_undervalued: list[StockBrief] = []
+    top_undervalued: list[StockBrief] = Field(default_factory=list)
 
 
 # --- Stock ---
@@ -154,8 +154,8 @@ class FilterCondition(BaseModel):
 
 
 class ScreenRequest(BaseModel):
-    filters: list[FilterCondition] = []
-    industries: list[str] = []
+    filters: list[FilterCondition] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
     valuation_status: Optional[str] = None  # overvalued, undervalued
     search: Optional[str] = None
     sort_by: str = "ticker"

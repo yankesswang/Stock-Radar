@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, ForeignKey, UniqueConstraint, Index
 from datetime import datetime, date as date_type
 from sqlalchemy.orm import relationship
 
@@ -242,6 +242,10 @@ class Statistic(Base):
     snapshot_date = Column(Date, nullable=False)
     section = Column(String, nullable=False)  # e.g., "Total Valuation", "Valuation Ratios"
     label = Column(String, nullable=False)    # e.g., "Market Cap", "PE Ratio"
+    # 來源自己的穩定鍵（grossMargin / revenue3y / zScore）。label 是會被改名的
+    # 顯示字串 —— 2026 年中「Revenue Growth Forecast (5Y)」改成「(3Y)」就讓
+    # 整欄資料在下游斷掉過一次。只有走 JSON 端點抓的才有，舊列是 NULL。
+    metric_id = Column(String)
     value = Column(Float)                     # Parsed numeric value
     display = Column(String)                  # Original display string
 
@@ -398,3 +402,50 @@ class MimiWatchlist(Base):
     price_rec         = Column(Float,  nullable=True)  # 首推當時價（new format）
     history_json      = Column(String, default="")  # 觀點演變 rows, JSON list（new format）
     last_synced       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ── 個股問答（StockChat） ──────────────────────────────────────────────────────
+# 每檔個股頁可以直接開對話問技術面 / 財報 / 估值。一次對話 = 一個 ChatSession，
+# 每則發言 = 一列 ChatMessage。所有 ticker 的問答共用同一張表，「問答紀錄」頁
+# （/qa）就是直接查這張表 —— 統一紀錄不必另外搬資料。
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+
+    id                = Column(Integer, primary_key=True, autoincrement=True)
+    ticker            = Column(String, nullable=False, index=True)  # 代號，或 "MARKET"（大盤/總經）
+    title             = Column(String, default="")     # 首問截斷，當作對話標題
+    # claude CLI 的 session id：續問時用 --resume 接回同一條脈絡，
+    # 不必把整包資料重送一次（省時間也省額度）
+    claude_session_id = Column(String, default="")
+    # 這條對話已經送過哪些資料區塊（逗號分隔的 section key），續問時只補新的
+    sent_sections     = Column(String, default="")
+    created_at        = Column(DateTime, default=datetime.utcnow)
+    updated_at        = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_chat_sessions_ticker_updated", "ticker", "updated_at"),
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    session_id  = Column(Integer, ForeignKey("chat_sessions.id"), nullable=False, index=True)
+    ticker      = Column(String, nullable=False, index=True)   # session 的範圍：代號或 MARKET
+    role        = Column(String, nullable=False)               # user | assistant
+    content     = Column(Text, default="")
+    topics      = Column(String, default="")   # 逗號分隔：技術面,財報…（由問題路由判定）
+    tickers     = Column(String, default="")   # 這一輪實際點名的股票（跨標的問答會有多檔）
+    sections    = Column(String, default="")   # 這則回答踩了哪些資料區塊
+    duration_ms = Column(Integer, nullable=True)
+    cost_usd    = Column(Float, nullable=True)
+    starred     = Column(Integer, default=0)   # 標記重要問答，/qa 可只看標記過的
+    note        = Column(Text, default="")     # 自己補的註記
+    error       = Column(String, default="")   # 失敗原因（額度用罄 / 逾時…）
+    created_at  = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index("idx_chat_messages_session_created", "session_id", "created_at"),
+    )

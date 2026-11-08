@@ -25,9 +25,18 @@ backend/.env
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
 
 # ── Personal portfolio data ───────────────────────────────────────────────────
 Portfolio_management/
+data/alerts.json
+data/portfolio.csv
+data/portfolio_deposits.json
+data/portfolio_meta.json
+data/watchlists.json
 
 # ── Scraped data files (large, regeneratable) ────────────────────────────────
 data/pe/
@@ -38,6 +47,9 @@ data/metrics/
 data/statistics/
 data/dcf/
 data/telegram_notifications_seen.json
+
+data/market-news/
+data/_archive/
 
 # ── Generated reports ─────────────────────────────────────────────────────────
 valuation/*.xlsx
@@ -86,3 +98,6 @@ data/finance-digest/
 
 # ── DB backups ────────────────────────────────────────────────────────────────
 *.db.bak-*
+
+# 發現層 universe 快取（可重建，7 天過期自己重抓）
+data/universe/

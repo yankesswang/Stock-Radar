@@ -3,7 +3,7 @@
 餵給 `claude -p`，產出結構化的「決策儀表板」：
 
   綜合評分 · 多空評級 · 趨勢 · 操作建議 · 買進區 / 目標價 / 停損 ·
-  風險警報 · 催化因素 · 完整分析正文
+  風險警報 · 催化因素 · 條列式分析正文（每條附資料來源）
 
 概念取自 ZhuLinsen/daily_stock_analysis 的 per-stock decision dashboard，
 但完全復用 stock-radar 既有資料來源（不另接 A股/港股 data provider）。
@@ -18,6 +18,7 @@ claude 呼叫慢（~20-90s）且會花費，故每檔每日快取到
 import json
 import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
@@ -29,6 +30,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..config import settings
+
+# 全系統共用的 claude 額度守門員（Arthur_App/scripts/lib/claude_guard.py）。
+# 每次呼叫順手記下 resetsAt，撞到上限就 raise QuotaExceeded，由呼叫端登記延後補跑。
+_LIB_DIR = Path(settings.PROJECT_ROOT).parent / "scripts" / "lib"
+if str(_LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(_LIB_DIR))
+import claude_guard as _guard  # noqa: E402
 from ..database import get_db
 from ..models import Stock, Valuation
 from .news import _fetch_news
@@ -126,9 +134,27 @@ _OUTPUT_SCHEMA = """你必須只輸出一個 JSON 物件（不要任何前後說
   "stop_loss": "<停損參考價，如 $205；無則填 —>",
   "risks": ["<風險警報 1>", "<風險 2>", "..."],
   "catalysts": ["<催化因素 1>", "<催化 2>", "..."],
-  "analysis": "<完整分析正文，markdown 格式，涵蓋：技術面、估值、新聞/催化、操作邏輯>"
+  "analysis_bullets": [
+    {
+      "tag": "<技術面|估值|新聞|催化|風險|操作 擇一>",
+      "point": "<一句話論點，60 字內，必須帶具體數字（價位／RSI／PE／百分比）>",
+      "sources": ["<來源代號，見下方清單>", "..."]
+    }
+  ]
 }
-risks 與 catalysts 各 2-4 條。analysis 用繁體中文，可用標題與條列。"""
+
+analysis_bullets 就是分析正文，規則（務必遵守）：
+- 全部條列，6-10 條；一條只講一件事，不要寫成段落、不要巢狀子條列、不要在 point 內換行。
+- 至少各有一條涵蓋：技術面、估值、新聞/催化、操作邏輯。
+- 每條 sources 填 1-3 個「來源代號」，只能從下列挑，不可自創、不可自己寫網址或媒體名：
+    報價    → 上方「即時報價」區塊
+    技術面  → 上方「技術面」區塊
+    估值    → 上方「估值與基本面」區塊
+    大盤    → 上方「大盤背景」區塊
+    新聞N   → 上方「近期新聞標題」的第 N 則，例：新聞3
+- 論點若來自新聞，sources 必須指到那一則的編號；操作建議則指向它依據的資料代號。
+- 上方資料沒有的東西就不要寫，寧可少一條，也不要生出沒有來源的論點。
+risks 與 catalysts 各 2-4 條。全部用繁體中文。"""
 
 
 def _build_prompt(
@@ -208,9 +234,10 @@ def _build_prompt(
     # 新聞
     L.append("## 近期新聞標題")
     if news:
-        for n in news[:10]:
-            src = f"（{n['source']}）" if n.get("source") else ""
-            L.append(f"- {n['title']}{src}")
+        # 帶編號，讓模型能用「新聞N」引用來源；連結由程式回填，模型不需要（也不准）自己寫
+        for i, n in enumerate(news[:10], 1):
+            meta = " · ".join(x for x in [n.get("source"), (n.get("published_at") or "")[:10]] if x)
+            L.append(f"- [新聞{i}] {n['title']}" + (f"（{meta}）" if meta else ""))
     else:
         L.append("- 無新聞")
     L.append("")
@@ -223,19 +250,21 @@ def _build_prompt(
 # ── claude 執行 + JSON 解析 ──────────────────────────────────────────────────────
 
 def _run_claude(prompt: str) -> str:
+    """跑一次 claude；額度用罄時 raise ClaudeQuotaExceeded（帶 reset 時間）而不是回垃圾。
+
+    以前這裡直接吃 stdout，撞到額度上限時 claude 回的是
+    「You've hit your session limit · resets 5:40am」這句純文字，_parse_json 會把它
+    當成 JSON 解析失敗 → 每一檔都白打一次 subprocess。改走 claude_guard 之後，
+    第一檔就會拿到 reset 時間並中止整批（見 ai_report.run_ai_report）。
+    """
     try:
-        result = subprocess.run(
-            ["claude", "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            cwd=str(settings.PROJECT_ROOT),
-        )
-        return (result.stdout or "").strip()
+        return _guard.run(prompt, cwd=str(settings.PROJECT_ROOT), timeout=300).text
     except subprocess.TimeoutExpired as e:
         raise HTTPException(status_code=504, detail="claude 分析超時（>5 分鐘）") from e
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=500, detail="找不到 claude CLI，請確認已安裝並在 PATH 中") from e
+    except RuntimeError as e:
+        if _guard and isinstance(e, _guard.QuotaExceeded):
+            raise
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 def _parse_json(raw: str) -> dict:
@@ -257,18 +286,106 @@ def _parse_json(raw: str) -> dict:
         ) from e
 
 
+# ── 條列式分析 + 來源標註 ────────────────────────────────────────────────────────
+# 模型只准回「來源代號」（報價/技術面/估值/大盤/新聞N），連結與媒體名一律由程式
+# 從實際新聞清單回填 —— 這樣引用的網址不可能是捏造的。
+
+_SOURCE_LABELS = {
+    "報價": "stock-radar 即時報價",
+    "技術面": "stock-radar 技術面",
+    "估值": "stock-radar 估值 DB",
+    "大盤": "stock-radar 大盤背景",
+}
+_NEWS_REF_RE = re.compile(r"^新聞\s*\[?(\d{1,2})\]?$")
+_BULLET_TAGS = ("技術面", "估值", "新聞", "催化", "風險", "操作")
+
+
+def _resolve_sources(tokens, news: list[dict]) -> list[dict]:
+    """來源代號 → [{label, url, title}]；無法對應的代號直接丟掉。"""
+    if isinstance(tokens, str):
+        tokens = [tokens]
+    out: list[dict] = []
+    seen: set[str] = set()
+    for tok in tokens or []:
+        tok = str(tok).strip()
+        m = _NEWS_REF_RE.match(tok)
+        if m:
+            idx = int(m.group(1)) - 1
+            if not (0 <= idx < len(news)):
+                continue
+            n = news[idx]
+            day = (n.get("published_at") or "")[:10]
+            label = " · ".join(x for x in [n.get("source") or "新聞", day] if x)
+            entry = {"label": label, "url": n.get("url"), "title": n.get("title")}
+        elif tok in _SOURCE_LABELS:
+            entry = {"label": _SOURCE_LABELS[tok], "url": None, "title": None}
+        else:
+            continue
+        key = f"{entry['label']}|{entry['url'] or ''}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(entry)
+    return out[:3]
+
+
+def _normalize_bullets(raw, news: list[dict]) -> list[dict]:
+    """把模型的 analysis_bullets 正規化成 [{tag, point, sources}]。"""
+    bullets: list[dict] = []
+    for b in raw or []:
+        if isinstance(b, str):
+            point, tag, srcs = b.strip(), None, []
+        elif isinstance(b, dict):
+            point = str(b.get("point") or "").strip()
+            tag = str(b.get("tag") or "").strip() or None
+            srcs = b.get("sources") or b.get("source") or []
+        else:
+            continue
+        if not point:
+            continue
+        if tag and tag not in _BULLET_TAGS:
+            tag = next((t for t in _BULLET_TAGS if t in tag), None)
+        bullets.append({"tag": tag, "point": point, "sources": _resolve_sources(srcs, news)})
+    return bullets
+
+
+def _sources_md(sources: list[dict]) -> str:
+    if not sources:
+        return ""
+    parts = [f"[{s['label']}]({s['url']})" if s.get("url") else s["label"] for s in sources]
+    return f"（來源：{'、'.join(parts)}）"
+
+
+def _bullets_to_markdown(bullets: list[dict]) -> str:
+    """條列式正文；每條結尾帶來源（新聞來源是可點的 markdown 連結）。"""
+    lines = []
+    for b in bullets:
+        tag = f"**{b['tag']}**：" if b.get("tag") else ""
+        lines.append(f"- {tag}{b['point']}{_sources_md(b.get('sources') or [])}")
+    return "\n".join(lines)
+
+
 # ── 可複用核心：產生單檔決策卡 ────────────────────────────────────────────────────
 # endpoint 與 scheduler 的 AI 持倉日報都呼叫這個函數，避免邏輯重複。
 
-def generate_card(ticker: str, db: Session, refresh: bool = False) -> dict:
-    """蒐集資料 → claude -p → 解析 → 存當日快取，回傳決策卡 payload。"""
+def generate_card(
+    ticker: str,
+    db: Session,
+    refresh: bool = False,
+    as_of: date | None = None,
+) -> dict:
+    """蒐集資料 → claude -p → 解析 → 存當日快取，回傳決策卡 payload。
+
+    as_of 可覆寫快取所掛的日期，用於「重跑某一天的日報」。注意行情/技術面永遠取
+    當下的即時資料，所以只有在那天之後尚未開過盤時（例如週末重跑週五那份）才等價。
+    """
     ticker = ticker.upper().strip()
     if not re.fullmatch(r"[A-Z0-9.\-]{1,12}", ticker):
         raise HTTPException(status_code=400, detail="invalid ticker")
 
-    today = date.today().isoformat()
+    card_date = (as_of or date.today()).isoformat()
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = _CACHE_DIR / f"{ticker}_{today}.json"
+    cache_file = _CACHE_DIR / f"{ticker}_{card_date}.json"
 
     if cache_file.exists() and not refresh:
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -291,6 +408,7 @@ def generate_card(ticker: str, db: Session, refresh: bool = False) -> dict:
     if not raw:
         raise HTTPException(status_code=502, detail="claude 無回應")
     card = _parse_json(raw)
+    bullets = _normalize_bullets(card.get("analysis_bullets"), news)
 
     payload = {
         "ticker": ticker,
@@ -308,7 +426,9 @@ def generate_card(ticker: str, db: Session, refresh: bool = False) -> dict:
         "stop_loss": card.get("stop_loss"),
         "risks": card.get("risks") or [],
         "catalysts": card.get("catalysts") or [],
-        "analysis": card.get("analysis"),
+        # 條列式正文：結構化 bullets（前端渲染用）+ 由 bullets 組出的 markdown（日報 / Obsidian 用）
+        "analysis_bullets": bullets,
+        "analysis": _bullets_to_markdown(bullets) if bullets else card.get("analysis"),
         "news": news,
     }
 

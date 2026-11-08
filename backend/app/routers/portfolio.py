@@ -24,7 +24,18 @@ import yfinance as yf
 
 from ..config import settings
 from ..database import get_db, SessionLocal
-from ..models import Portfolio, Holding, Stock, Industry, Valuation, PortfolioSnapshot, HoldingSnapshot, PortfolioMeta, PortfolioDeposit
+from ..models import Portfolio, Holding, Stock, Industry, Valuation, PortfolioSnapshot, HoldingSnapshot
+from ..services.portfolio_store import (
+    DEPOSITS_PATH as _DEPOSITS_PATH,
+    META_PATH as _META_PATH,
+    REPORT_SNAPSHOTS_PATH as _REPORT_SNAPSHOTS_PATH,
+    read_deposits as _read_deposits,
+    read_meta as _read_meta,
+    read_report_snapshots as _read_report_snapshots,
+    write_deposits as _write_deposits,
+    write_meta as _write_meta,
+    write_report_snapshots as _write_report_snapshots,
+)
 from .chart import _fetch_yahoo_chart_df, _find_sr_levels
 from ..indicators import ewma_volatility, percentile_rank, volatility_regime
 try:
@@ -35,6 +46,8 @@ except ModuleNotFoundError:
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from src.config import STOCK_LIST
+# src 上了 sys.path 之後才 import —— 放在上面那個 try 之前的話，冷啟動會 ImportError
+from src.quotes import get_quotes as _get_quotes  # noqa: E402
 
 router = APIRouter()
 
@@ -99,77 +112,34 @@ class CsvHoldingUpdate(BaseModel):
 
 
 # ── Live price helpers ────────────────────────────────────────────────────────
-
-def _fetch_price(ticker: str) -> float | None:
-    try:
-        hist = yf.Ticker(ticker.upper()).history(period="5d", auto_adjust=True)
-        if not hist.empty:
-            return float(hist["Close"].dropna().iloc[-1])
-    except Exception:
-        pass
-    return None
-
+#
+# 這幾支以前各自打 yfinance 的 history()，取最後一根非空日線收盤。那個寫法在台北的
+# 早上會慢一整天：Yahoo 的日線在美股收盤後好幾個小時都還沒結算，當天那根 K 棒帶著
+# 成交量但 close 是 null，dropna 掉就只剩前一天。現在統一走 src.quotes，它以
+# meta.regularMarketPrice 為準（收盤後立刻就是當日收盤價），日線只用來取前一日收盤。
 
 def _fetch_prices(tickers: list[str]) -> dict[str, float]:
-    prices: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {ex.submit(_fetch_price, t): t for t in tickers}
-        for fut in as_completed(futures):
-            t = futures[fut]
-            p = fut.result()
-            if p is not None:
-                prices[t.upper()] = p
-    return prices
+    return {t: q["price"] for t, q in _get_quotes(tickers).items()}
 
 
-def _fetch_price_info(ticker: str) -> dict | None:
-    """Return price + daily change by comparing last two closes.
-
-    Tries yfinance first; falls back to the Yahoo chart API (query1) which
-    isn't gated behind the rate-limited cookie/crumb, so live prices keep
-    flowing even when yfinance returns YFRateLimitError.
-    """
-    closes = None
-    try:
-        hist = yf.Ticker(ticker.upper()).history(period="5d", auto_adjust=True)
-        c = hist["Close"].dropna()
-        if not c.empty:
-            closes = c
-    except Exception:
-        closes = None
-
-    if closes is None or closes.empty:
-        try:
-            df = _fetch_yahoo_chart_df(ticker, "5d", "1d")
-            c = df["Close"].dropna() if not df.empty else None
-            if c is not None and not c.empty:
-                closes = c
-        except Exception:
-            closes = None
-
-    if closes is None or closes.empty:
-        return None
-
-    price = float(closes.iloc[-1])
-    if len(closes) >= 2:
-        prev  = float(closes.iloc[-2])
-        change     = round(price - prev, 4)
-        change_pct = round(change / prev * 100, 2)
-    else:
-        prev = change = change_pct = None
-    return {"price": price, "prev_close": prev, "day_change": change, "day_change_pct": change_pct}
+def _fetch_price(ticker: str) -> float | None:
+    return _fetch_prices([ticker]).get(ticker.upper())
 
 
 def _fetch_prices_info(tickers: list[str]) -> dict[str, dict]:
-    result: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {ex.submit(_fetch_price_info, t): t for t in tickers}
-        for fut in as_completed(futures):
-            t = futures[fut]
-            info = fut.result()
-            if info is not None:
-                result[t.upper()] = info
-    return result
+    return {
+        t: {
+            "price": q["price"],
+            "prev_close": q["previous_close"],
+            "day_change": q["change"],
+            "day_change_pct": q["change_percent"],
+        }
+        for t, q in _get_quotes(tickers).items()
+    }
+
+
+def _fetch_price_info(ticker: str) -> dict | None:
+    return _fetch_prices_info([ticker]).get(ticker.upper())
 
 
 def _fetch_technicals(ticker: str) -> dict | None:
@@ -198,6 +168,44 @@ def _fetch_technicals(ticker: str) -> dict | None:
         avg_vol_20 = float(volumes.iloc[-21:-1].mean()) if len(volumes) >= 21 else (
                      float(volumes[:-1].mean()) if len(volumes) > 1 else None)
         vol_ratio  = round(today_vol / avg_vol_20, 2) if (today_vol and avg_vol_20 and avg_vol_20 > 0) else None
+
+        # 多期間報酬。一年的歷史本來就抓下來了，這裡順手算 —— 相對強弱（RS）與強弱榜
+        # 靠這幾個數字，不必為了它們再打一輪 yfinance。
+        # 分割（split）當天 Yahoo 常常還沒把歷史回溯調整完，未調整的序列會生出
+        # 「APH 一個月 -48%」這種假崩跌 —— 它其實是 2:1 分割。history() 本來就帶
+        # Stock Splits 欄，區間內有分割就把那一段的報酬判為不可信（None）。
+        splits = hist["Stock Splits"] if "Stock Splits" in hist.columns else None
+        # 備援路徑（_fetch_yahoo_chart_df）不帶 Stock Splits 欄，只能從價格自己認：
+        # 單日跳動剛好落在常見分割比例附近（2、3、4、5、10、1.5 或其倒數），那不是行情。
+        _SPLIT_RATIOS = (2.0, 3.0, 4.0, 5.0, 10.0, 1.5)
+
+        def _looks_like_split(ratio: float) -> bool:
+            # 分割當天股價本身也會動，2:1 的實測比例是 1.91 而不是 2.00 —— 容忍 8%。
+            # 只在跳動 >25% 時才套用，正常行情不會誤傷；真有單日 -47% 的股票被濾掉，
+            # 也好過在榜上掛一個假的 -48%。
+            if 0.75 < ratio < 1.33:
+                return False
+            for r in _SPLIT_RATIOS:
+                if abs(ratio - r) / r < 0.08 or abs(1 / ratio - r) / r < 0.08:
+                    return True
+            return False
+
+        step = closes / closes.shift(1)
+
+        def _split_in(bars: int) -> bool:
+            if splits is not None:
+                if bool((splits.iloc[-(bars + 1):].fillna(0) != 0).any()):
+                    return True
+            window = step.iloc[-bars:].dropna()
+            return any(_looks_like_split(float(r)) for r in window if r > 0)
+
+        def _ret(bars: int) -> float | None:
+            if len(closes) <= bars or _split_in(bars):
+                return None
+            past = float(closes.iloc[-1 - bars])
+            return round((price - past) / past * 100, 2) if past > 0 else None
+
+        returns = {"1d": _ret(1), "1w": _ret(5), "1m": _ret(21), "3m": _ret(63)}
 
         # Moving averages
         ma5  = round(float(closes.iloc[-5:].mean()),  2) if len(closes) >= 5  else None
@@ -308,6 +316,7 @@ def _fetch_technicals(ticker: str) -> dict | None:
         return {
             "price":              round(price, 2),
             "prev_close":         round(prev_close, 2) if prev_close else None,
+            "returns":            returns,
             "volume":             int(today_vol)  if today_vol  else None,
             "avg_volume_20":      int(avg_vol_20) if avg_vol_20 else None,
             "volume_ratio":       vol_ratio,
@@ -518,114 +527,6 @@ def _parse_mom_sheet(raw: bytes) -> list[dict]:
 
 
 _CSV_PATH  = settings.DATA_DIR / "portfolio.csv"
-_META_PATH = settings.DATA_DIR / "portfolio_meta.json"
-
-
-def _read_meta() -> dict:
-    """Return {portfolio_name: {starting_capital: float, ...}}. Falls back to DB if JSON missing."""
-    if _META_PATH.exists():
-        try:
-            return json.loads(_META_PATH.read_text())
-        except Exception:
-            pass
-    # JSON missing — load from DB
-    db = SessionLocal()
-    try:
-        rows = db.query(PortfolioMeta).all()
-        return {r.portfolio_name: {"starting_capital": r.starting_capital} for r in rows}
-    except Exception:
-        return {}
-    finally:
-        db.close()
-
-
-def _write_meta(meta: dict) -> None:
-    _META_PATH.write_text(json.dumps(meta, indent=2))
-    # Mirror to DB
-    db = SessionLocal()
-    try:
-        for name, cfg in meta.items():
-            sc = cfg.get("starting_capital")
-            existing = db.query(PortfolioMeta).filter_by(portfolio_name=name).first()
-            if existing:
-                existing.starting_capital = sc
-            else:
-                db.add(PortfolioMeta(portfolio_name=name, starting_capital=sc))
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        print(f"[Portfolio DB] Error saving meta: {e}")
-    finally:
-        db.close()
-
-
-# ── Deposits (for MWR / XIRR) ─────────────────────────────────────────────────
-
-_DEPOSITS_PATH = settings.DATA_DIR / "portfolio_deposits.json"
-_REPORT_SNAPSHOTS_PATH = settings.DATA_DIR / "portfolio_report_snapshots.json"
-
-
-def _read_deposits() -> dict:
-    """Return {portfolio_name: [{"date": "YYYY-MM-DD", "amount": float}, ...]}. Falls back to DB if JSON missing."""
-    if _DEPOSITS_PATH.exists():
-        try:
-            return json.loads(_DEPOSITS_PATH.read_text())
-        except Exception:
-            pass
-    # JSON missing — load from DB
-    db = SessionLocal()
-    try:
-        rows = db.query(PortfolioDeposit).order_by(PortfolioDeposit.deposit_date).all()
-        result: dict = {}
-        for r in rows:
-            result.setdefault(r.portfolio_name, []).append(
-                {"date": r.deposit_date.isoformat(), "amount": r.amount}
-            )
-        return result
-    except Exception:
-        return {}
-    finally:
-        db.close()
-
-
-def _write_deposits(data: dict) -> None:
-    _DEPOSITS_PATH.write_text(json.dumps(data, indent=2))
-    # Mirror to DB: full replace per portfolio
-    db = SessionLocal()
-    try:
-        from datetime import date as _date
-        for name, entries in data.items():
-            db.query(PortfolioDeposit).filter_by(portfolio_name=name).delete()
-            for entry in entries:
-                try:
-                    d = _date.fromisoformat(entry["date"])
-                except (ValueError, KeyError):
-                    continue
-                db.add(PortfolioDeposit(
-                    portfolio_name=name,
-                    deposit_date=d,
-                    amount=float(entry.get("amount", 0)),
-                ))
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        print(f"[Portfolio DB] Error saving deposits: {e}")
-    finally:
-        db.close()
-
-
-def _read_report_snapshots() -> dict:
-    """Return {portfolio_name: [daily snapshot, ...]}."""
-    if _REPORT_SNAPSHOTS_PATH.exists():
-        try:
-            return json.loads(_REPORT_SNAPSHOTS_PATH.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def _write_report_snapshots(data: dict) -> None:
-    _REPORT_SNAPSHOTS_PATH.write_text(json.dumps(data, indent=2))
 
 
 def _build_daily_snapshot(portfolio: str, summary: dict, holdings: list[dict], as_of: date) -> dict:
@@ -755,6 +656,55 @@ def _aggregate_by_ticker(holdings: list[dict]) -> dict[str, dict]:
         v["shares"] = round(v["shares"], 6)
         v["market_value"] = round(v["market_value"], 2)
         v["weight_pct"] = round(v["weight_pct"], 2)
+    return out
+
+
+def _merge_lots(holdings: list[dict]) -> list[dict]:
+    """同一個組合裡同一檔分散在多個帳戶（如 ARM 在 Firstrade＋eToro）→ 合併成一列。
+
+    股數、成本、市值、損益直接相加，均價＝總成本÷總股數（加權平均）。原本各帳戶的
+    列原封不動放在 `lots`，前端切到單一帳戶分頁或要逐筆編輯時用它；只有一筆的也帶
+    `lots`（長度 1），前端就不用分兩種情況處理。"""
+    groups: dict[str, list[dict]] = {}
+    for h in holdings:
+        groups.setdefault(h["ticker"], []).append(h)
+
+    out: list[dict] = []
+    for ticker, lots in groups.items():
+        if len(lots) == 1:
+            out.append({**lots[0], "accounts": [lots[0]["account"]], "lots": [dict(lots[0])]})
+            continue
+
+        cost_basis = round(sum(l["cost_basis"] for l in lots), 2)
+        mvs = [l["market_value"] for l in lots]
+        market_value = round(sum(mvs), 2) if all(v is not None for v in mvs) else None
+        pnls = [l["unrealized_pnl"] for l in lots]
+        pnl = round(sum(pnls), 2) if all(v is not None for v in pnls) else None
+        if ticker == "CASH":
+            shares, avg_cost = 1.0, cost_basis
+        else:
+            shares = round(sum(l["shares"] for l in lots), 6)
+            avg_cost = round(cost_basis / shares, 4) if shares else 0.0
+        leverage = (round(sum(l["leverage"] * l["cost_basis"] for l in lots) / cost_basis, 2)
+                    if cost_basis else lots[0]["leverage"])
+        notes = " / ".join(dict.fromkeys(l["notes"] for l in lots if l["notes"]))
+
+        accounts = list(dict.fromkeys(l["account"] for l in lots))
+        out.append({
+            **lots[0],
+            "account":        " + ".join(accounts),
+            "accounts":       accounts,
+            "shares":         shares,
+            "avg_cost":       avg_cost,
+            "leverage":       leverage,
+            "notes":          notes,
+            "cost_basis":     cost_basis,
+            "market_value":   market_value,
+            "unrealized_pnl": pnl,
+            # pnl 已含槓桿，直接除總成本就是合併後的報酬率
+            "return_pct":     round(pnl / cost_basis * 100, 2) if (pnl is not None and cost_basis) else None,
+            "lots":           [dict(l) for l in lots],
+        })
     return out
 
 
@@ -1589,6 +1539,8 @@ def get_csv_portfolio(
                 "pe_median_5y":            val.get("pe_median_5y"),
                 "pct_to_fair_pe":          to_fair,
             })
+
+        holdings = _merge_lots(holdings)
 
         total_cost  = sum(h["cost_basis"] for h in holdings)
         total_value = sum(h["market_value"] or h["cost_basis"] for h in holdings)

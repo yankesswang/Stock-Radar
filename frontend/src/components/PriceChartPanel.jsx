@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import axios from 'axios';
+import Theme from '../theme';
+import axios from '../lib/apiClient';
 import {
   createChart, CrosshairMode, ColorType,
   CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers,
 } from 'lightweight-charts';
 import {
   RefreshCw, Settings2, AlertTriangle, TrendingUp, TrendingDown, Minus,
-  Layers, Gauge, Crosshair,
+  Layers, Gauge, Crosshair, Activity, ChevronDown,
 } from 'lucide-react';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -21,19 +22,39 @@ const PERIODS = [
   { label: 'MAX', value: 'max' },
 ];
 
+// 紅／綠只留給 K 棒、趨勢線、支撐壓力（紅＝壓力、綠＝支撐）。均線以前 MA50 綠、
+// MA250 紅，跟趨勢線撞色，分不出哪條是哪條 → 均線全部改用非紅綠的顏色，
+// 長週期的畫粗一點。
 const MA_DEFS = [
-  { key: 'ma5',   label: 'MA5',   color: '#f59e0b' },
-  { key: 'ma10',  label: 'MA10',  color: '#60a5fa' },
-  { key: 'ma20',  label: 'MA20',  color: '#a78bfa' },
-  { key: 'ma50',  label: 'MA50',  color: '#34d399' },
-  { key: 'ma250', label: 'MA250', color: '#f87171' },
+  { key: 'ma5',   label: 'MA5',   color: '#facc15', width: 1 },
+  { key: 'ma10',  label: 'MA10',  color: '#38bdf8', width: 1 },
+  { key: 'ma20',  label: 'MA20',  color: '#c084fc', width: 1 },
+  { key: 'ma50',  label: 'MA50',  color: '#fb923c', width: 2 },
+  { key: 'ma250', label: 'MA250', color: '#94a3b8', width: 2 },
 ];
+
+// 財報日／持倉成本（資料來自 /chart-events）
+const EARN_COLOR = '#f59e0b';
+const COST_COLOR = '#e879f9';
+// bar.time 是交易所當地午夜的 epoch（美股 ET 04:00/05:00 UTC、台股前一天 16:00 UTC），
+// 加 12 小時再取 UTC 日期，兩邊都會落在正確的那一天。
+const barDate = (t) => new Date((t + 43200) * 1000).toISOString().slice(0, 10);
 
 // ── Price-panel overlays ─────────────────────────────────────────────────────
 // `lines`   → LineSeries drawn on the candle chart
 // `special` → custom draw routine (supertrend colouring, psar dots, level lines)
 const OVERLAY_DEFS = [
-  { key: 'sr',     label: 'Support / Resistance', desc: '',              color: '#e879f9', special: 'sr' },
+  { key: 'earn',   label: '財報日',                desc: 'E 標記',        color: EARN_COLOR, special: 'earn' },
+  { key: 'cost',   label: '持倉成本',              desc: '加權均價',       color: COST_COLOR, special: 'cost' },
+  { key: 'sr',     label: 'Support / Resistance', desc: '',              color: '#34d399', special: 'sr' },
+  { key: 'trend',  label: '趨勢線',                desc: '自動偵測',       color: '#38bdf8', special: 'trend' },
+  { key: 'regch',  label: '回歸通道',              desc: '±1σ/±2σ',       color: '#a78bfa',
+    lines: [{ f: 'reg_mid', c: '#a78bfa', width: 2 },
+            { f: 'reg_u1', c: '#a78bfa', opacity: '55', style: 2 },
+            { f: 'reg_l1', c: '#a78bfa', opacity: '55', style: 2 },
+            { f: 'reg_u2', c: '#a78bfa', opacity: '99' },
+            { f: 'reg_l2', c: '#a78bfa', opacity: '99' }] },
+  { key: 'pattern', label: '形態辨識',             desc: 'M頭/W底/頭肩',   color: '#f472b6', special: 'pattern' },
   { key: 'bb',     label: 'Bollinger Bands',      desc: '(20,2)',        color: '#818cf8',
     lines: [{ f: 'bb_upper', style: 2 }, { f: 'bb_mid', opacity: '55' }, { f: 'bb_lower', style: 2 }] },
   { key: 'kc',     label: 'Keltner Channels',     desc: '(20,2×ATR)',    color: '#22d3ee',
@@ -138,26 +159,54 @@ const SERIES_LABEL = {
 const seriesLabel = (f) => SERIES_LABEL[f] ?? f;
 
 const DEFAULT_ACTIVE = {
-  sr: true, macd: true, rsi: true, adx: true, betaroll: false,
+  sr: true, trend: true, regch: false, pattern: false,
+  macd: true, rsi: true, adx: true, betaroll: false,
   bb: false, kc: false, dc: false, ema: false, vwap: false, ichimoku: false,
   st: false, psar: false, chand: false, pivots: false, fib: false, vp: false,
   squeeze: false, atr: false, cci: false, mfi: false, cmf: false, aroon: false,
   bbpct: false, willr: false, rs: false, obv: false, adl: false, kdj: false, rvol: false,
-  td: true,
+  td: true, earn: true, cost: true,
 };
 
-const BG     = '#0f172a';
-const GRID   = 'rgba(255,255,255,0.04)';
-const BORDER = 'rgba(255,255,255,0.08)';
-const TEXT   = '#94a3b8';
+// 圖面顏色來自 index.css 的 --chart-* token：亮色下維持原本的深色圖面，
+// 暗色下跟卡片同色系。lightweight-charts 吃的是 canvas，不會自己跟 CSS 變數，
+// 所以在建圖時讀一次、主題切換時再 applyOptions 一次（見下方 useEffect）。
+const CHART_FALLBACK = {
+  bg: '#0f172a', grid: 'rgba(255,255,255,0.04)', border: 'rgba(255,255,255,0.08)', text: '#94a3b8',
+};
+function chartPalette() {
+  if (typeof window === 'undefined') return CHART_FALLBACK;
+  const cs = getComputedStyle(document.documentElement);
+  const pick = (name, fb) => (cs.getPropertyValue(name) || '').trim() || fb;
+  return {
+    bg: pick('--chart-bg', CHART_FALLBACK.bg),
+    grid: pick('--chart-grid', CHART_FALLBACK.grid),
+    border: pick('--chart-border', CHART_FALLBACK.border),
+    text: pick('--chart-text', CHART_FALLBACK.text),
+  };
+}
+// 圖例／指標按鈕的邊框與文字色（非 canvas，套用一次即可；hover 態走 tailwind token）
+const BORDER = 'var(--chart-border)';
+const TEXT   = 'var(--chart-text)';
+
+function themedChartOpts(pal) {
+  return {
+    layout: { background: { type: ColorType.Solid, color: pal.bg }, textColor: pal.text },
+    grid:   { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+    rightPriceScale: { borderColor: pal.border },
+    timeScale: { borderColor: pal.border },
+  };
+}
 
 function chartOpts(height, extraTS = {}) {
+  const pal = chartPalette();
+  const t = themedChartOpts(pal);
   return {
-    layout: { background: { type: ColorType.Solid, color: BG }, textColor: TEXT },
-    grid:   { vertLines: { color: GRID }, horzLines: { color: GRID } },
+    layout: t.layout,
+    grid: t.grid,
     crosshair: { mode: CrosshairMode.Normal },
-    rightPriceScale: { borderColor: BORDER },
-    timeScale: { borderColor: BORDER, timeVisible: true, secondsVisible: false, ...extraTS },
+    rightPriceScale: t.rightPriceScale,
+    timeScale: { ...t.timeScale, timeVisible: true, secondsVisible: false, ...extraTS },
     height,
   };
 }
@@ -330,6 +379,77 @@ function computeAlerts(bars, analytics) {
       add('Relative Strength', 'Underperforming', 'bearish', st.rs_mansfield.toFixed(2), 'Mansfield RS < 0，弱於大盤');
   }
 
+  // ── Trend structure: the drawn lines, not the computed series ─────────────
+  const tr = analytics?.trend;
+  if (tr && !tr.error && tr.regime && !tr.regime.trendable) {
+    // No trend to break out of: reporting "跌破上升支撐線" on a mean-reverting
+    // series would be inventing structure that isn't there.
+    add('趨勢型態', tr.regime.label, 'neutral', `${tr.regime.score}/100`, tr.regime.reason);
+    if (tr.range) {
+      const r = tr.range;
+      add('區間位置',
+        r.position_pct >= 85 ? '接近區間上緣' : r.position_pct <= 15 ? '接近區間下緣' : '區間中段',
+        r.position_pct >= 85 ? 'bearish' : r.position_pct <= 15 ? 'bullish' : 'neutral',
+        `${r.position_pct}%`,
+        `近 ${r.lookback} 根區間 $${r.low}–$${r.high}，中位 $${r.median}`);
+    }
+  } else if (tr && !tr.error) {
+    const close = last.close;
+    if (tr.regime) add('趨勢型態', tr.regime.label, 'neutral', `${tr.regime.score}/100`, tr.regime.reason);
+    const all = [...(tr.trendlines?.resistance ?? []), ...(tr.trendlines?.support ?? [])];
+
+    // A line broken inside the visible tail is the single most actionable thing
+    // on the chart — it is a change of structure, not a reading.
+    all.filter(l => l.status === 'broken' && l.broken_time != null)
+      .sort((a, b) => b.broken_time - a.broken_time)
+      .slice(0, 2)
+      .forEach(l => {
+        const up = l.side === 'resistance';
+        add('趨勢線', up ? '突破壓力線' : '跌破支撐線', up ? 'bullish' : 'bearish',
+            `$${l.value_now}`,
+            `${l.label}（${l.touches} 次觸及）已被收盤價${up ? '突破' : '跌破'}`);
+      });
+
+    // Approach alerts — within one ATR-ish band of an intact line.
+    const nearBand = 3;
+    all.filter(l => l.status === 'intact' && Math.abs(l.dist_pct ?? 99) <= nearBand)
+      .sort((a, b) => Math.abs(a.dist_pct) - Math.abs(b.dist_pct))
+      .slice(0, 2)
+      .forEach(l => {
+        const res = l.side === 'resistance';
+        add('趨勢線', res ? '逼近壓力線' : '測試支撐線', res ? 'bearish' : 'bullish',
+            `$${l.value_now}`,
+            `距 ${l.label} ${Math.abs(l.dist_pct).toFixed(1)}%，該線已守住 ${l.touches} 次`);
+      });
+
+    if (tr.channel) {
+      const c = tr.channel;
+      const pos = c.position_pct;
+      const sev = c.bias === 'bullish' ? 'bullish' : c.bias === 'bearish' ? 'bearish' : 'neutral';
+      add('形態', c.label, sev, `${pos}%`,
+          `${c.label}（寬 ${c.width_pct}%），現價在通道 ${pos}% 位置，量測目標 $${c.target}`);
+    }
+
+    (tr.patterns ?? []).forEach(pt => {
+      add('形態', `${pt.label}${pt.status === 'confirmed' ? '（已確認）' : '（成形中）'}`,
+          pt.bias === 'bullish' ? 'bullish' : 'bearish',
+          `$${pt.neckline}`,
+          pt.status === 'confirmed'
+            ? `頸線 $${pt.neckline} 已突破，量測目標 $${pt.target}`
+            : `頸線 $${pt.neckline}（${pt.neck_dist_pct > 0 ? '上方' : '下方'} ${Math.abs(pt.neck_dist_pct).toFixed(1)}%），突破後目標 $${pt.target}`);
+    });
+
+    const rg = tr.regression;
+    if (rg?.position_pct != null && close != null) {
+      if (rg.position_pct >= 92)
+        add('回歸通道', '通道上緣', 'bearish', `${rg.position_pct}%`,
+            `價格在 +2σ 附近（$${rg.upper}），統計上偏貴`);
+      else if (rg.position_pct <= 8)
+        add('回歸通道', '通道下緣', 'bullish', `${rg.position_pct}%`,
+            `價格在 −2σ 附近（$${rg.lower}），統計上偏便宜`);
+    }
+  }
+
   return alerts;
 }
 
@@ -345,6 +465,13 @@ const RATING_STYLE = {
   'Neutral':     { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', border: 'rgba(148,163,184,0.3)' },
   'Sell':        { color: '#fb7185', bg: 'rgba(251,113,133,0.12)',border: 'rgba(251,113,133,0.35)' },
   'Strong Sell': { color: '#ef4444', bg: 'rgba(239,68,68,0.14)',  border: 'rgba(239,68,68,0.45)' },
+};
+
+const REGIME_TONE = {
+  '趨勢明確': '#34d399',
+  '趨勢偏弱': '#fbbf24',
+  '區間震盪': '#94a3b8',
+  '均值回歸': '#60a5fa',
 };
 
 const withAlpha = (hex, a) => (a ? `${hex}${a}` : hex);
@@ -426,8 +553,245 @@ const RatingBar = ({ title, node }) => {
   );
 };
 
+// ── 指數頁的技術分析重點（chartFirst 用） ─────────────────────────────────────
+// 密度取向：不做卡中卡、不做進度條，數字一律等寬字，靠少量 1px 線分組。
+// 左欄：價位階梯（現價上下最近三個壓力／支撐，來源合併 S/R、趨勢線、月樞紐）＋ 型態與通道；
+// 右欄：評級投票 ＋ 風險與波動。這裡只放結論，明細留在「完整技術分析」。
+
+const BIAS_META = {
+  bullish: { label: '偏多', cls: 'text-[var(--accent-success-text)]' },
+  bearish: { label: '偏空', cls: 'text-[var(--accent-danger-text)]' },
+  neutral: { label: '中性', cls: 'text-[var(--text-meta)]' },
+};
+const PATTERN_STATUS = { confirmed: '已確認', forming: '形成中', failed: '失效', broken: '已突破' };
+const ratingCls = (label) =>
+  /Buy/.test(label || '') ? 'text-[var(--accent-success-text)]'
+  : /Sell/.test(label || '') ? 'text-[var(--accent-danger-text)]'
+  : 'text-[var(--text-meta)]';
+
+const fmtLevel = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const fmtSigned = (v, d = 1) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(d)}%`);
+
+// 把三種來源的價位合成一條階梯：現價上方取最近 3 個壓力、下方取最近 3 個支撐。
+// 相距 0.25% 內的視為同一價位，來源標籤合併，避免同一位置出現兩列。
+function buildLadder(close, srData, analytics) {
+  if (!close) return { above: [], below: [] };
+  const raw = [];
+  (srData?.resistance ?? []).forEach(l => raw.push({ price: l.price, src: `S/R 觸及 ${l.touches}` }));
+  (srData?.support ?? []).forEach(l => raw.push({ price: l.price, src: `S/R 觸及 ${l.touches}` }));
+  // Trendlines only earn a rung when the regime says this series respects them.
+  // On a mean-reverting series a "下降支撐線 觸及 18" is confinement inside a
+  // range, not a level anyone defends — listing it invents structure.
+  if (analytics?.trend?.regime?.trendable !== false) {
+    const tl = analytics?.trend?.trendlines;
+    [...(tl?.resistance ?? []), ...(tl?.support ?? [])]
+      .filter(l => l.status === 'intact' && l.value_now != null)
+      .forEach(l => raw.push({ price: l.value_now, src: `${l.label} 觸及 ${l.touches}` }));
+  }
+  const pv = analytics?.pivots?.monthly?.classic;
+  if (pv) ['r2', 'r1', 'p', 's1', 's2'].forEach(k => pv[k] != null && raw.push({ price: pv[k], src: `月樞紐 ${k.toUpperCase()}` }));
+
+  const merged = [];
+  raw.filter(r => Number.isFinite(Number(r.price))).sort((a, b) => a.price - b.price).forEach(r => {
+    const last = merged[merged.length - 1];
+    if (last && Math.abs(r.price - last.price) / last.price < 0.0025) last.src = `${last.src}，${r.src}`;
+    else merged.push({ ...r });
+  });
+  const withDist = merged.map(r => ({ ...r, dist: (r.price - close) / close * 100 }));
+  return {
+    above: withDist.filter(r => r.dist > 0).slice(0, 3).reverse(),   // 由高到低排，貼近現價的在最下
+    below: withDist.filter(r => r.dist <= 0).slice(-3).reverse(),    // 由近到遠
+  };
+}
+
+const LadderRow = ({ kind, price, dist, src }) => (
+  <li className="grid grid-cols-[3rem_1fr_4.5rem] items-baseline gap-x-3 py-1.5 sm:grid-cols-[3rem_7.5rem_4.5rem_1fr]">
+    <span className={`text-xs font-semibold ${kind === '壓力' ? 'text-[var(--accent-danger-text)]' : 'text-[var(--accent-success-text)]'}`}>{kind}</span>
+    <span className="font-mono text-sm font-semibold tabular-nums text-[var(--text-primary)]">{fmtLevel(price)}</span>
+    <span className="text-right font-mono text-xs tabular-nums text-[var(--text-meta)]">{fmtSigned(dist)}</span>
+    <span className="col-span-3 truncate text-[11px] text-[var(--text-meta)] sm:col-span-1" title={src}>{src}</span>
+  </li>
+);
+
+const DigestHeading = ({ children }) => (
+  <h3 className="mb-2 text-xs font-semibold text-[var(--text-secondary)]">{children}</h3>
+);
+
+const RiskItem = ({ label, value, note }) => (
+  <div className="py-1.5">
+    <dt className="text-[11px] text-[var(--text-meta)]">{label}</dt>
+    <dd className="font-mono text-sm font-semibold tabular-nums text-[var(--text-primary)]">
+      {value}{note && <span className="ml-1.5 font-sans text-[11px] font-normal text-[var(--text-meta)]">{note}</span>}
+    </dd>
+  </div>
+);
+
+function TechDigest({ close, srData, analytics }) {
+  const stats = analytics?.stats;
+  const rating = analytics?.rating;
+  const trend = analytics?.trend && !analytics.trend.error ? analytics.trend : null;
+  const ladder = buildLadder(close, srData, analytics);
+  const channel = trend?.channel;
+  const patterns = (trend?.patterns ?? []).slice(0, 2);
+  const reg = trend?.regression;
+  const nearestUp = ladder.above[ladder.above.length - 1];
+  const nearestDown = ladder.below[0];
+  const regime = stats?.percentiles?.vol_regime;
+  const trendRegime = trend?.regime ?? null;
+  const trendable = !trendRegime || trendRegime.trendable;
+  const range = trend?.range;
+
+  return (
+    <div className="px-4 py-3">
+      {/* 沒有趨勢時，這個判定就是結論——先講，再講價位 */}
+      {!trendable && trendRegime && (
+        <p className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm text-[var(--text-body)]">
+          <span className="font-semibold text-[var(--accent-warning-text,#b45309)]">
+            {trendRegime.label}
+          </span>
+          <span className="font-mono text-xs tabular-nums text-[var(--text-meta)]">
+            趨勢分數 {trendRegime.score}/100
+          </span>
+          <span className="text-xs text-[var(--text-meta)]">
+            趨勢線與型態已停用；
+            {range && <>近 {range.lookback} 根區間 {fmtLevel(range.low)}–{fmtLevel(range.high)}（中位 {fmtLevel(range.median)}），現價位於 {Number(range.position_pct).toFixed(0)}%</>}
+          </span>
+        </p>
+      )}
+
+      {/* 一句話結論：型態偏向 ＋ 最近支撐／壓力 */}
+      {(channel || nearestUp || nearestDown) && (
+        <p className="mb-4 text-sm text-[var(--text-body)]">
+          {channel && <>{channel.label}<span className={`ml-1 font-semibold ${BIAS_META[channel.bias]?.cls ?? ''}`}>{BIAS_META[channel.bias]?.label ?? ''}</span>，</>}
+          {nearestDown && <>最近支撐 <span className="font-mono font-semibold tabular-nums">{fmtLevel(nearestDown.price)}</span>（{fmtSigned(nearestDown.dist)}）</>}
+          {nearestDown && nearestUp && '，'}
+          {nearestUp && <>最近壓力 <span className="font-mono font-semibold tabular-nums">{fmtLevel(nearestUp.price)}</span>（{fmtSigned(nearestUp.dist)}）</>}
+        </p>
+      )}
+
+      <div className="grid gap-x-8 gap-y-6 lg:grid-cols-12">
+        {/* 左欄 */}
+        <div className="space-y-6 lg:col-span-7">
+          <section>
+            <DigestHeading>價位階梯</DigestHeading>
+            {ladder.above.length + ladder.below.length === 0 ? (
+              <p className="text-xs text-[var(--text-meta)]">這個區間沒有偵測到可用的支撐或壓力。</p>
+            ) : (
+              <ul>
+                {ladder.above.map(r => <LadderRow key={`a${r.price}`} kind="壓力" {...r} />)}
+                <li className="my-1 grid grid-cols-[3rem_1fr] items-baseline gap-x-3 border-y border-[var(--glass-border)] py-1.5">
+                  <span className="text-xs font-semibold text-[var(--text-primary)]">現價</span>
+                  <span className="font-mono text-sm font-bold tabular-nums text-[var(--text-primary)]">{fmtLevel(close)}</span>
+                </li>
+                {ladder.below.map(r => <LadderRow key={`b${r.price}`} kind="支撐" {...r} />)}
+              </ul>
+            )}
+          </section>
+
+          {(channel || patterns.length > 0 || reg || trendRegime) && (
+            <section>
+              <DigestHeading>型態與通道</DigestHeading>
+              <ul className="space-y-2 text-sm">
+                {trendRegime && (
+                  <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                    <span className="font-semibold text-[var(--text-primary)]">趨勢判定</span>
+                    <span className={`text-xs font-semibold ${trendable ? 'text-[var(--accent-success-text)]' : 'text-[var(--text-meta)]'}`}>
+                      {trendRegime.label}
+                    </span>
+                    <span className="font-mono text-xs tabular-nums text-[var(--text-meta)]"
+                      title="R²（價格是否沿著一條線走）與趨勢線實際彈開幅度合成；ADX 刻意不計入——波動指數的 ADX 反而比績優股高">
+                      {trendRegime.score}/100
+                      {trendRegime.bounce_median_atr != null && <>，趨勢線平均彈開 {trendRegime.bounce_median_atr}×ATR</>}
+                      {trendRegime.vr20 != null && <>，VR(20) {trendRegime.vr20}</>}
+                    </span>
+                  </li>
+                )}
+                {channel && (
+                  <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                    <span className="font-semibold text-[var(--text-primary)]">{channel.label}</span>
+                    <span className={`text-xs font-semibold ${BIAS_META[channel.bias]?.cls ?? ''}`}>{BIAS_META[channel.bias]?.label}</span>
+                    <span className="font-mono text-xs tabular-nums text-[var(--text-meta)]">
+                      區間 {fmtLevel(channel.lower)} - {fmtLevel(channel.upper)}，現價位於 {Number(channel.position_pct).toFixed(0)}%
+                      {channel.target != null && <>，量測目標 {fmtLevel(channel.target)}</>}
+                    </span>
+                  </li>
+                )}
+                {patterns.map((pt, i) => (
+                  <li key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                    <span className="font-semibold text-[var(--text-primary)]">{pt.label}</span>
+                    <span className={`text-xs font-semibold ${BIAS_META[pt.bias]?.cls ?? ''}`}>{BIAS_META[pt.bias]?.label}</span>
+                    <span className="text-xs text-[var(--text-meta)]">{PATTERN_STATUS[pt.status] ?? pt.status}</span>
+                    <span className="font-mono text-xs tabular-nums text-[var(--text-meta)]">
+                      頸線 {fmtLevel(pt.neckline)}{pt.target != null && <>，目標 {fmtLevel(pt.target)}</>}
+                    </span>
+                  </li>
+                ))}
+                {reg && (
+                  <li className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                    <span className="font-semibold text-[var(--text-primary)]">回歸通道</span>
+                    <span className="font-mono text-xs tabular-nums text-[var(--text-meta)]">
+                      斜率 {fmtSigned(reg.slope_per_year_pct)}/年，R² {Number(reg.r2).toFixed(2)}，現價位於 {Number(reg.position_pct).toFixed(0)}%
+                    </span>
+                  </li>
+                )}
+              </ul>
+            </section>
+          )}
+        </div>
+
+        {/* 右欄 */}
+        <div className="space-y-6 lg:col-span-5 lg:border-l lg:border-[var(--glass-border)] lg:pl-8">
+          {rating && (
+            <section>
+              <DigestHeading>評級投票</DigestHeading>
+              <ul className="space-y-1.5 text-sm">
+                {[['綜合', rating.overall], ['均線', rating.moving_averages], ['擺盪', rating.oscillators]].map(([name, node]) => node && (
+                  <li key={name} className="grid grid-cols-[3rem_1fr_auto] items-baseline gap-x-3">
+                    <span className="text-xs text-[var(--text-meta)]">{name}</span>
+                    <span className={`font-semibold ${ratingCls(node.label)}`}>{node.label}</span>
+                    {node.buy != null && (
+                      <span className="font-mono text-xs tabular-nums text-[var(--text-meta)]">
+                        {node.buy} 買 / {node.neutral} 中 / {node.sell} 賣
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {stats && (
+            <section>
+              <DigestHeading>風險與波動</DigestHeading>
+              <dl className="grid grid-cols-2 gap-x-6">
+                <RiskItem label="ATR %" value={stats.atrp != null ? `${stats.atrp}%` : '—'} />
+                <RiskItem label="HV 20D" value={stats.hv20 != null ? `${stats.hv20}%` : '—'} />
+                <RiskItem label="EWMA 波動" value={stats.ewma_vol != null ? `${stats.ewma_vol}%` : '—'}
+                  note={regime ? (VOL_REGIME_LABEL[regime] ?? regime) : undefined} />
+                <RiskItem label="Beta（對 SPY）" value={stats.beta ?? '—'}
+                  note={stats.beta_now != null ? `近期 ${stats.beta_now}` : undefined} />
+                <RiskItem label="Sharpe" value={stats.sharpe ?? '—'} />
+                <RiskItem label="Sortino" value={stats.sortino ?? '—'} />
+                <RiskItem label="最大回撤" value={stats.max_drawdown != null ? `${stats.max_drawdown}%` : '—'}
+                  note={stats.current_drawdown != null ? `目前 ${stats.current_drawdown}%` : undefined} />
+                <RiskItem label="52 週區間" value={`${fmtLevel(stats.low_52w)} - ${fmtLevel(stats.high_52w)}`} />
+              </dl>
+            </section>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function PriceChartPanel({ ticker }) {
+// `chartFirst` — 指數／市場頁用：走勢圖置頂，圖層設定與技術分析改成折疊區（預設收起），
+// 主要資訊一眼可見，進階內容按需展開。個股頁維持原本「控制列 → 分析 → 圖」的順序。
+// `onAnalytics` — 資料載入後回傳 { analytics, lastBar, period, interval }，
+// 讓外層頁面（指數頁）能在圖表上方擺自己的技術指標摘要，不用再抓一次 chart API。
+export default function PriceChartPanel({ ticker, chartFirst = false, onAnalytics }) {
+  const onAnalyticsRef = useRef(onAnalytics);
+  useEffect(() => { onAnalyticsRef.current = onAnalytics; }, [onAnalytics]);
   const [period,    setPeriod]    = useState('5y');
   const [interval,  setInterval]  = useState('day');
   const [bars,      setBars]      = useState([]);
@@ -441,9 +805,24 @@ export default function PriceChartPanel({ ticker }) {
     return m;
   }, [bars]);
 
+  // Opt-in escape hatch: when the regime says the series doesn't trend, the
+  // lines are still computed but not drawn. Some people want to look anyway.
+  const [forceTrend, setForceTrend] = useState(false);
   const [showMA, setShowMA] = useState(Object.fromEntries(MA_DEFS.map(m => [m.key, true])));
   const [activeIndicators, setActiveIndicators] = useState(DEFAULT_ACTIVE);
   const [srData, setSrData] = useState({ resistance: [], support: [] });
+  const [rawEvents, setEvents] = useState(null);   // { ticker, earnings: {past, upcoming}, positions }
+  // 換股票時舊的那份直接作廢，不用在 effect 裡先清空
+  const events = rawEvents && rawEvents.ticker === ticker?.toUpperCase() ? rawEvents : null;
+
+  useEffect(() => {
+    if (!ticker) return;
+    let alive = true;
+    axios.get(`/api/stocks/${encodeURIComponent(ticker)}/chart-events`)
+      .then(res => { if (alive) setEvents(res.data); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [ticker]);
 
   // Refs for DOM containers
   const containerRef = useRef(null);
@@ -467,11 +846,20 @@ export default function PriceChartPanel({ ticker }) {
   const cacheRef = useRef({});
   const cacheKey = (t, p, iv) => `${t}__${p}__${iv}`;
 
-  function applyData(data) {
-    setBars(data.bars ?? []);
+  // period/interval 用參數帶進來，applyData 才不會閉包到 state（exhaustive-deps）
+  function applyData(data, p, iv) {
+    setForceTrend(false);
+    const nextBars = data.bars ?? [];
+    setBars(nextBars);
     const sr = data.sr ?? { resistance: [], support: [] };
     setSrData(sr);
     setAnalytics(data.analytics ?? null);
+    onAnalyticsRef.current?.({
+      analytics: data.analytics ?? null,
+      lastBar: nextBars.length ? nextBars[nextBars.length - 1] : null,
+      period: p,
+      interval: iv,
+    });
   }
 
   // Long lookback + daily interval is heavy; auto-switch to weekly.
@@ -492,14 +880,14 @@ export default function PriceChartPanel({ ticker }) {
     const key = cacheKey(ticker, period, interval);
 
     if (cacheRef.current[key]) {
-      applyData(cacheRef.current[key]);
+      applyData(cacheRef.current[key], period, interval);
       setLoading(false);
     } else {
       setLoading(true);
       axios.get(`/api/stocks/${encodeURIComponent(ticker)}/chart`, { params: { period, interval } })
         .then(res => {
           cacheRef.current[key] = res.data;
-          applyData(res.data);
+          applyData(res.data, period, interval);
           setLoading(false);
         })
         .catch(err => { setError(err.response?.data?.detail ?? 'Failed to load data'); setLoading(false); });
@@ -536,24 +924,69 @@ export default function PriceChartPanel({ ticker }) {
 
     const active = activeIndicators;
     const an = analytics;
+    const rawTrend = an?.trend && !an.trend.error ? an.trend : null;
+    // A trendline on a series that doesn't trend is a drawing, not analysis.
+    const trend = (rawTrend?.regime && !rawTrend.regime.trendable && !forceTrend)
+      ? null : rawTrend;
+
+    // Trendlines are projected forward, which adds time slots the candles don't
+    // have. The panels are synced by *logical* range, so every chart has to grow
+    // by the same number of slots — otherwise the sub-panels slide out of step
+    // with the price panel. Whitespace bars do exactly that.
+    const lastTime = bars[bars.length - 1].time;
+    const barSec = trend?.bar_seconds
+      ?? (bars.length > 1 ? bars[bars.length - 1].time - bars[bars.length - 2].time : 86400);
+    const nTrendLines = (trend?.trendlines?.resistance?.length ?? 0)
+      + (trend?.trendlines?.support?.length ?? 0);
+    const projBars = (active.trend && nTrendLines) ? (trend.proj_bars ?? 10) : 0;
+    const ws = Array.from({ length: projBars }, (_, i) => ({ time: lastTime + barSec * (i + 1) }));
+    const pad = (arr) => (ws.length ? arr.concat(ws) : arr);
 
     // ── Price panel ──────────────────────────────────────────────────────
     const pc = makeChart(priceRef.current, 380, false);
     if (pc) {
       chartsRef.current.price = pc;
 
+      // ── 財報日：整根高度的淡色直條（另一個隱藏價格軸上的柱狀圖）＋K 棒上方的 E ──
+      // 直條要比 K 棒先加，才會畫在 K 棒後面。
+      const earnTimes = [];
+      if (active.earn && events?.earnings?.past?.length) {
+        const dates = bars.map(b => barDate(b.time));
+        const hit = new Set();
+        events.earnings.past.forEach(ev => {
+          if (ev.date < dates[0]) return;          // 區間起點之前的財報
+          // 落在「日期 ≤ 財報日」的最後一根：日線就是當天，週／月線是包含那天的那根
+          let lo = 0, hi = dates.length - 1, idx = -1;
+          while (lo <= hi) {
+            const mid = (lo + hi) >> 1;
+            if (dates[mid] <= ev.date) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+          }
+          if (idx >= 0) hit.add(bars[idx].time);
+        });
+        earnTimes.push(...[...hit].sort((a, b) => a - b));
+        if (earnTimes.length) {
+          const band = pc.addSeries(HistogramSeries, {
+            priceScaleId: 'earn', lastValueVisible: false, priceLineVisible: false,
+            color: `${EARN_COLOR}2e`,
+          });
+          band.priceScale().applyOptions({ visible: false, scaleMargins: { top: 0, bottom: 0 } });
+          band.setData(earnTimes.map(time => ({ time, value: 1 })));
+          seriesRef.current.earn_band = band;
+        }
+      }
+
       const candle = pc.addSeries(CandlestickSeries, {
         upColor: '#34d399', downColor: '#f87171',
         borderUpColor: '#34d399', borderDownColor: '#f87171',
         wickUpColor: '#34d399', wickDownColor: '#f87171',
       });
-      candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })));
+      candle.setData(pad(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }))));
       seriesRef.current.candle = candle;
 
       // Simple MAs
-      MA_DEFS.forEach(({ key, color }) => {
+      MA_DEFS.forEach(({ key, color, width }) => {
         const s = pc.addSeries(LineSeries, {
-          color, lineWidth: 1, crosshairMarkerVisible: false,
+          color, lineWidth: width, crosshairMarkerVisible: false,
           lastValueVisible: false, priceLineVisible: false, visible: showMARef.current[key],
         });
         s.setData(bars.filter(b => b[key] != null).map(b => ({ time: b.time, value: b[key] })));
@@ -602,6 +1035,11 @@ export default function PriceChartPanel({ ticker }) {
         seriesRef.current.ov_psar = s;
       }
 
+      // 全部 K 棒標記（九轉、財報 E）排序後一次設定
+      const candleMarks = earnTimes.map(time => ({
+        time, position: 'aboveBar', color: EARN_COLOR, shape: 'square', text: 'E', size: 0.6,
+      }));
+
       // 神奇九轉 — only the completed 9s are drawn; marking every bar of every
       // run buries the candles under text. The running count lives in the alert
       // strip and the hover readout instead.
@@ -611,20 +1049,123 @@ export default function PriceChartPanel({ ticker }) {
           .map(b => (b.td_setup <= -9
             ? { time: b.time, position: 'belowBar', color: '#34d399', shape: 'arrowUp',   text: '低9' }
             : { time: b.time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', text: '高9' }));
-        if (marks.length) createSeriesMarkers(candle, marks);
+        candleMarks.push(...marks);
+      }
+
+      if (candleMarks.length) {
+        createSeriesMarkers(candle, candleMarks.sort((a, b) => a.time - b.time));
+      }
+
+      // ── 持倉成本：每個組合一條（跨帳戶已加權平均）──
+      if (active.cost && events?.positions?.length) {
+        events.positions.forEach(pos => candle.createPriceLine({
+          price: pos.avg_cost, color: COST_COLOR, lineWidth: 2, lineStyle: 2,
+          axisLabelVisible: true,
+          title: events.positions.length > 1 ? `成本 ${pos.portfolio}` : '成本',
+        }));
       }
 
       // Support / Resistance price lines
+      // 價格軸標籤重疊時 lightweight-charts 會把標籤推開，S/R 一多成本標籤就被擠到
+      // 離線好幾格的地方。所以只有強度 ≥3 的 S/R 才掛軸標籤，且離成本 1.5% 內的不掛。
       if (active.sr) {
         const { resistance, support } = srData;
+        const costs = active.cost ? (events?.positions ?? []).map(p => p.avg_cost) : [];
+        const srLabel = lvl => lvl.strength >= 3
+          && !costs.some(c => Math.abs(lvl.price - c) / c < 0.015);
         resistance.forEach(lvl => candle.createPriceLine({
           price: lvl.price, color: `rgba(248,113,113,${0.35 + lvl.strength * 0.1})`,
-          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: true, title: '',
+          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: srLabel(lvl), title: '',
         }));
         support.forEach(lvl => candle.createPriceLine({
           price: lvl.price, color: `rgba(52,211,153,${0.35 + lvl.strength * 0.1})`,
-          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: true, title: '',
+          lineWidth: lvl.strength >= 3 ? 2 : 1, lineStyle: 0, axisLabelVisible: srLabel(lvl), title: '',
         }));
+      }
+
+      // ── Auto trendlines ────────────────────────────────────────────────
+      // Drawn as two segments: solid through the anchors up to today, dashed
+      // for the forward projection — so what price actually respected is never
+      // confused with where the line will be next month.
+      if (active.trend && trend?.trendlines) {
+        const lines = [...(trend.trendlines.resistance ?? []), ...(trend.trendlines.support ?? [])];
+        lines.forEach((l, i) => {
+          const broken = l.status === 'broken';
+          const base = l.side === 'resistance' ? '#f87171' : '#34d399';
+          const width = Math.min(3, Math.max(1, Math.round((l.strength ?? 2) / 1.7)));
+
+          // lightweight-charts rejects duplicate/unordered times, and p2 lands
+          // on the last bar whenever the newest pivot anchors the line.
+          const pts = [l.p1, l.p2, l.end]
+            .filter(Boolean)
+            .sort((a, b) => a.time - b.time)
+            .filter((pt, idx, arr) => idx === 0 || pt.time > arr[idx - 1].time)
+            .map(pt => ({ time: pt.time, value: pt.price }));
+
+          if (pts.length >= 2) {
+            const seg = pc.addSeries(LineSeries, {
+              color: broken ? `${base}66` : base,
+              lineWidth: width, lineStyle: broken ? 2 : 0,
+              crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+            });
+            seg.setData(pts);
+            seriesRef.current[`tl_${i}`] = seg;
+
+            if (l.touch_times?.length) {
+              createSeriesMarkers(seg, l.touch_times.map(t => ({
+                time: t, position: l.side === 'resistance' ? 'aboveBar' : 'belowBar',
+                color: `${base}bb`, shape: 'circle',
+              })));
+            }
+          }
+
+          if (l.proj && l.end && l.proj.time > l.end.time) {
+            const fwd = pc.addSeries(LineSeries, {
+              color: `${base}${broken ? '33' : '77'}`,
+              lineWidth: width, lineStyle: 2,
+              crosshairMarkerVisible: false, priceLineVisible: false,
+              lastValueVisible: true,
+              title: `${l.label} ×${l.touches}${broken ? ' 破' : ''}`,
+            });
+            fwd.setData([
+              { time: l.end.time, value: l.end.price },
+              { time: l.proj.time, value: l.proj.price },
+            ]);
+            seriesRef.current[`tlf_${i}`] = fwd;
+          }
+        });
+      }
+
+      // ── Chart patterns: pivot polyline + neckline + measured target ─────
+      if (active.pattern && trend?.patterns?.length) {
+        trend.patterns.forEach((pat, i) => {
+          const tone = pat.bias === 'bullish' ? '#34d399' : pat.bias === 'bearish' ? '#f87171' : '#f472b6';
+          const pts = (pat.points ?? [])
+            .filter((pt, idx, arr) => idx === 0 || pt.time > arr[idx - 1].time)
+            .map(pt => ({ time: pt.time, value: pt.price }));
+          if (pts.length >= 3) {
+            const s2 = pc.addSeries(LineSeries, {
+              color: `${tone}cc`, lineWidth: 2, lineStyle: 0,
+              crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+            });
+            s2.setData(pts);
+            createSeriesMarkers(s2, [{
+              time: pts[Math.floor(pts.length / 2)].time,
+              position: pat.bias === 'bearish' ? 'aboveBar' : 'belowBar',
+              color: tone, shape: pat.bias === 'bearish' ? 'arrowDown' : 'arrowUp',
+              text: pat.label,
+            }]);
+            seriesRef.current[`pat_${i}`] = s2;
+          }
+          if (pat.neckline != null) candle.createPriceLine({
+            price: pat.neckline, color: `${tone}cc`, lineWidth: 1, lineStyle: 3,
+            axisLabelVisible: true, title: '頸線',
+          });
+          if (pat.target != null) candle.createPriceLine({
+            price: pat.target, color: `${tone}77`, lineWidth: 1, lineStyle: 4,
+            axisLabelVisible: true, title: '目標',
+          });
+        });
       }
 
       // Pivot points (monthly, classic)
@@ -674,10 +1215,10 @@ export default function PriceChartPanel({ ticker }) {
       chartsRef.current.volume = vc;
       const vs = vc.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' });
       vs.priceScale().applyOptions({ scaleMarginTop: 0.1, scaleMarginBottom: 0 });
-      vs.setData(bars.map(b => ({
+      vs.setData(pad(bars.map(b => ({
         time: b.time, value: b.volume,
         color: b.close >= b.open ? 'rgba(52,211,153,0.5)' : 'rgba(248,113,113,0.5)',
-      })));
+      }))));
       seriesRef.current.volume = vs;
     }
 
@@ -689,10 +1230,10 @@ export default function PriceChartPanel({ ticker }) {
 
       if (p.hist) {
         const h = chart.addSeries(HistogramSeries, { lastValueVisible: false, priceLineVisible: false });
-        h.setData(bars.filter(b => b[p.hist.f] != null).map(b => ({
+        h.setData(pad(bars.filter(b => b[p.hist.f] != null).map(b => ({
           time: b.time, value: b[p.hist.f],
           color: b[p.hist.f] >= 0 ? p.hist.pos : p.hist.neg,
-        })));
+        }))));
         seriesRef.current[`p_${p.key}_${p.hist.f}`] = h;
       }
 
@@ -703,7 +1244,7 @@ export default function PriceChartPanel({ ticker }) {
           lineWidth: ln.width ?? 1.5,
           lastValueVisible: false, priceLineVisible: false,
         });
-        s.setData(bars.filter(b => b[ln.f] != null).map(b => ({ time: b.time, value: b[ln.f] })));
+        s.setData(pad(bars.filter(b => b[ln.f] != null).map(b => ({ time: b.time, value: b[ln.f] }))));
         seriesRef.current[`p_${p.key}_${ln.f}`] = s;
         firstLine = firstLine ?? s;
       });
@@ -753,7 +1294,13 @@ export default function PriceChartPanel({ ticker }) {
       chartsRef.current = {};
       seriesRef.current = {};
     };
-  }, [bars, loading, error, activeIndicators, barMap, srData, analytics]);
+  }, [bars, loading, error, activeIndicators, barMap, srData, analytics, forceTrend, events]);
+
+  // ── 主題切換：canvas 不會跟 CSS 變數，得手動把新調色盤套到每張圖 ──────
+  useEffect(() => Theme.subscribe(() => {
+    const t = themedChartOpts(chartPalette());
+    Object.values(chartsRef.current).forEach(c => { try { c.applyOptions(t); } catch { /* chart already disposed */ } });
+  }), []);
 
   // ── Toggles ────────────────────────────────────────────────────────────
   const toggleMA = useCallback((key) => {
@@ -801,14 +1348,22 @@ export default function PriceChartPanel({ ticker }) {
 
   const stats  = analytics?.stats;
   const rating = analytics?.rating;
+  const trend  = analytics?.trend && !analytics.trend.error ? analytics.trend : null;
+  const trendLines = trend
+    ? [...(trend.trendlines?.resistance ?? []), ...(trend.trendlines?.support ?? [])]
+        .sort((a, b) => (b.value_now ?? 0) - (a.value_now ?? 0))
+    : [];
+  const regime = trend?.regime ?? null;
+  // The lines exist in the payload either way; this decides whether showing
+  // them is analysis or decoration.
+  const trendable = !regime || regime.trendable;
+  const showTrendDetail = trendable || forceTrend;
 
-  return (
-    <div className="space-y-4">
-      {/* Controls: period + indicator groups */}
-      <div className="card p-3">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-3 pb-3 border-b border-[var(--glass-border)]">
-          <span className="text-sm font-semibold text-[var(--text-secondary)]">Price Chart</span>
-          <div className="flex items-center gap-2">
+  const activeOverlayCount = OVERLAY_DEFS.filter(o => activeIndicators[o.key]).length;
+
+  // 區間／頻率切換（兩種版面共用）
+  const rangeControls = (
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex gap-1 bg-[var(--bg-tertiary)] border border-[var(--glass-border)] rounded-xl p-1">
               {[{label:'D', value:'day'}, {label:'W', value:'week'}, {label:'M', value:'month'}].map(iv => (
                 <button key={iv.value} onClick={() => setInterval(iv.value)}
@@ -817,7 +1372,8 @@ export default function PriceChartPanel({ ticker }) {
                   }`}>{iv.label}</button>
               ))}
             </div>
-            <div className="flex gap-1 bg-[var(--bg-tertiary)] border border-[var(--glass-border)] rounded-xl p-1">
+            {/* 手機寬度放不下 8 個區間鈕：橫向捲動，別讓 MAX 被卡片切掉 */}
+            <div className="flex max-w-full gap-1 overflow-x-auto bg-[var(--bg-tertiary)] border border-[var(--glass-border)] rounded-xl p-1">
               {PERIODS.map(p => (
                 <button key={p.value} onClick={() => setPeriod(p.value)}
                   className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
@@ -826,8 +1382,10 @@ export default function PriceChartPanel({ ticker }) {
               ))}
             </div>
           </div>
-        </div>
+  );
 
+  // 疊圖／副圖切換（兩種版面共用）
+  const layerControls = (
         <div className="space-y-2.5">
           <div className="flex flex-wrap items-center gap-2">
             <span className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] font-semibold uppercase tracking-wider mr-1 w-[86px] shrink-0">
@@ -844,8 +1402,22 @@ export default function PriceChartPanel({ ticker }) {
               color={p.color} on={!!activeIndicators[p.key]} onToggle={toggleIndicator} />)}
           </div>
         </div>
-      </div>
+  );
 
+  // 個股頁原本的控制卡：標題＋區間切換＋圖層切換
+  const controlsNode = (
+      <div className="card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3 pb-3 border-b border-[var(--glass-border)]">
+          <span className="text-sm font-semibold text-[var(--text-secondary)]">Price Chart</span>
+          {rangeControls}
+        </div>
+        {layerControls}
+      </div>
+  );
+
+  // 技術評級／趨勢結構／關鍵價位／支撐壓力 四張分析卡
+  const analyticsNodes = (
+    <>
       {/* ── Technical Rating + Key Stats ── */}
       {!loading && !error && (rating || stats) && (
         <div className="card p-4 space-y-3">
@@ -950,6 +1522,223 @@ export default function PriceChartPanel({ ticker }) {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Trend structure: trendlines, channel, patterns ── */}
+      {!loading && !error && trend && (trendLines.length > 0 || trend.channel || trend.patterns?.length || regime) && (
+        <div className="card p-4 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Activity size={15} style={{ color: trendable ? '#38bdf8' : '#fbbf24' }} />
+            <span className="text-sm font-bold">趨勢結構</span>
+            {regime && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border"
+                style={{ color: REGIME_TONE[regime.label] ?? '#94a3b8',
+                         borderColor: `${REGIME_TONE[regime.label] ?? '#94a3b8'}66`,
+                         background: `${REGIME_TONE[regime.label] ?? '#94a3b8'}18` }}
+                title="R²（價格是否沿著一條線走）與趨勢線實際彈開幅度合成，ADX 刻意不計入">
+                {regime.label} {regime.score}/100
+              </span>
+            )}
+            <span className="text-xs text-[var(--text-muted)]">趨勢線 · 通道 · 形態</span>
+            {showTrendDetail && (
+              <button onClick={() => toggleIndicator('trend')}
+                className="ml-auto text-[10px] px-2 py-0.5 rounded-full border transition-colors"
+                style={{
+                  color: activeIndicators.trend ? '#0284c7' : 'var(--text-muted)',
+                  borderColor: activeIndicators.trend ? '#38bdf8' : 'var(--glass-border)',
+                  background: activeIndicators.trend ? '#38bdf822' : 'transparent',
+                }}>
+                {activeIndicators.trend ? '圖上已顯示' : '在圖上顯示'}
+              </button>
+            )}
+          </div>
+
+          {trend.summary && (
+            <div className="text-xs leading-relaxed px-3 py-2 rounded-lg border"
+              style={trendable
+                ? { color: 'var(--text-secondary)', background: 'rgba(56,189,248,0.06)',
+                    borderColor: 'rgba(56,189,248,0.2)' }
+                : { color: 'var(--text-secondary)', background: 'rgba(251,191,36,0.08)',
+                    borderColor: 'rgba(251,191,36,0.35)' }}>
+              {!trendable && <AlertTriangle size={13} className="inline mr-1.5 -mt-0.5 text-[#f59e0b]" />}
+              {trend.summary}
+            </div>
+          )}
+
+          {/* Range readout — what to actually look at when nothing is trending */}
+          {!trendable && trend.range && (
+            <div className="px-3 py-2.5 rounded-lg bg-[rgba(148,163,184,0.08)] border border-[var(--glass-border)]">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
+                  近 {trend.range.lookback} 根區間
+                </span>
+                <span className="text-[10px] text-[var(--text-muted)]">
+                  均值回歸的標的看這個，不是趨勢線
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between text-xs font-mono mb-1">
+                <span className="text-[#34d399]">低 ${trend.range.low}</span>
+                <span className="text-[var(--text-muted)]">中位 ${trend.range.median}</span>
+                <span className="text-[#f87171]">高 ${trend.range.high}</span>
+              </div>
+              <div className="h-2 rounded-full bg-[rgba(148,163,184,0.18)] relative">
+                <div className="absolute inset-y-0 w-px bg-[rgba(148,163,184,0.5)]" style={{ left: '50%' }} />
+                <div className="absolute -top-0.5 w-1 h-3 rounded-full bg-[var(--text-primary)]"
+                  style={{ left: `calc(${Math.min(100, Math.max(0, trend.range.position_pct))}% - 2px)` }} />
+              </div>
+              <div className="text-[10px] text-[var(--text-muted)] mt-1.5">
+                現價在區間 {trend.range.position_pct}%，歷史百分位 {trend.range.percentile}
+                {regime?.halflife_bars ? ` · 偏離後約 ${Math.round(regime.halflife_bars)} 根 K 棒回到均值` : ''}
+              </div>
+              <button onClick={() => setForceTrend(v => !v)}
+                className="mt-2 text-[10px] px-2 py-0.5 rounded-full border transition-colors"
+                style={{
+                  color: forceTrend ? '#f59e0b' : 'var(--text-muted)',
+                  borderColor: forceTrend ? '#fbbf24' : 'var(--glass-border)',
+                  background: forceTrend ? 'rgba(251,191,36,0.14)' : 'transparent',
+                }}>
+                {forceTrend ? '已強制顯示趨勢線（僅供參考）' : '仍要看趨勢線'}
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Trendlines */}
+            {showTrendDetail && trendLines.length > 0 && (
+              <div className="lg:col-span-2">
+                <div className="text-xs font-semibold text-[#38bdf8] uppercase tracking-wider mb-2">
+                  自動趨勢線 · 依現價由高到低
+                </div>
+                <div className="space-y-1">
+                  {trendLines.map((l, i) => {
+                    const res = l.side === 'resistance';
+                    const color = res ? '#f87171' : '#34d399';
+                    const broken = l.status === 'broken';
+                    return (
+                      <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs"
+                        style={{ background: `${color}${broken ? '08' : '14'}`,
+                                 opacity: broken ? 0.65 : 1 }}>
+                        <span className="font-bold w-[68px] shrink-0" style={{ color }}>{l.label}</span>
+                        <span className="font-mono font-bold w-[74px] text-right">${l.value_now}</span>
+                        <span className="font-mono w-[62px] text-right"
+                          style={{ color: l.dist_pct >= 0 ? '#f87171' : '#34d399' }}>
+                          {l.dist_pct >= 0 ? '+' : ''}{l.dist_pct}%
+                        </span>
+                        <span className="text-[10px] text-[var(--text-muted)] w-[52px] text-right">
+                          {l.touches} 觸及
+                        </span>
+                        <span className="text-[10px] text-[var(--text-muted)] w-[70px] text-right font-mono"
+                          title="趨勢線年化斜率">
+                          {l.slope_per_year_pct > 0 ? '+' : ''}{l.slope_per_year_pct}%/yr
+                        </span>
+                        <span className="flex gap-0.5 ml-auto" title={`強度 ${l.strength}/5`}>
+                          {Array.from({ length: 5 }, (_, k) => (
+                            <span key={k} className="w-1 h-3 rounded-sm"
+                              style={{ background: k < l.strength ? color : 'rgba(148,163,184,0.18)' }} />
+                          ))}
+                        </span>
+                        {broken && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold shrink-0"
+                            style={{ color, background: `${color}22` }}>已破</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="text-[10px] text-[var(--text-muted)] mt-1.5">
+                  觸及次數 = 價格在容差內折返的獨立次數；斜率以年化 % 表示，不同週期可直接比較
+                </div>
+              </div>
+            )}
+
+            {/* Regression channel + formations */}
+            <div className="space-y-3">
+              {trend.regression && (
+                <div>
+                  <div className="text-xs font-semibold text-[#a78bfa] uppercase tracking-wider mb-2">
+                    線性回歸通道 · {trend.regression.lookback} 根
+                  </div>
+                  <div className="px-3 py-2 rounded-lg bg-[rgba(167,139,250,0.08)] border border-[rgba(167,139,250,0.22)]">
+                    <div className="flex items-baseline justify-between text-[11px] font-mono">
+                      <span className="text-[#f87171]">+2σ ${trend.regression.upper}</span>
+                      <span className="text-[var(--text-muted)]">R²={trend.regression.r2}</span>
+                    </div>
+                    <div className="my-1.5 h-2 rounded-full bg-[rgba(148,163,184,0.15)] relative">
+                      <div className="absolute inset-y-0 w-px bg-[rgba(226,232,240,0.35)]" style={{ left: '50%' }} />
+                      <div className="absolute -top-0.5 w-1 h-3 rounded-full bg-[#a78bfa]"
+                        style={{ left: `calc(${trend.regression.position_pct}% - 2px)` }} />
+                    </div>
+                    <div className="flex items-baseline justify-between text-[11px] font-mono">
+                      <span className="text-[#34d399]">−2σ ${trend.regression.lower}</span>
+                      <span className="text-[var(--text-muted)]">
+                        {trend.regression.slope_per_year_pct > 0 ? '+' : ''}
+                        {trend.regression.slope_per_year_pct}%/yr
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-[var(--text-muted)] mt-1.5">
+                      中軸 ${trend.regression.mid} · 1σ≈{trend.regression.sigma_pct}% ·
+                      現價 z={trend.regression.z}（通道 {trend.regression.position_pct}% 位置）
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {(trend.channel || trend.patterns?.length > 0) && (
+                <div>
+                  <div className="text-xs font-semibold text-[#f472b6] uppercase tracking-wider mb-2">
+                    形態
+                  </div>
+                  <div className="space-y-1.5">
+                    {trend.channel && (
+                      <div className="px-3 py-2 rounded-lg text-xs bg-[rgba(244,114,182,0.08)] border border-[rgba(244,114,182,0.22)]">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-[#f472b6]">{trend.channel.label}</span>
+                          <span className="text-[10px] text-[var(--text-muted)]">
+                            寬 {trend.channel.width_pct}%
+                          </span>
+                          <span className="ml-auto font-mono text-[10px] text-[var(--text-muted)]">
+                            通道 {trend.channel.position_pct}%
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[var(--text-muted)] mt-1 font-mono">
+                          上緣 ${trend.channel.upper} · 下緣 ${trend.channel.lower} · 量測目標 ${trend.channel.target}
+                        </div>
+                      </div>
+                    )}
+                    {(trend.patterns ?? []).map((pt, i) => {
+                      const tone = pt.bias === 'bullish' ? '#34d399' : '#f87171';
+                      return (
+                        <div key={i} className="px-3 py-2 rounded-lg text-xs border"
+                          style={{ background: `${tone}12`, borderColor: `${tone}3a` }}>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold" style={{ color: tone }}>{pt.label}</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md font-semibold"
+                              style={{ color: tone, background: `${tone}22` }}>
+                              {pt.status === 'confirmed' ? '已確認' : '成形中'}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-[var(--text-muted)] mt-1 font-mono">
+                            頸線 ${pt.neckline}（{pt.neck_dist_pct > 0 ? '+' : ''}{pt.neck_dist_pct}%）
+                            · 量測目標 ${pt.target}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={() => toggleIndicator('pattern')}
+                    className="mt-1.5 text-[10px] px-2 py-0.5 rounded-full border transition-colors"
+                    style={{
+                      color: activeIndicators.pattern ? '#db2777' : 'var(--text-muted)',
+                      borderColor: activeIndicators.pattern ? '#f472b6' : 'var(--glass-border)',
+                      background: activeIndicators.pattern ? '#f472b622' : 'transparent',
+                    }}>
+                    {activeIndicators.pattern ? '圖上已顯示' : '在圖上畫出形態'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1207,17 +1996,25 @@ export default function PriceChartPanel({ ticker }) {
         </div>
       )}
 
+    </>
+  );
+
+  // 走勢圖本體（含載入／錯誤狀態）。chartFirst 時外層已有卡片，這裡不再套一層邊框。
+  const chartNode = (
+    <>
       {loading && (
-        <div className="flex items-center justify-center py-32">
+        <div className={`flex items-center justify-center ${chartFirst ? 'min-h-[520px]' : 'py-32'}`}>
           <RefreshCw size={22} className="animate-spin text-[var(--accent-cyan)]" />
         </div>
       )}
       {error && (
-        <div className="card p-6 border-[rgba(248,113,113,0.3)] text-center text-[var(--accent-danger)]">{error}</div>
+        <div className={chartFirst
+          ? 'px-6 py-16 text-center text-sm text-[var(--accent-danger-text)]'
+          : 'card p-6 border-[rgba(248,113,113,0.3)] text-center text-[var(--accent-danger)]'}>{error}</div>
       )}
 
       {!loading && !error && bars.length > 0 && (
-        <div ref={containerRef} className="card p-0 overflow-hidden rounded-xl border border-[var(--glass-border)]">
+        <div ref={containerRef} className={chartFirst ? 'overflow-hidden' : 'card p-0 overflow-hidden rounded-xl border border-[var(--glass-border)]'}>
 
           {/* ── OHLCV + live indicator readout ── */}
           <div className="flex flex-wrap items-center gap-4 px-4 py-2.5 border-b border-[var(--glass-border)] bg-[var(--glass-bg)]">
@@ -1244,16 +2041,79 @@ export default function PriceChartPanel({ ticker }) {
               </div>
             )}
             <div className="flex flex-wrap gap-1.5 ml-auto">
-              {MA_DEFS.map(({ key, label, color }) => (
+              {MA_DEFS.map(({ key, label, color, width }) => (
                 <button key={key} onClick={() => toggleMA(key)}
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${showMA[key] ? 'opacity-100' : 'opacity-30'}`}
                   style={{ borderColor: showMA[key] ? color : BORDER, background: showMA[key] ? `${color}22` : 'transparent', color }}>
-                  <span className="w-3 h-px rounded-full inline-block" style={{ background: color }} />
+                  <span className="w-4 rounded-full inline-block" style={{ background: color, height: width + 1 }} />
                   {label}
+                  {display?.[key] != null && <span className="font-mono font-normal">{display[key].toFixed(2)}</span>}
                 </button>
               ))}
             </div>
           </div>
+
+          {/* ── 圖例：每種線是什麼。紅綠只代表壓力／支撐，均線一律是其他顏色 ── */}
+          {(() => {
+            const last = bars[bars.length - 1]?.close;
+            const showTL = activeIndicators.trend && trendable && trendLines.length > 0;
+            const up = events?.earnings?.upcoming;
+            const daysTo = up ? Math.round((new Date(`${up.date}T00:00:00`) - new Date(new Date().toDateString())) / 86400000) : null;
+            const Swatch = ({ color, dashed, faded }) => (
+              <span className="inline-block w-5 align-middle" style={{
+                borderTop: `2px ${dashed ? 'dashed' : 'solid'} ${color}`, opacity: faded ? 0.4 : 1,
+              }} />
+            );
+            const items = [];
+            if (showTL) items.push(
+              <span key="tl" className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-semibold text-[var(--text-secondary)]">趨勢線</span>
+                <Swatch color="#f87171" /> 壓力
+                <Swatch color="#34d399" /> 支撐
+                <Swatch color="#94a3b8" dashed /> 往後延伸
+                <Swatch color="#94a3b8" faded /> 已跌破
+              </span>);
+            if (activeIndicators.sr && (srData.resistance.length || srData.support.length)) items.push(
+              <span key="sr" className="flex items-center gap-1.5">
+                <span className="font-semibold text-[var(--text-secondary)]">水平線</span>
+                <span className="text-[#f87171]">紅＝壓力區</span><span className="text-[#34d399]">綠＝支撐區</span>
+              </span>);
+            if (activeIndicators.earn && events?.earnings) items.push(
+              <span key="earn" className="flex items-center gap-1.5">
+                <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-sm text-[9px] font-bold text-black" style={{ background: EARN_COLOR }}>E</span>
+                財報日
+                {up && (
+                  <span style={{ color: EARN_COLOR }}>
+                    · 下次 {up.date.slice(5).replace('-', '/')}{up.time_of_day ? ` ${up.time_of_day}` : ''}
+                    {up.confirmed ? '' : '（預估）'}{daysTo != null && daysTo >= 0 ? `，還有 ${daysTo} 天` : ''}
+                  </span>
+                )}
+              </span>);
+            if (activeIndicators.cost && events?.positions?.length) items.push(
+              <span key="cost" className="flex items-center gap-1.5 flex-wrap">
+                <Swatch color={COST_COLOR} dashed />
+                {events.positions.map(pos => {
+                  const pnl = last ? (last / pos.avg_cost - 1) * 100 : null;
+                  return (
+                    <span key={pos.portfolio} title={`${pos.accounts.join(' + ')} · ${pos.shares} 股`}>
+                      成本{events.positions.length > 1 ? ` ${pos.portfolio}` : ''}{' '}
+                      <span className="font-mono" style={{ color: COST_COLOR }}>{pos.avg_cost.toFixed(2)}</span>
+                      {pnl != null && (
+                        <span className={`font-mono ml-1 ${pnl >= 0 ? 'text-[var(--accent-success)]' : 'text-[var(--accent-danger)]'}`}>
+                          {pnl >= 0 ? '+' : ''}{pnl.toFixed(1)}%
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
+              </span>);
+            if (!items.length) return null;
+            return (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 px-4 py-1.5 border-b border-[var(--glass-border)] text-[11px] text-[var(--text-muted)]">
+                {items}
+              </div>
+            );
+          })()}
 
           {/* Candlestick */}
           <div ref={priceRef} style={{ width: '100%', height: 380 }} />
@@ -1278,6 +2138,66 @@ export default function PriceChartPanel({ ticker }) {
           ))}
         </div>
       )}
+    </>
+  );
+
+  if (chartFirst) {
+    const hasAnalytics = !loading && !error && !!analytics;
+    const lastClose = bars.length ? bars[bars.length - 1].close : null;
+    return (
+      <div className="space-y-4">
+        {/* 1. 走勢圖置頂：區間切換直接放在圖的標題列 */}
+        <section className="card card-flat p-0 overflow-hidden" aria-label="走勢圖">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--glass-border)] px-4 py-3">
+            <span className="text-sm font-semibold text-[var(--text-secondary)]">走勢圖</span>
+            {rangeControls}
+          </div>
+          {chartNode}
+        </section>
+
+        {/* 2. 圖層設定：預設收起，摘要列顯示目前開了幾個 */}
+        <details className="group card card-flat p-0 overflow-hidden">
+          <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-sm font-semibold text-[var(--text-secondary)] transition-colors duration-200 hover:text-[var(--text-primary)] [&::-webkit-details-marker]:hidden">
+            <Layers size={14} className="shrink-0" />
+            圖層與指標
+            <span className="text-xs font-normal text-[var(--text-meta)]">
+              疊圖 {activeOverlayCount}，副圖 {activePanels.length}
+            </span>
+            <ChevronDown size={16} className="ml-auto shrink-0 transition-transform duration-200 group-open:rotate-180" />
+          </summary>
+          <div className="border-t border-[var(--glass-border)] px-4 py-3">{layerControls}</div>
+        </details>
+
+        {/* 3. 技術分析：預設展開，只放重點（價位階梯／型態／評級／風險）；完整版收在最底下 */}
+        {hasAnalytics && (
+          <details open className="group card card-flat p-0 overflow-hidden">
+            <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-sm font-semibold text-[var(--text-secondary)] transition-colors duration-200 hover:text-[var(--text-primary)] [&::-webkit-details-marker]:hidden">
+              <Gauge size={14} className="shrink-0" />
+              技術分析
+              <span className="text-xs font-normal text-[var(--text-meta)]">{period.toUpperCase()} {interval === 'day' ? '日線' : interval === 'week' ? '週線' : '月線'}</span>
+              <ChevronDown size={16} className="ml-auto shrink-0 transition-transform duration-200 group-open:rotate-180" />
+            </summary>
+            <div className="border-t border-[var(--glass-border)]">
+              <TechDigest close={lastClose} srData={srData} analytics={analytics} />
+              <details className="group/full border-t border-[var(--glass-border)]">
+                <summary className="flex min-h-[44px] cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-xs font-semibold text-[var(--text-meta)] transition-colors duration-200 hover:text-[var(--text-primary)] [&::-webkit-details-marker]:hidden">
+                  完整技術分析（所有指標、百分位、斐波那契、成交量分布）
+                  <ChevronDown size={14} className="ml-auto shrink-0 transition-transform duration-200 group-open/full:rotate-180" />
+                </summary>
+                <div className="space-y-4 border-t border-[var(--glass-border)] p-4">{analyticsNodes}</div>
+              </details>
+            </div>
+          </details>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {controlsNode}
+      {analyticsNodes}
+      {chartNode}
     </div>
   );
 }

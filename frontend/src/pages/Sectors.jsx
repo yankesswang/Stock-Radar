@@ -1,5 +1,5 @@
 import { useState, useEffect, Fragment } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   TrendingUp, TrendingDown, Layers, RefreshCw, Loader2, Minus,
 } from 'lucide-react';
@@ -8,6 +8,8 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { CHART_GRID, CHART_REFERENCE } from '../components/chartTheme';
+import ClusterTabs from '../components/ClusterTabs';
+import { MARKET_TABS } from '../components/clusterTabsDef';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -159,6 +161,20 @@ function RsLineChart({ symbol, label }) {
 
 // ── Pairwise sector compare (A / B ratio line) ──────────────────────────────────
 
+function SectorSelect({ sectors, value, onChange }) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="bg-[var(--bg-secondary)] border border-[var(--glass-border)] rounded-lg px-2.5 py-1.5 text-sm font-mono font-semibold text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-cyan)]"
+    >
+      {sectors.map(s => (
+        <option key={s.symbol} value={s.symbol}>{s.symbol} · {s.zh}</option>
+      ))}
+    </select>
+  );
+}
+
 function PairCompare({ sectors }) {
   const [a, setA] = useState('XLY');
   const [b, setB] = useState('XLV');
@@ -180,26 +196,14 @@ function PairCompare({ sectors }) {
   const aWins = last != null && last >= 100;
   const change = last != null ? last - 100 : null;
 
-  const Select = ({ value, onChange }) => (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="bg-[var(--bg-secondary)] border border-[var(--glass-border)] rounded-lg px-2.5 py-1.5 text-sm font-mono font-semibold text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-cyan)]"
-    >
-      {sectors.map(s => (
-        <option key={s.symbol} value={s.symbol}>{s.symbol} · {s.zh}</option>
-      ))}
-    </select>
-  );
-
   return (
     <div className="glass rounded-xl p-4">
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">板塊兩兩對比</span>
         <div className="flex items-center gap-2">
-          <Select value={a} onChange={setA} />
+          <SectorSelect sectors={sectors} value={a} onChange={setA} />
           <span className="text-[var(--text-muted)] font-bold">÷</span>
-          <Select value={b} onChange={setB} />
+          <SectorSelect sectors={sectors} value={b} onChange={setB} />
           <button
             onClick={() => { setA(b); setB(a); }}
             title="對調"
@@ -290,6 +294,7 @@ export default function Sectors() {
 
   return (
     <div className="container py-6 space-y-6">
+      <ClusterTabs items={MARKET_TABS} active="/sectors" />
 
       {/* Header */}
       <div className="flex items-center justify-between">

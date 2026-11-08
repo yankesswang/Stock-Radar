@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Bell, BellRing, CalendarDays, TrendingUp, X, Trash2 } from 'lucide-react';
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;
@@ -91,6 +91,7 @@ export default function MacNotifier() {
       const today = toDayStart(new Date());
 
       events.forEach((ev) => {
+        if (ev.status === 'reported') return;
         const earningsDay = toDayStart(ev.date);
         const diffDays = Math.round((earningsDay - today) / DAY_MS);
         if (!EARNINGS_MILESTONES.has(diffDays)) return;
@@ -198,7 +199,7 @@ export default function MacNotifier() {
       <div className="flex justify-end">
         <button
           onClick={() => setIsOpen(prev => !prev)}
-          className="pointer-events-auto relative grid h-10 w-10 place-items-center rounded-full border border-[var(--glass-border)] bg-[rgba(255,255,255,0.9)] text-[var(--text-secondary)] shadow-[0_12px_28px_rgba(10,11,13,0.14)] backdrop-blur-md transition-colors hover:text-[var(--text-primary)]"
+          className="pointer-events-auto relative grid h-10 w-10 place-items-center rounded-full border border-[var(--glass-border)] bg-[var(--overlay-bg)] text-[var(--text-secondary)] shadow-[0_12px_28px_rgba(10,11,13,0.14)] backdrop-blur-md transition-colors hover:text-[var(--text-primary)]"
           title="通知中心"
         >
           {isOpen ? <X size={16} /> : <BellRing size={16} />}
@@ -212,7 +213,7 @@ export default function MacNotifier() {
 
       {isOpen && (
         <div className="mt-2 space-y-2">
-          <div className="pointer-events-auto rounded-2xl border border-[var(--glass-border)] bg-[rgba(255,255,255,0.9)] backdrop-blur-md shadow-[0_16px_36px_rgba(10,11,13,0.16)] p-3">
+          <div className="pointer-events-auto rounded-2xl border border-[var(--glass-border)] bg-[var(--overlay-bg)] backdrop-blur-md shadow-[0_16px_36px_rgba(10,11,13,0.16)] p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <BellRing size={14} className="text-[var(--accent-cyan)]" />
@@ -236,7 +237,7 @@ export default function MacNotifier() {
               {items.length > 0 && (
                 <button
                   onClick={clearAll}
-                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.5)] transition-colors"
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
                   title="Clear all"
                 >
                   <Trash2 size={12} />
@@ -249,7 +250,7 @@ export default function MacNotifier() {
           {items.map(item => (
             <div
               key={item.id}
-              className="pointer-events-auto rounded-2xl border border-[var(--glass-border)] bg-[rgba(255,255,255,0.9)] backdrop-blur-md shadow-[0_16px_36px_rgba(10,11,13,0.16)] p-3"
+              className="pointer-events-auto rounded-2xl border border-[var(--glass-border)] bg-[var(--overlay-bg)] backdrop-blur-md shadow-[0_16px_36px_rgba(10,11,13,0.16)] p-3"
             >
               <div className="flex items-start gap-2.5">
                 <div className="mt-0.5 shrink-0">
@@ -265,7 +266,7 @@ export default function MacNotifier() {
                 </div>
                 <button
                   onClick={() => removeItemWithTimer(item.id)}
-                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[rgba(255,255,255,0.5)] transition-colors"
+                  className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
                 >
                   <X size={12} />
                 </button>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   RefreshCw, Target, ChevronDown, ChevronUp, Briefcase, Eye,
 } from 'lucide-react';
@@ -210,14 +210,14 @@ function WatchlistRow({ item }) {
           {item.logic && (
             <div className="rounded-lg px-3 py-2 mt-1"
               style={{ background: 'rgba(59,130,246,0.06)', borderLeft: '2px solid rgba(59,130,246,0.35)' }}>
-              <span className="text-[10px] font-semibold text-blue-700 uppercase tracking-wide">操作邏輯</span>
+              <span className="text-[10px] font-semibold text-[var(--accent-cyan-text)] uppercase tracking-wide">操作邏輯</span>
               <div className="text-[var(--text-primary)] mt-0.5 leading-relaxed whitespace-pre-wrap text-xs">{item.logic}</div>
             </div>
           )}
           {item.risk && (
             <div className="rounded-lg px-3 py-2"
               style={{ background: 'rgba(220,38,38,0.05)', borderLeft: '2px solid rgba(220,38,38,0.35)' }}>
-              <span className="text-[10px] font-semibold text-red-700 uppercase tracking-wide">核心風險</span>
+              <span className="text-[10px] font-semibold text-[var(--accent-danger-text)] uppercase tracking-wide">核心風險</span>
               <div className="text-[var(--text-primary)] mt-0.5 leading-relaxed whitespace-pre-wrap text-xs">{item.risk}</div>
             </div>
           )}

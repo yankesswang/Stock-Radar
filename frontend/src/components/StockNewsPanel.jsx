@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Newspaper, ExternalLink, RefreshCw } from 'lucide-react';
 
 /** Relative "x hours/days ago" from an ISO timestamp */

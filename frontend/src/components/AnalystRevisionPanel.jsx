@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
     LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip,
     ResponsiveContainer, CartesianGrid, ReferenceLine, Legend,

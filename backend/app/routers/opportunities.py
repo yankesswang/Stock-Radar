@@ -8,6 +8,7 @@
 """
 import json
 import re
+from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -25,7 +26,67 @@ VALID_SETUPS = {
     "momentum_breakout",
     "mimi_entry",
     "breakdown_short",
+    "rs_leader",
 }
+
+
+# ── 強弱榜 / 機會追蹤表 ────────────────────────────────────────────────────────
+
+@router.get("/strength")
+def strength_board(refresh: bool = Query(False, description="強制重算，不用今天掃描的結果")):
+    """產業（自訂主題桶 + SPDR 板塊）與個股的相對強弱，1D/1W/1M/3M 一起給。
+
+    成本幾乎全在「跟 Yahoo 要 270 檔各一年的日線」（算榜本身是 0 秒）。而每天 05:23
+    的掃描已經抓過、也算過同一份榜並存進當天的 journal —— 所以先讀 journal，當天有就
+    直接回（毫秒級）。沒有（還沒跑、或指定 refresh）才現算。
+    """
+    from src.analysis.strength import build_sector_strength
+
+    if not refresh:
+        latest = _load_journal(_list_dates()[0]) if _list_dates() else None
+        board = (latest or {}).get("strength")
+        if board and latest.get("date") == date.today().isoformat():
+            if not board.get("sectors"):
+                board["sectors"] = build_sector_strength()   # 板塊那張自己有 30 分快取
+            return {
+                "source": "journal",
+                "generated_at": latest.get("generated_at"),
+                "universe_size": latest.get("universe_size"),
+                **board,
+            }
+
+    # 現算走預篩（它的 10 分鐘快取也會被後續請求共用）
+    from src.analysis.opportunity_scanner import prescreen as _prescreen
+
+    result = _prescreen(limit=1, use_cache=not refresh)
+    board = result.get("strength") or {}
+    if board and not board.get("sectors"):
+        board["sectors"] = build_sector_strength()
+    return {
+        "source": "live",
+        "generated_at": result.get("generated_at"),
+        "universe_size": result.get("universe_size"),
+        "evaluated": result.get("evaluated"),
+        **board,
+    }
+
+
+@router.get("/tracker")
+def opportunity_tracker():
+    """跨日累積的機會追蹤表：每檔何時第一次入圍、入圍幾次、至今表現、現在什麼狀態。"""
+    from src.analysis.opportunity_tracker import build_view, tracked_tickers
+
+    tickers = tracked_tickers()
+    prices: dict[str, float | None] = {}
+    if tickers:
+        try:
+            from . import stocks as stocks_router
+
+            quotes = (stocks_router.get_stock_prices(tickers=",".join(tickers)) or {}).get("prices") or {}
+            prices = {t: (q or {}).get("price") for t, q in quotes.items()}
+        except Exception:
+            prices = {}          # 報價掛了就只顯示計畫，不讓整張表消失
+    return build_view(prices)
 
 
 # ── Stage-1 量化預篩 ──────────────────────────────────────────────────────────

@@ -12,3 +12,4 @@ lxml
 gspread
 google-auth
 anthropic>=0.40.0
+alembic>=1.14.0

@@ -36,6 +36,8 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT.parent / "scripts" / "lib"))
+import claude_guard as _guard  # noqa: E402  全系統共用的 claude 額度守門員
 
 import requests
 import yfinance as yf
@@ -43,6 +45,7 @@ import yfinance as yf
 from backend.app.config import settings
 from backend.app.database import SessionLocal
 from backend.app.models import PortfolioSnapshot
+from scripts.zh_terms import zh_action  # noqa: E402  （計分卡動作欄印中文）
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 OBSIDIAN_DIR = Path("/Users/yankesswang/Documents/arthurwang_DB/投資/Stock Digest")
@@ -113,10 +116,17 @@ def _fetch_one_quote(sym: str) -> tuple[str, dict | None]:
         prev  = float(closes.iloc[-2])
         chg   = price - prev
         chg_pct = chg / prev * 100
+        # as_of＝最後一根日 K 的日期。報告時效判定（scripts/report_meta.py）用它認定
+        # 「這份報告涵蓋哪個美股交易日」——台北日期與美股交易日天然差一天，用猜的一定錯位。
+        try:
+            as_of = closes.index[-1].date().isoformat()
+        except Exception:
+            as_of = None
         return sym, {
             "price":      round(price, 2),
             "change":     round(chg, 2),
             "change_pct": round(chg_pct, 2),
+            "as_of":      as_of,
         }
     except Exception:
         return sym, None
@@ -153,13 +163,44 @@ def fetch_risk_flags(portfolio_names: list[str], db) -> dict[str, list]:
     return flags
 
 
-def parse_mimi_doc() -> dict[str, str]:
-    """Return {TICKER: full_section_text} for all entries in the Mimi doc."""
-    doc_path = Path(settings.MIMI_DOC_PATH).expanduser()
-    if not doc_path.exists():
-        print(f"[mimi] Doc not found: {doc_path}")
+def _parse_mimi_from_db() -> dict[str, str]:
+    """TCC fallback：launchd 服務讀不到 ~/Documents 時，改用 /api/mimi/sync 同步進 DB 的
+    mimi_watchlist.section_raw（與讀檔結果同格式）。讀 DB 失敗一律回空 dict，不 raise。"""
+    try:
+        from backend.app.database import SessionLocal
+        from backend.app.models import MimiWatchlist
+        db = SessionLocal()
+        try:
+            rows = db.query(MimiWatchlist).all()
+            sections: dict[str, str] = {}
+            for row in rows:
+                ticker = str(getattr(row, "ticker", "") or "").strip().upper()
+                section = str(getattr(row, "section_raw", "") or "").strip()
+                if ticker and section:
+                    sections[ticker] = section
+            return sections
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[mimi] DB fallback 也失敗（回空表）：{e}")
         return {}
-    text = doc_path.read_text(encoding="utf-8")
+
+
+def parse_mimi_doc() -> dict[str, str]:
+    """Return {TICKER: full_section_text} for all entries in the Mimi doc.
+
+    launchd 下讀 ~/Documents 會被 macOS TCC 擋（OSError EDEADLK）——這裡 read_text
+    失敗絕不可讓整條盤後復盤管線掛掉，改 fallback 到 DB 同步副本。
+    """
+    doc_path = Path(settings.MIMI_DOC_PATH).expanduser()
+    try:
+        if not doc_path.exists():
+            print(f"[mimi] Doc not found: {doc_path}，改用 DB 同步副本")
+            return _parse_mimi_from_db()
+        text = doc_path.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"[mimi] 讀取 vault 失敗（TCC？{e}），改用 DB 同步副本")
+        return _parse_mimi_from_db()
     sections: dict[str, str] = {}
     for part in text.split("\n#### ")[1:]:
         m = re.match(r'^([A-Z0-9][A-Z0-9\.\-]{0,9})', part.split("\n")[0])
@@ -847,21 +888,17 @@ def build_prompt(
 # ── Claude runner ─────────────────────────────────────────────────────────────
 
 def run_claude(prompt: str) -> str:
-    """Run `claude -p` with the prompt, return response text."""
+    """Run `claude -p` with the prompt, return response text.
+
+    走 claude_guard：每次呼叫順手把額度 resetsAt 收進共用 state，撞到上限時
+    回傳帶 reset 時間的訊息（並讓全系統的 gate 知道要等到什麼時候）。
+    """
     print(f"[claude] Running claude -p (prompt {len(prompt)} chars)...")
     try:
-        result = subprocess.run(
-            ["claude", "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=600,
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode != 0:
-            stderr = result.stderr[:500]
-            print(f"[claude] Non-zero exit: {stderr}")
-            # Still return stdout in case there's partial output
-        return (result.stdout or "").strip() or f"Claude 執行失敗（exit {result.returncode}）：{result.stderr[:200]}"
+        return _guard.run(prompt, cwd=str(PROJECT_ROOT), timeout=600).text
+    except _guard.QuotaExceeded as exc:
+        print(f"[claude] {exc}")
+        return f"Claude 額度用罄：{exc}。已記錄 reset 時間，稍後自動重試。"
     except subprocess.TimeoutExpired:
         return "Claude 分析超時（>10分鐘），請縮短 prompt 或稍後重試"
     except FileNotFoundError:
@@ -995,6 +1032,20 @@ def _md_to_html(text: str) -> str:
     return "\n".join(out)
 
 
+def _quiet_defer(url, **kw):
+    """靜音時段（預設 23:00–07:00）把推播排進佇列，07:00 再送；見 Arthur_App/scripts/lib/quiet_hours.py。"""
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _lib = str(_P.home() / "Projects" / "Arthur_App" / "scripts" / "lib")
+        if _lib not in _sys.path:
+            _sys.path.append(_lib)
+        from quiet_hours import maybe_defer
+        return maybe_defer(url, **kw)
+    except Exception:
+        return False
+
+
 def send_telegram(text: str) -> None:
     token, chat_id = _get_telegram_config()
     if not token or not chat_id:
@@ -1030,6 +1081,11 @@ def send_telegram(text: str) -> None:
         msg = chunk
         if total > 1:
             msg = f"{chunk}\n\n<i>── {i+1}/{total} ──</i>"
+        if _quiet_defer(f"https://api.telegram.org/bot{token}/sendMessage",
+                        data={"chat_id": chat_id, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": "true"},
+                        label="daily_analysis"):
+            print(f"[telegram] Chunk {i+1}/{total} queued until quiet hours end")
+            continue
         try:
             r = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -1092,6 +1148,11 @@ def send_line(text: str, *, important_report: bool = False) -> None:
         msg = chunk
         if len(chunks) > 1:
             msg = f"{chunk}\n\n-- {i + 1}/{len(chunks)} --"
+        if _quiet_defer("https://api.line.me/v2/bot/message/broadcast",
+                        json={"messages": [{"type": "text", "text": msg[:5000]}]},
+                        headers={"Authorization": f"Bearer {token}"}, label="daily_analysis:line"):
+            print(f"[line] Chunk {i + 1}/{len(chunks)} queued until quiet hours end")
+            continue
         try:
             r = requests.post(
                 "https://api.line.me/v2/bot/message/broadcast",
@@ -1397,14 +1458,14 @@ def score_yesterday(analysis_date: date) -> str:
     lines.append("## 📋 昨日決策計分卡")
     lines.append(f"> 對照上一份決策日誌（{journal_date.isoformat()} → {analysis_date.isoformat()}）")
     lines.append("")
-    lines.append("| Ticker | 動作 | 觸發條件 | 是否觸發 | 期間漲跌% | 原論點 |")
+    lines.append("| 代號 | 動作 | 觸發條件 | 是否觸發 | 期間漲跌% | 原論點 |")
     lines.append("|--------|------|---------|---------|----------|--------|")
     for r in rows:
         chg = f"{r['chg_pct']:+.2f}%" if r["chg_pct"] is not None else "—"
         st  = status_label.get(r["status"], r["status"])
         trig = str(r["trigger"]).replace("|", "／")
         thes = str(r["thesis"]).replace("|", "／")
-        lines.append(f"| {r['ticker']} | {r['action']} | {trig} | {st} | {chg} | {thes} |")
+        lines.append(f"| {r['ticker']} | {zh_action(r['action'])} | {trig} | {st} | {chg} | {thes} |")
     scorecard_md = "\n".join(lines)
 
     # 回寫評分結果進當天 journal（若當天 journal 已存在則更新；否則之後 write_journal 時會覆蓋）

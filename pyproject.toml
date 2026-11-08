@@ -1,0 +1,52 @@
+[project]
+name = "stock-radar"
+version = "1.0.0"
+description = "Local-first stock valuation, signals, and portfolio platform"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "alembic>=1.14.0",
+  "anthropic>=0.40.0",
+  "beautifulsoup4>=4.12.0",
+  "fastapi>=0.109.0",
+  "google-auth>=2.0.0",
+  "gspread>=6.0.0",
+  "json5>=0.9.0",
+  "lxml>=5.0.0",
+  "numpy>=1.26.0",
+  "pandas>=2.0.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.0.0",
+  "requests>=2.31.0",
+  "selenium>=4.0.0",
+  "sqlalchemy>=2.0.0",
+  "tqdm>=4.0.0",
+  "uvicorn[standard]>=0.27.0",
+  "webdriver-manager>=4.0.0",
+  "xlsxwriter>=3.0.0",
+  "yfinance>=0.2.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+  "ruff>=0.9.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [".venv", "data", "frontend"]
+
+[tool.ruff.lint]
+# Start CI with correctness checks that are safe for this legacy codebase.
+# Broader style/modernisation rules can be enabled directory-by-directory.
+select = ["E9", "F63", "F7", "F82"]

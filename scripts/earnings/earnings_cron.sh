@@ -40,8 +40,17 @@ typeset -a QUEUE
 while read -r TICKER FILED; do
   [[ -z "$TICKER" ]] && continue
   if [[ -e "$LOCKDIR/${TICKER}_${FILED}" ]]; then
-    echo "[$(date '+%F %T')] $TICKER $FILED already attempted, skip" >> "$LOG"
-    continue
+    # 標記存在但 pending 仍列出它 = 上次嘗試沒產出筆記。正常失敗會在下面清標記，
+    # 但整支腳本被殺（機器睡眠、launchd 逾時）時清不到：NVDA 2026-08-26 就這樣被
+    # 一個 285 byte 的殘骸 log 擋了 12 天。超過 2 天的舊標記視為失敗，放行重試；
+    # pending 的 6 天窗口保證不會無限重跑。
+    if [[ -n "$(find "$LOCKDIR" -maxdepth 1 -name "${TICKER}_${FILED}" -mtime +2 2>/dev/null)" ]]; then
+      rm -f "$LOCKDIR/${TICKER}_${FILED}"
+      echo "[$(date '+%F %T')] $TICKER $FILED stale marker (>2d, no note), retrying" >> "$LOG"
+    else
+      echo "[$(date '+%F %T')] $TICKER $FILED already attempted, skip" >> "$LOG"
+      continue
+    fi
   fi
   QUEUE+=("$TICKER $FILED")
 done < <(/usr/bin/env python3 "$ER/earnings_calendar.py" pending \
@@ -50,8 +59,10 @@ done < <(/usr/bin/env python3 "$ER/earnings_calendar.py" pending \
 HEADLESS_NOTE="headless 模式注意：本程序由 launchd 執行，寫不進 ~/Documents（TCC）。
 筆記與附件請寫到 $STAGE/vault-staging/投資/財報筆記/{產業}/{TICKER}/{年度}_{Q}/
 （層狀結構同 vault，見 SKILL Step 4）。每份筆記完成後照 SKILL Step 6 回寫 registry
-（note_path 填 vault 相對路徑）。全部完成後執行 $ER/sync_staged.sh，
-失敗（EPERM）屬預期，留在 staging 即可。"
+（note_path 填 vault 相對路徑）。
+排版：寫完必跑 python3 $ER/lint_note_format.py <筆記路徑>，出現 FAIL 就照它列的行號
+重排（30 秒結論一點一行、長段落改條列、第一第二拆開），PASS 才算完成；不准跳過。
+全部完成後執行 $ER/sync_staged.sh，失敗（EPERM）屬預期，留在 staging 即可。"
 
 i=1
 while (( i <= ${#QUEUE[@]} )); do
@@ -76,7 +87,8 @@ while (( i <= ${#QUEUE[@]} )); do
     done
     PROMPT+="
 接續處理時：SKILL 流程與格式鐵律已在 context，不必重讀；材料（新聞稿/逐字稿/簡報/
-stock_context）各自重新抓；動筆前把格式鐵律八條快速自檢一遍再寫。"
+stock_context）各自重新抓；動筆前把格式鐵律與 Step 5 排版規則快速自檢一遍再寫，
+寫完同樣要過 lint_note_format.py。"
   fi
   PROMPT+="
 $HEADLESS_NOTE"
@@ -112,8 +124,20 @@ $HEADLESS_NOTE"
       rm -f "$LOCKDIR/${entry%% *}_${entry##* }"
     done
     echo "[$(date '+%F %T')] ${NAMES} failed; markers cleared" >> "$LOG"
-    grep -q "hit your limit" "$CHUNK_LOG" 2>/dev/null && {
-      echo "[$(date '+%F %T')] usage limit, aborting batch" >> "$LOG"; break; }
+    # Usage limit aborts the batch — but instead of just dropping it, register a
+    # rerun for after the quota resets. claude_guard reads the reset time from the
+    # `resets ...` line claude prints; claude-retry (every 10 min) picks it up.
+    if grep -qiE "hit your .{0,24}limit" "$CHUNK_LOG" 2>/dev/null; then
+      echo "[$(date '+%F %T')] usage limit, aborting batch" >> "$LOG"
+      GUARD="$HOME/Projects/Arthur_App/scripts/lib/claude_guard.py"
+      if [[ -f "$GUARD" && -z "${CLAUDE_GUARD_RETRY:-}" ]]; then
+        python3 "$GUARD" note-limit --text-file "$CHUNK_LOG" >> "$LOG" 2>&1 || true
+        python3 "$GUARD" defer --job earnings-notes --cwd "$HOME" \
+          -- /bin/zsh -lc "exec \"$ER/earnings_cron.sh\"" >> "$LOG" 2>&1 || true
+        echo "[$(date '+%F %T')] rerun queued for after quota reset" >> "$LOG"
+      fi
+      break
+    fi
   fi
 done
 

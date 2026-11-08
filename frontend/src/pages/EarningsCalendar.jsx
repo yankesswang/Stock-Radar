@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   ChevronLeft, ChevronRight, RefreshCw, CalendarDays,
   TrendingUp, DollarSign, Clock,
 } from 'lucide-react';
+import ClusterTabs from '../components/ClusterTabs';
+import { EARNINGS_TABS } from '../components/clusterTabsDef';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = [
@@ -97,6 +99,7 @@ export default function EarningsCalendar() {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const limit = new Date(today); limit.setDate(limit.getDate() + 14);
     return events
+      .filter(e => e.status !== 'reported')
       .filter(e => { const d = new Date(e.date + 'T00:00:00'); return d >= today && d <= limit; })
       .slice(0, 20);
   }, [events]);
@@ -130,6 +133,8 @@ export default function EarningsCalendar() {
 
   return (
     <div className="container py-10 space-y-6 animate-fade-in">
+      {/* 財報三個切面（行事曆／結論／論點）—— 導覽列只留一個「財報」入口 */}
+      <ClusterTabs items={EARNINGS_TABS} active="/earnings" />
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -343,11 +348,23 @@ function EventCard({ ev }) {
             {ev.company_name}
           </p>
         </div>
-        {ev.date_range?.length > 1 && (
-          <span className="text-[9px] text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded shrink-0">
-            window
-          </span>
-        )}
+        <div className="flex items-center gap-1 shrink-0">
+          {ev.status === 'reported' && (
+            <span className="text-[9px] text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">
+              reported
+            </span>
+          )}
+          {(ev.time_of_day === 'BMO' || ev.time_of_day === 'AMC') && (
+            <span className="text-[9px] text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">
+              {ev.time_of_day === 'BMO' ? 'pre-market' : 'after-close'}
+            </span>
+          )}
+          {ev.date_source === 'calendar_estimate' && (
+            <span className="text-[9px] text-[var(--text-muted)] bg-[rgba(255,255,255,0.04)] px-1.5 py-0.5 rounded">
+              unconfirmed
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2">

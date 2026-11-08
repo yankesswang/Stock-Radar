@@ -1,12 +1,20 @@
+import sys as _sys
+import time as _time
+
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import yfinance as yf
 
+from ..config import settings
 from ..database import get_db
 from ..models import Stock, Industry, Metric, Forecast, Valuation, PeMedian
 from ..schemas import StockBrief, StockDetail, MetricOut, ForecastOut, ValuationOut
+
+if str(settings.PROJECT_ROOT) not in _sys.path:
+    _sys.path.insert(0, str(settings.PROJECT_ROOT))
+from src.quotes import get_quotes as _get_quotes  # noqa: E402
 
 router = APIRouter()
 
@@ -85,6 +93,26 @@ def list_stocks(
             "total": total,
             "total_pages": (total + per_page - 1) // per_page,
         },
+    }
+
+
+# NOTE: must stay above `/{ticker}` — FastAPI matches routes in declaration
+# order and the path parameter would otherwise swallow "prices".
+@router.get("/prices")
+def get_stock_prices(tickers: str = Query(..., description="Comma-separated tickers")):
+    """Batch daily quotes for many tickers in one yfinance download.
+
+    The per-ticker `/{ticker}/price` endpoint calls `.info`, which costs one HTTP
+    round-trip each — unusable for a whole watchlist. `src.quotes` pulls every
+    symbol in a single request and caches for 2 minutes. Taiwan (.TW) prices are
+    converted TWD→USD, matching `/{ticker}/price`.
+    """
+    requested = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not requested:
+        return {"prices": {}}
+    return {
+        "prices": _get_quotes(requested),
+        "fetched_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
     }
 
 
@@ -189,5 +217,23 @@ def get_stock_price(ticker: str):
         }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching price: {str(e)}")
+    except Exception:
+        # `.info` 走 Yahoo 的 cookie/crumb，很容易被 YFRateLimitError 擋掉。這支是
+        # 個股標頭唯一的價格來源，擋掉就整個標頭沒有價 —— 退回批次報價（它自己
+        # 還會再退到 chart 端點）。拿到的是最新收盤而不是盤中即時，所以
+        # market_state 誠實標成 UNKNOWN，前端據此顯示「現價」而不是「即時價」。
+        quote = _get_quotes([ticker]).get(ticker.upper())
+        if not quote:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Yahoo 暫時取不到 {ticker.upper()} 的報價（限流或已下市）",
+            )
+        return {
+            "ticker": quote["ticker"],
+            "price": quote["price"],
+            "currency": quote["currency"],
+            "market_state": "UNKNOWN",
+            "previous_close": quote["previous_close"],
+            "change": quote["change"],
+            "change_percent": quote["change_percent"],
+        }

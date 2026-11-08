@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'wouter';
-import axios from 'axios';
+import { Link, useLocation, useSearch } from 'wouter';
+import axios from '../lib/apiClient';
 import {
   Radar,
   Activity,
@@ -9,8 +9,6 @@ import {
   Radio,
   ChevronLeft,
   ChevronRight,
-  ShieldAlert,
-  ShieldCheck,
   Scale,
   Grid3x3,
   Flame,
@@ -25,6 +23,7 @@ import {
   FileText,
   ExternalLink,
   Newspaper,
+  TrendingUp,
   X,
 } from 'lucide-react';
 import Markdown from '../components/Markdown';
@@ -41,27 +40,35 @@ import {
   ResponsiveContainer,
   Treemap,
 } from 'recharts';
-
-// ── Palette (Palantir ops-center, self-contained dark) ────────────────────────
-const C = {
-  bg: '#020617',
-  panel: '#0F172A',
-  border: '#1E293B',
-  text: '#F8FAFC',
-  muted: '#64748B',
-  long: '#26A69A',
-  short: '#EF5350',
-  amber: '#F59E0B',
-  accent: '#22D3EE',
-  mimi: '#A78BFA',
-  news: '#22D3EE', // finance-digest source chip — cyan, distinct from Mimi's violet
-};
-
-const REGIME = {
-  risk_on: { label: 'RISK-ON', color: C.long, Icon: ShieldCheck },
-  risk_off: { label: 'RISK-OFF', color: C.short, Icon: ShieldAlert },
-  mixed: { label: 'MIXED', color: C.amber, Icon: Scale },
-};
+import ClusterTabs from '../components/ClusterTabs';
+import { OPS_TABS } from '../components/clusterTabsDef';
+import { NewsWirePanel, DigestPanel } from '../components/DailyWire';
+import { useDailyReports } from '../components/warRoomDaily';
+import { alpha } from '../components/opsTheme';
+import {
+  ACTION_FILTERS,
+  C,
+  MARKET_SCOPE,
+  normAction,
+  normPortfolio,
+  OPP_ACTION_FILTERS,
+  OTHER,
+  PORTFOLIO_LS_KEY,
+  REGIME,
+  SETUP_META,
+  SETUP_ORDER,
+  TRACKER_SCOPE,
+  actionRank,
+  actionStyle,
+  fmt,
+  heatColor,
+  oppActionRank,
+  oppActionStyle,
+  pctColor,
+  rrColor,
+  setupMeta,
+  signPct,
+} from '../components/warRoomDomain';
 
 // ── Small primitives ──────────────────────────────────────────────────────────
 
@@ -73,7 +80,7 @@ function Panel({ label, status, children, className = '' }) {
       style={{
         background: C.panel,
         borderColor: C.border,
-        boxShadow: 'inset 0 0 24px rgba(34,211,238,0.03)',
+        boxShadow: `inset 0 0 24px ${alpha(C.accent, 0.03)}`,
       }}
     >
       {/* corner L-marks */}
@@ -122,69 +129,6 @@ function Dot({ color, pulse = false }) {
   );
 }
 
-// Missing/empty portfolio → this bucket, so nothing silently disappears.
-const OTHER = 'OTHER';
-const normPortfolio = (p) => (p && String(p).trim() ? String(p) : OTHER);
-const PORTFOLIO_LS_KEY = 'warroom.portfolio';
-
-// Sentinel scope value for the MARKET RADAR view (not a real portfolio).
-const MARKET_SCOPE = '__MARKET__';
-
-// ── Opportunity setup config (colour + label per setup bucket) ────────────────
-const SETUP_META = {
-  oversold_bounce:      { label: 'OVERSOLD BOUNCE',      short: 'REBOUND',  color: C.accent },
-  undervalued_catalyst: { label: 'UNDERVALUED CATALYST', short: 'VALUE',    color: C.long },
-  momentum_breakout:    { label: 'MOMENTUM BREAKOUT',    short: 'MOMENTUM', color: C.amber },
-  mimi_entry:           { label: 'MIMI ENTRY',           short: 'MIMI',     color: '#A78BFA' },
-  breakdown_short:      { label: 'BREAKDOWN SHORT',      short: 'SHORT',    color: C.short },
-};
-const SETUP_ORDER = ['oversold_bounce', 'undervalued_catalyst', 'momentum_breakout', 'mimi_entry', 'breakdown_short'];
-const setupMeta = (s) => SETUP_META[s] || { label: (s || 'SIGNAL').toUpperCase(), short: 'SIGNAL', color: C.muted };
-
-// action badge for opportunity cards (distinct from holdings' actionStyle).
-function oppActionStyle(action) {
-  switch (action) {
-    case 'buy':        return { color: C.long,  label: 'BUY' };
-    case 'accumulate': return { color: C.long,  label: 'ACCUMULATE' };
-    case 'watch':      return { color: C.amber, label: 'WATCH' };
-    case 'sell_short': return { color: C.short, label: 'SHORT' };
-    case 'avoid':      return { color: C.muted, label: 'AVOID' };
-    default:           return { color: C.muted, label: (action || 'WATCH').toUpperCase() };
-  }
-}
-// action-priority: things you can act on today float up.
-const OPP_ACTION_ORDER = { buy: 0, accumulate: 1, sell_short: 2, watch: 3, avoid: 9 };
-const oppActionRank = (a) => (a in OPP_ACTION_ORDER ? OPP_ACTION_ORDER[a] : 5);
-const OPP_ACTION_FILTERS = ['buy', 'accumulate', 'watch', 'avoid', 'sell_short'];
-// RR colour bands.
-const rrColor = (rr) => (rr == null ? C.muted : rr >= 3 ? C.long : rr >= 2 ? C.amber : C.muted);
-
-const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
-const pctColor = (v) => (v === null || v === undefined ? C.muted : v > 0 ? C.long : v < 0 ? C.short : C.muted);
-const signPct = (v) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`);
-
-// Hex → {r,g,b} and back, for treemap heat interpolation.
-function hexRgb(hex) {
-  const h = hex.replace('#', '');
-  return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
-}
-function rgbHex({ r, g, b }) {
-  const c = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-  return `#${c(r)}${c(g)}${c(b)}`;
-}
-function mix(a, b, t) {
-  return rgbHex({ r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t });
-}
-const _NEUTRAL = hexRgb(C.border);
-const _LONG = hexRgb(C.long);
-const _SHORT = hexRgb(C.short);
-// day % → heat colour, saturating at ±3%.
-function heatColor(pct) {
-  if (pct === null || pct === undefined || Number.isNaN(pct)) return C.border;
-  const t = Math.min(Math.abs(pct) / 3, 1);
-  return mix(_NEUTRAL, pct >= 0 ? _LONG : _SHORT, t);
-}
-
 // Mini SVG sparkline — closes[] → normalised polyline, coloured by net move.
 function Sparkline({ data, w = 96, h = 28, color }) {
   const pts = Array.isArray(data) ? data.filter((v) => typeof v === 'number' && !Number.isNaN(v)) : [];
@@ -220,31 +164,6 @@ function Sparkline({ data, w = 96, h = 28, color }) {
   );
 }
 
-// ── Action badge styling ──────────────────────────────────────────────────────
-function actionStyle(action) {
-  switch (action) {
-    case 'add':
-      return { color: C.long, label: 'ADD' };
-    case 'trim':
-    case 'exit':
-    case 'stop_loss':
-      return { color: C.short, label: action.replace('_', ' ').toUpperCase() };
-    case 'open':
-      return { color: C.accent, label: 'OPEN' };
-    default:
-      return { color: C.muted, label: (action || 'HOLD').toUpperCase() };
-  }
-}
-
-// ── Directive filtering ─────────────────────────────────────────────────────
-// Action-priority for the default sort: things you actually act on today first,
-// hold last. Lower number = higher up.
-const ACTION_ORDER = { open: 0, add: 1, trim: 2, exit: 3, stop_loss: 4, hold: 9 };
-const actionRank = (a) => (a in ACTION_ORDER ? ACTION_ORDER[a] : ACTION_ORDER.hold);
-// Fixed chip order for the ACTION filter row.
-const ACTION_FILTERS = ['add', 'open', 'trim', 'exit', 'stop_loss', 'hold'];
-const normAction = (a) => (a || 'hold');
-
 // Chip button — shared look for all filter toggles.
 function Chip({ active, color, children, onClick }) {
   const c = color || C.accent;
@@ -256,8 +175,8 @@ function Chip({ active, color, children, onClick }) {
       style={{
         borderColor: active ? c : C.border,
         color: active ? c : C.muted,
-        boxShadow: active ? `0 0 10px ${c}33` : 'none',
-        background: active ? `${c}12` : 'transparent',
+        boxShadow: active ? `0 0 10px ${alpha(c, 0.2)}` : 'none',
+        background: active ? `${alpha(c, 0.071)}` : 'transparent',
       }}
     >
       {children}
@@ -290,10 +209,10 @@ function DirectiveFilters({
       {/* ACTION row */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
-          ACTION
+          動作
         </span>
         <Chip active={actionFilter === 'all'} onClick={() => setActionFilter('all')}>
-          ALL {decisions.length}
+          全部 {decisions.length}
         </Chip>
         {ACTION_FILTERS.map((act) => {
           const n = counts[act] || 0;
@@ -316,7 +235,7 @@ function DirectiveFilters({
             color={C.short}
             onClick={() => setActionFilter(actionFilter === 'atrisk' ? 'all' : 'atrisk')}
           >
-            AT RISK {atRiskCount}
+            風險部位 {atRiskCount}
           </Chip>
         )}
       </div>
@@ -325,26 +244,26 @@ function DirectiveFilters({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex items-center gap-1.5">
           <span className="font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
-            SORT
+            排序
           </span>
           <Chip active={sortMode === 'conf'} onClick={() => setSortMode('conf')}>
-            CONF ↓
+            信心 ↓
           </Chip>
           <Chip active={sortMode === 'ticker'} onClick={() => setSortMode('ticker')}>
-            TICKER
+            代號
           </Chip>
         </div>
 
         {/* ticker quick-search */}
         <div
           className="wr-filter-box ml-auto flex items-center gap-1.5 border px-2 py-1"
-          style={{ borderColor: C.border, background: '#0B1220' }}
+          style={{ borderColor: C.border, background: C.deep }}
         >
           <Search size={11} style={{ color: C.muted }} />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="FILTER TICKER…"
+            placeholder="篩選代號…"
             spellCheck={false}
             className="wr-filter-input w-32 bg-transparent font-mono text-[13px] uppercase tracking-wider outline-none"
             style={{ color: C.text }}
@@ -399,6 +318,25 @@ export default function WarRoom() {
   // that list is non-empty — no string-matching, no empty chips.
   const [newsByTicker, setNewsByTicker] = useState(() => ({}));
   const [newsOpen, setNewsOpen] = useState(null); // ticker whose digest list is open
+
+  // 訊號雷達（/api/signals/watchlist）一次抓、兩處用：持倉矩陣的排序與型態徽章、SIGNAL FEED。
+  // null = 載入中、'failed' = 離線；後端已依 trend_strength 由強到弱排好。
+  const [signalRows, setSignalRows] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    axios
+      .get('/api/signals/watchlist')
+      .then((res) => alive && setSignalRows(Array.isArray(res.data) ? res.data : []))
+      .catch(() => alive && setSignalRows('failed'));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const signalByTicker = useMemo(() => {
+    const m = {};
+    if (Array.isArray(signalRows)) for (const r of signalRows) m[String(r.ticker).toUpperCase()] = r;
+    return m;
+  }, [signalRows]);
 
   useEffect(() => {
     let alive = true;
@@ -545,23 +483,51 @@ export default function WarRoom() {
     return arr;
   }, [holdings, allDecisions]);
 
+  // 機會追蹤分頁的兩份資料。強弱榜要跑完整個 universe（15-30s），所以切到這個
+  // 分頁才抓，而且抓過就不重抓 —— 別的分頁沒有理由為它等。
+  const [tracker, setTracker] = useState(null);
+  const [trackerLoading, setTrackerLoading] = useState(false);
+  const [strength, setStrength] = useState(null);
+  const [strengthLoading, setStrengthLoading] = useState(false);
+
+  // 只在第一次切進來時抓。用 ref 當旗標而不是把 loading 放進依賴陣列 —— 後者會讓
+  // setLoading 觸發 effect 重跑，cleanup 把還在飛的請求標成作廢，畫面就永遠卡在
+  // 「載入中」。
+  const trackerFetched = useRef(false);
+  useEffect(() => {
+    if (scope !== TRACKER_SCOPE || trackerFetched.current) return;
+    trackerFetched.current = true;
+    setTrackerLoading(true);
+    axios.get('/api/opportunities/tracker')
+      .then((r) => setTracker(r.data))
+      .catch(() => setTracker({ items: [], count: 0, error: true }))
+      .finally(() => setTrackerLoading(false));
+    setStrengthLoading(true);
+    axios.get('/api/opportunities/strength')
+      .then((r) => setStrength(r.data))
+      .catch(() => setStrength({ error: true }))
+      .finally(() => setStrengthLoading(false));
+  }, [scope]);
+
   // Resolve the active scope once portfolios are known: honour a valid stored
   // choice (MARKET_SCOPE is always valid), otherwise default to the first
   // portfolio.
   useEffect(() => {
     if (!portfolios.length) return;
-    if (scope === MARKET_SCOPE) return; // market scope is always valid
+    if (scope === MARKET_SCOPE || scope === TRACKER_SCOPE) return; // 偽 scope 一律有效
     if (!scope || !portfolios.includes(scope)) {
       setScope(portfolios[0]);
     }
   }, [portfolios, scope]);
 
   const isMarket = scope === MARKET_SCOPE;
+  const isTracker = scope === TRACKER_SCOPE;
+  const isPortfolioView = !isMarket && !isTracker;
   // Scope-active portfolio: never null once data loads (falls back to first).
   // For MARKET_SCOPE there is no portfolio scope — holdings/directives sections
   // are hidden entirely, so activeScope resolves to the first portfolio only so
   // downstream per-portfolio memos stay well-defined.
-  const activeScope = isMarket
+  const activeScope = isMarket || isTracker
     ? portfolios[0] || null
     : scope && portfolios.includes(scope)
       ? scope
@@ -775,6 +741,19 @@ export default function WarRoom() {
   const goPrev = () => dateIdx < dates.length - 1 && selectDate(dates[dateIdx + 1]); // older
   const goNext = () => dateIdx > 0 && selectDate(dates[dateIdx - 1]); // newer
 
+  // 日報層（原「每日報告」頁的市場新聞與市場個股）跟著本場日期走：
+  // 本場是最新一場就給最新一份，翻回歷史場次就給不晚於該日的最近一份。
+  const daily = useDailyReports({ activeDate, isLatestSession: dateIdx <= 0 });
+
+  // 舊每日報告的連結（?panel=news|digest）直接捲到對應面板
+  const search = useSearch();
+  useEffect(() => {
+    const panel = new URLSearchParams(search || '').get('panel');
+    if (!panel || loading) return;
+    const el = document.getElementById(`wr-${panel}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [search, loading]);
+
   const regime = REGIME[journal?.market_regime] || REGIME.mixed;
   const market = overview?.market;
   const sectors = overview?.sectors;
@@ -790,6 +769,9 @@ export default function WarRoom() {
       <TickerTape market={market} holdings={holdings_} loading={loading} />
 
       <div className="mx-auto max-w-[1440px] px-4 py-6 lg:px-8">
+        {/* 決策層的三個切面 —— 導覽列只留一個 War Room 入口，切面在這裡切 */}
+        <ClusterTabs items={OPS_TABS} active="/war-room" theme="ops" className="mb-4 w-fit" />
+
         <TopStatusBar
           date={activeDate}
           regime={regime}
@@ -799,7 +781,7 @@ export default function WarRoom() {
           lastUpdated={lastUpdated}
           portfolios={portfolios}
           portfolioStats={portfolioStats}
-          activeScope={isMarket ? MARKET_SCOPE : activeScope}
+          activeScope={isMarket ? MARKET_SCOPE : isTracker ? TRACKER_SCOPE : activeScope}
           onScope={setScopePersist}
           oppCount={oppLoading ? null : opportunities.length}
         />
@@ -809,7 +791,7 @@ export default function WarRoom() {
             className="mt-4 border p-3 font-mono text-[13px]"
             style={{ borderColor: C.short, color: C.short }}
           >
-            CONNECTION ERROR — {error}
+            連線錯誤 — {error}
           </div>
         )}
 
@@ -818,6 +800,7 @@ export default function WarRoom() {
           <MarketRadar
             summary={{
               universe_size: oppOverview?.journal?.universe_size ?? oppOverview?.prescreen?.universe_size,
+              universe_tiers: oppOverview?.journal?.universe_tiers ?? oppOverview?.prescreen?.universe_tiers,
               screened: oppOverview?.journal?.screened ?? oppOverview?.prescreen?.screened,
               generated_at: oppOverview?.journal?.generated_at ?? oppOverview?.prescreen?.generated_at,
               total: opportunities.length,
@@ -847,16 +830,24 @@ export default function WarRoom() {
           />
         )}
 
+        {/* ═══ 機會追蹤 view — 強弱榜 + 跨日候選清單 ═══ */}
+        {isTracker && (
+          <>
+            <StrengthBoard data={strength} loading={strengthLoading} />
+            <TrackerPanel data={tracker} loading={trackerLoading} onSelect={(t) => navigate(`/stock/${t}`)} />
+          </>
+        )}
+
         {/* Holdings matrix — core new block, most prominent slot */}
-        {!isMarket && (
+        {isPortfolioView && (
         <>
         <div className="mt-4">
           <Panel
-            label="HOLDINGS MATRIX"
+            label="持倉矩陣"
             status={
               <span className="flex items-center gap-2">
                 <span className="font-mono" style={{ color: C.muted, fontSize: 11 }}>
-                  {holdings_.length ? `${holdings_.length} POSITIONS` : ''}
+                  {holdings_.length ? `${holdings_.length} 檔持倉` : ''}
                 </span>
                 <HeaderIcon Icon={Grid3x3} />
               </span>
@@ -866,6 +857,8 @@ export default function WarRoom() {
               holdings={holdings_}
               sparklines={sparklines}
               extended={extendedQuotes}
+              signals={signalByTicker}
+              signalsReady={Array.isArray(signalRows)}
               loading={loading}
               onSelect={(t) => navigate(`/stock/${t}`)}
             />
@@ -874,7 +867,7 @@ export default function WarRoom() {
 
         {/* P&L treemap */}
         <div className="mt-4">
-          <Panel label="P&L TREEMAP // MARKET VALUE × DAY %" status={<HeaderIcon Icon={Flame} />}>
+          <Panel label="損益熱區圖 ／ 市值 × 當日漲跌%" status={<HeaderIcon Icon={Flame} />}>
             <PnlTreemap holdings={holdings_} loading={loading} />
           </Panel>
         </div>
@@ -883,14 +876,14 @@ export default function WarRoom() {
 
         <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
           {/* Active directives */}
-          {!isMarket && (
+          {isPortfolioView && (
           <div className="lg:col-span-8">
             <Panel
-              label="ACTIVE DIRECTIVES"
+              label="今日指令"
               status={
                 <span className="font-mono" style={{ color: C.muted, fontSize: 11 }}>
                   {decisions.length
-                    ? `SHOWING ${filteredDecisions.length}/${decisions.length}`
+                    ? `顯示 ${filteredDecisions.length}/${decisions.length}`
                     : ''}
                 </span>
               }
@@ -929,7 +922,7 @@ export default function WarRoom() {
                       className="py-12 text-center font-mono text-[13px] tracking-widest"
                       style={{ color: C.muted }}
                     >
-                      NO MATCH
+                      無符合條件
                     </div>
                   )}
                 </>
@@ -941,9 +934,9 @@ export default function WarRoom() {
           )}
 
           {/* Scorecard */}
-          {!isMarket && (
+          {isPortfolioView && (
           <div className="lg:col-span-4">
-            <Panel label="SCORECARD // PREV SESSION" className="h-full">
+            <Panel label="計分卡 ／ 上一場" className="h-full">
               {loading ? (
                 <div className="space-y-2">
                   {Array.from({ length: 5 }).map((_, i) => (
@@ -965,8 +958,8 @@ export default function WarRoom() {
           {/* Sector rotation */}
           <div className="lg:col-span-6">
             <Panel
-              label="SECTOR ROTATION"
-              status={<HeaderIcon Icon={Layers} />}
+              label="板塊輪動"
+              status={<PanelLink href="/sectors" label="相對強弱全表" icon={<Layers size={12} />} />}
             >
               {loading ? (
                 <div className="h-[320px]"><SkelBlock className="h-full" /></div>
@@ -978,9 +971,17 @@ export default function WarRoom() {
 
           {/* Signal feed */}
           <div className="lg:col-span-6">
-            <Panel label="SIGNAL FEED" status={<HeaderIcon Icon={Radio} />}>
-              <SignalFeed heldTickers={holdingByTicker} />
+            <Panel label="訊號流" status={<PanelLink href="/signals" label="全部訊號" icon={<Radio size={12} />} />}>
+              <SignalFeed rows={signalRows} heldTickers={holdingByTicker} />
             </Panel>
+          </div>
+
+          {/* 日報層：新聞線＋市場日報（原每日報告頁，2026-09-07 併進戰情室） */}
+          <div id="wr-news" className="scroll-mt-24 lg:col-span-12">
+            <NewsWirePanel news={daily.news} heldTickers={holdingByTicker} activeDate={activeDate} />
+          </div>
+          <div id="wr-digest" className="scroll-mt-24 lg:col-span-12">
+            <DigestPanel digest={daily.digest} activeDate={activeDate} />
           </div>
 
           {/* Bottom: date switcher */}
@@ -1026,12 +1027,12 @@ function MarketRadar({
   return (
     <div className="mt-4 space-y-4">
       {/* ── Summary bar ── */}
-      <Panel label="MARKET RADAR // OPPORTUNITY SCAN" status={<HeaderIcon Icon={Crosshair} />}>
+      <Panel label="市場雷達 ／ 機會掃描" status={<HeaderIcon Icon={Crosshair} />}>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
           <div className="flex items-center gap-2">
             <div
               className="flex h-9 w-9 items-center justify-center border"
-              style={{ borderColor: regime.color, color: regime.color, boxShadow: `0 0 14px ${regime.color}22` }}
+              style={{ borderColor: regime.color, color: regime.color, boxShadow: `0 0 14px ${alpha(regime.color, 0.133)}` }}
             >
               <RegIcon size={16} />
             </div>
@@ -1049,9 +1050,15 @@ function MarketRadar({
           </div>
 
           <div className="flex items-center gap-5 font-mono">
-            <RadarStat label="UNIVERSE" value={summary.universe_size} />
-            <RadarStat label="SCREENED" value={summary.screened} />
-            <RadarStat label="SIGNALS" value={summary.total} color={C.accent} />
+            <RadarStat
+              label="掃描池"
+              value={summary.universe_size}
+              hint={summary.universe_tiers?.discovery
+                ? `研究過 ${summary.universe_tiers.curated} ＋ 發現層 ${summary.universe_tiers.discovery}`
+                : undefined}
+            />
+            <RadarStat label="過篩" value={summary.screened} />
+            <RadarStat label="訊號數" value={summary.total} color={C.accent} />
           </div>
 
           <div className="ml-auto flex items-center gap-3">
@@ -1061,7 +1068,7 @@ function MarketRadar({
                 style={{ borderColor: C.amber, color: C.amber }}
                 title="僅量化預篩，AI 深度盡調尚未執行"
               >
-                STAGE-1 QUANT
+                第一階段量化
               </span>
             )}
             <span className="font-mono text-[12px] tabular-nums" style={{ color: C.muted }}>
@@ -1071,11 +1078,11 @@ function MarketRadar({
               type="button"
               onClick={onRescan}
               disabled={rescanning}
-              className="flex cursor-pointer items-center gap-1.5 border px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-widest transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#0B1220]"
-              style={{ borderColor: C.accent, color: C.accent, boxShadow: `0 0 12px ${C.accent}22` }}
+              className="flex cursor-pointer items-center gap-1.5 border px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-widest transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--ops-deep)]"
+              style={{ borderColor: C.accent, color: C.accent, boxShadow: `0 0 12px ${alpha(C.accent, 0.133)}` }}
             >
               <RefreshCw size={12} className={rescanning ? 'wr-spin' : ''} />
-              {rescanning ? 'SCANNING' : 'RESCAN'}
+              {rescanning ? '掃描中' : '重新掃描'}
             </button>
           </div>
         </div>
@@ -1083,10 +1090,10 @@ function MarketRadar({
 
       {/* ── Opportunity board ── */}
       <Panel
-        label="OPPORTUNITY BOARD"
+        label="機會看板"
         status={
           <span className="font-mono" style={{ color: C.muted, fontSize: 11 }}>
-            {allOpps.length ? `SHOWING ${opps.length}/${allOpps.length}` : ''}
+            {allOpps.length ? `顯示 ${opps.length}/${allOpps.length}` : ''}
           </span>
         }
       >
@@ -1112,7 +1119,7 @@ function MarketRadar({
               </div>
             ) : (
               <div className="py-12 text-center font-mono text-[13px] tracking-widest" style={{ color: C.muted }}>
-                NO MATCH
+                無符合條件
               </div>
             )}
           </>
@@ -1124,7 +1131,254 @@ function MarketRadar({
   );
 }
 
-function RadarStat({ label, value, color = C.text }) {
+// ── 強弱榜 ────────────────────────────────────────────────────────────────────
+// 「今天誰在漲」用一天就夠，「該往哪裡找機會」得看一段區間 —— 所以期間是可切的，
+// 預設 1M：一天太吵（一次跳空就進榜），三個月又轉得太慢。
+const SB_PERIODS = [
+  { key: '1d', label: '當天' },
+  { key: '1w', label: '一週' },
+  { key: '1m', label: '一月' },
+  { key: '3m', label: '三月' },
+];
+
+function pctCell(v) {
+  if (v == null) return <span style={{ color: C.muted }}>—</span>;
+  return (
+    <span className="tabular-nums font-semibold" style={{ color: v >= 0 ? C.long : C.short }}>
+      {v >= 0 ? '+' : ''}{v.toFixed(1)}%
+    </span>
+  );
+}
+
+function StrengthBoard({ data, loading }) {
+  const [period, setPeriod] = useState('1m');
+  const bench = data?.benchmark_returns || {};
+  const themes = data?.themes || [];
+  const sectors = data?.sectors || [];
+  const leaders = data?.stocks?.leaders || [];
+  const laggards = data?.stocks?.laggards || [];
+
+  const byPeriod = (arr) =>
+    [...arr].sort((a, b) => ((b.returns || {})[period] ?? -999) - ((a.returns || {})[period] ?? -999));
+  const sortedThemes = byPeriod(themes);
+  const sortedSectors = byPeriod(sectors);
+
+  return (
+    <div className="mt-4">
+      <Panel
+        label="強弱榜"
+        status={
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[11px]" style={{ color: C.muted }}>
+              SPY {bench[period] == null ? '—' : `${bench[period] >= 0 ? '+' : ''}${bench[period].toFixed(1)}%`}
+            </span>
+            {SB_PERIODS.map((p) => (
+              <Chip key={p.key} active={period === p.key} onClick={() => setPeriod(p.key)}>
+                {p.label}
+              </Chip>
+            ))}
+          </div>
+        }
+      >
+        {loading ? (
+          <div className="py-10 text-center font-mono text-[13px] tracking-widest" style={{ color: C.muted }}>
+            掃描全市場中…（首次約 15-30 秒）
+          </div>
+        ) : !data || data.error ? (
+          <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.short }}>
+            強弱榜載入失敗
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            {/* 主題桶：跟自己的 universe 對齊，SPDR 分不出來的細分（記憶體、AI 半導體…） */}
+            <StrengthColumn
+              title="主題"
+              sub="自訂桶 · 桶內等權"
+              rows={sortedThemes.map((t) => ({
+                key: t.theme,
+                name: t.theme,
+                meta: `${t.count} 檔`,
+                value: (t.returns || {})[period],
+                extra: (t.top || []).slice(0, 3).join(' '),
+              }))}
+            />
+            <StrengthColumn
+              title="板塊"
+              sub="SPDR 11 · 公認輪動"
+              rows={sortedSectors.map((x) => ({
+                key: x.symbol,
+                name: x.symbol,
+                meta: x.name,
+                value: (x.returns || {})[period],
+                extra: x.rs_rating != null ? `RS ${x.rs_rating}` : '',
+              }))}
+              empty="板塊資料暫時抓不到（Yahoo 限流），主題榜不受影響"
+            />
+            <StrengthColumn
+              title="個股"
+              sub="強勢 ↔ 弱勢（相對 SPY）"
+              rows={[
+                ...leaders.slice(0, 6).map((r) => ({
+                  key: `L${r.ticker}`, name: r.ticker, meta: r.theme || '—',
+                  value: (r.returns || {})[period], extra: '',
+                })),
+                { key: 'sep', sep: true },
+                ...laggards.slice(0, 6).map((r) => ({
+                  key: `S${r.ticker}`, name: r.ticker, meta: r.theme || '—',
+                  value: (r.returns || {})[period], extra: '',
+                })),
+              ]}
+            />
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function StrengthColumn({ title, sub, rows, empty }) {
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline gap-2 border-b pb-1.5" style={{ borderColor: C.border }}>
+        <span className="font-mono text-[12px] font-bold uppercase tracking-widest" style={{ color: C.text }}>
+          {title}
+        </span>
+        <span className="text-[11px]" style={{ color: C.muted }}>{sub}</span>
+      </div>
+      {rows.length === 0 ? (
+        <p className="py-4 text-center text-[12px]" style={{ color: C.muted }}>{empty || '—'}</p>
+      ) : (
+        <div className="space-y-0.5">
+          {rows.map((r) =>
+            r.sep ? (
+              <div key={r.key} className="my-1.5 border-t border-dashed" style={{ borderColor: C.border }} />
+            ) : (
+              <div key={r.key} className="flex items-baseline gap-2 py-0.5">
+                <span className="font-mono text-[13px] font-bold" style={{ color: C.text }}>{r.name}</span>
+                <span className="truncate text-[11px]" style={{ color: C.muted, maxWidth: 110 }}>{r.meta}</span>
+                <span className="ml-auto">{pctCell(r.value)}</span>
+                {r.extra && (
+                  <span className="w-[104px] shrink-0 truncate text-right font-mono text-[10px]" style={{ color: C.muted }}>
+                    {r.extra}
+                  </span>
+                )}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 機會追蹤表 ─────────────────────────────────────────────────────────────────
+const TRACK_STATUS = {
+  in_zone:    { label: '在進場區', color: C.long },
+  hit_target: { label: '已達標',   color: C.hit },
+  tracking:   { label: '追蹤中',   color: C.amber },
+  stopped:    { label: '已破停損', color: C.short },
+  stale:      { label: '已淡出',   color: C.muted },
+};
+
+function TrackerPanel({ data, loading, onSelect }) {
+  const [status, setStatus] = useState('all');
+  const items = data?.items || [];
+  const counts = useMemo(() => {
+    const c = {};
+    items.forEach((i) => { c[i.status] = (c[i.status] || 0) + 1; });
+    return c;
+  }, [items]);
+  const shown = status === 'all' ? items : items.filter((i) => i.status === status);
+
+  return (
+    <div className="mt-4">
+      <Panel
+        label="機會追蹤"
+        status={
+          <span className="font-mono text-[11px]" style={{ color: C.muted }}>
+            {items.length ? `${shown.length}/${items.length} 檔` : ''}
+          </span>
+        }
+      >
+        {loading ? (
+          <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>載入追蹤表…</div>
+        ) : !items.length ? (
+          <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
+            追蹤表還是空的 —— 下一次掃描會自動把入圍的機會寫進來
+          </div>
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b pb-3" style={{ borderColor: C.border }}>
+              <Chip active={status === 'all'} onClick={() => setStatus('all')}>ALL {items.length}</Chip>
+              {Object.entries(TRACK_STATUS).map(([k, v]) =>
+                counts[k] ? (
+                  <Chip key={k} active={status === k} color={v.color} onClick={() => setStatus(status === k ? 'all' : k)}>
+                    {v.label} {counts[k]}
+                  </Chip>
+                ) : null,
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <div className="min-w-[860px]">
+                <div className="grid grid-cols-[5rem_6rem_4.5rem_6rem_6rem_6rem_6rem_minmax(0,1fr)] gap-x-3 border-b pb-1.5 font-mono text-[10px] uppercase tracking-widest"
+                     style={{ borderColor: C.border, color: C.muted }}>
+                  <span>代號</span>
+                  <span>狀態</span>
+                  <span className="text-right">入圍</span>
+                  <span className="text-right">基準價</span>
+                  <span className="text-right">現價</span>
+                  <span className="text-right">至今</span>
+                  <span className="text-right">目標/停損</span>
+                  <span>首見 · 最近 · 動作</span>
+                </div>
+                {shown.map((r) => {
+                  const st = TRACK_STATUS[r.status] || TRACK_STATUS.tracking;
+                  const ret = r.return_since_first;
+                  return (
+                    <div
+                      key={r.ticker}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => onSelect(r.ticker)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') onSelect(r.ticker); }}
+                      className="grid cursor-pointer grid-cols-[5rem_6rem_4.5rem_6rem_6rem_6rem_6rem_minmax(0,1fr)] items-center gap-x-3 border-b py-1.5 text-[12px] transition-colors hover:bg-[var(--ops-deep)]"
+                      style={{ borderColor: `${alpha(C.border, 0.502)}` }}
+                    >
+                      <span className="font-mono text-[13px] font-bold" style={{ color: C.accent }}>{r.ticker}</span>
+                      <span className="font-mono text-[11px] font-bold" style={{ color: st.color }}>{st.label}</span>
+                      <span className="text-right font-mono tabular-nums" style={{ color: C.muted }}>×{r.times_seen}</span>
+                      <span className="text-right font-mono tabular-nums" style={{ color: C.muted }}
+                            title={r.first_price_basis === 'entry_mid' ? '沒有入圍當日價，用進場區中值當基準' : '入圍當日收盤'}>
+                        {r.first_price ?? '—'}{r.first_price_basis === 'entry_mid' ? '*' : ''}
+                      </span>
+                      <span className="text-right font-mono tabular-nums" style={{ color: C.text }}>
+                        {r.price != null ? r.price.toFixed(2) : '—'}
+                      </span>
+                      <span className="text-right">{pctCell(ret)}</span>
+                      <span className="text-right font-mono tabular-nums text-[11px]" style={{ color: C.muted }}>
+                        {r.target ?? '—'} / {r.stop ?? '—'}
+                      </span>
+                      <span className="truncate text-[11px]" style={{ color: C.muted }}>
+                        {r.first_seen} · {r.last_seen} · {r.action || '—'}{r.theme ? ` · ${r.theme}` : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <p className="mt-2 text-[11px]" style={{ color: C.muted }}>
+              * 基準價標星號的是進場區中值（那天的機會 JSON 沒有當日價）；
+              {data?.stale_days ? ` 超過 ${data.stale_days} 天沒再入圍就標「已淡出」。` : ''}
+            </p>
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function RadarStat({ label, value, color = C.text, hint }) {
   return (
     <div className="flex flex-col">
       <span className="text-[11px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
@@ -1133,6 +1387,11 @@ function RadarStat({ label, value, color = C.text }) {
       <span className="tabular-nums text-xl font-bold" style={{ color }}>
         {value == null ? '—' : value}
       </span>
+      {hint && (
+        <span className="text-[10px] tabular-nums" style={{ color: C.muted }}>
+          {hint}
+        </span>
+      )}
     </div>
   );
 }
@@ -1148,9 +1407,9 @@ function OpportunityFilters({ counts, total, filters }) {
       {/* SETUP row */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 w-12 font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
-          SETUP
+          型態
         </span>
-        <Chip active={setup === 'all'} onClick={() => setSetup('all')}>ALL {total}</Chip>
+        <Chip active={setup === 'all'} onClick={() => setSetup('all')}>全部 {total}</Chip>
         {SETUP_ORDER.map((s) => {
           const n = counts.setup[s] || 0;
           if (!n) return null;
@@ -1166,7 +1425,7 @@ function OpportunityFilters({ counts, total, filters }) {
       {/* ACTION + DIRECTION row */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-1 w-12 font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
-          ACTION
+          動作
         </span>
         {OPP_ACTION_FILTERS.map((a) => {
           const n = counts.action[a] || 0;
@@ -1180,10 +1439,10 @@ function OpportunityFilters({ counts, total, filters }) {
         })}
         <span className="mx-1 h-3 w-px" style={{ background: C.border }} />
         <Chip active={direction === 'long'} color={C.long} onClick={() => setDirection(direction === 'long' ? 'all' : 'long')}>
-          LONG {counts.long}
+          作多 {counts.long}
         </Chip>
         <Chip active={direction === 'short'} color={C.short} onClick={() => setDirection(direction === 'short' ? 'all' : 'short')}>
-          SHORT {counts.short}
+          放空 {counts.short}
         </Chip>
       </div>
 
@@ -1191,22 +1450,22 @@ function OpportunityFilters({ counts, total, filters }) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex items-center gap-1.5">
           <span className="w-12 font-mono text-[11px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
-            SORT
+            排序
           </span>
-          <Chip active={sort === 'smart'} onClick={() => setSort('smart')}>ACTIONABLE</Chip>
-          <Chip active={sort === 'conv'} onClick={() => setSort('conv')}>CONVICTION ↓</Chip>
-          <Chip active={sort === 'signal'} onClick={() => setSort('signal')}>SIGNAL ↓</Chip>
-          <Chip active={sort === 'rr'} onClick={() => setSort('rr')}>RR ↓</Chip>
+          <Chip active={sort === 'smart'} onClick={() => setSort('smart')}>可執行優先</Chip>
+          <Chip active={sort === 'conv'} onClick={() => setSort('conv')}>信心 ↓</Chip>
+          <Chip active={sort === 'signal'} onClick={() => setSort('signal')}>訊號分 ↓</Chip>
+          <Chip active={sort === 'rr'} onClick={() => setSort('rr')}>風報比 ↓</Chip>
         </div>
         <div
           className="wr-filter-box ml-auto flex items-center gap-1.5 border px-2 py-1"
-          style={{ borderColor: C.border, background: '#0B1220' }}
+          style={{ borderColor: C.border, background: C.deep }}
         >
           <Search size={11} style={{ color: C.muted }} />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="FILTER TICKER…"
+            placeholder="篩選代號…"
             spellCheck={false}
             className="wr-filter-input w-32 bg-transparent font-mono text-[13px] uppercase tracking-wider outline-none"
             style={{ color: C.text }}
@@ -1237,24 +1496,36 @@ function OpportunityCard({ o, onSelect, hasMimi = false, onMimi, newsCount = 0, 
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(o.ticker); }
       }}
       className="group relative flex cursor-pointer flex-col border p-3 transition-colors duration-200"
-      style={{ borderColor: C.border, background: '#0B1220' }}
+      style={{ borderColor: C.border, background: C.deep }}
       onMouseEnter={(e) => {
         e.currentTarget.style.borderColor = C.accent;
-        e.currentTarget.style.boxShadow = `0 0 16px ${C.accent}33`;
+        e.currentTarget.style.boxShadow = `0 0 16px ${alpha(C.accent, 0.2)}`;
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.borderColor = C.border;
         e.currentTarget.style.boxShadow = 'none';
       }}
     >
+      {/* 未研究：發現層（全市場自動撈進來）而不是我的名單。研究過的不標，
+          標記本身就是「這檔你還沒做過功課」的提醒 */}
+      {o.tier === 'discovery' && !o.in_portfolio && (
+        <span
+          className="absolute right-2 top-2 border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider"
+          style={{ borderColor: C.amber, color: C.amber, background: `${alpha(C.amber, 0.071)}` }}
+          title="發現層：全市場掃描撈到的，不在我的追蹤名單裡——先確認它在做什麼生意"
+        >
+          未研究
+        </span>
+      )}
+
       {/* HELD marker */}
       {o.in_portfolio && (
         <span
           className="absolute right-2 top-2 border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider"
-          style={{ borderColor: C.accent, color: C.accent, background: `${C.accent}12` }}
-          title={o.held_portfolios?.length ? `Held in ${o.held_portfolios.join(', ')}` : 'In a portfolio'}
+          style={{ borderColor: C.accent, color: C.accent, background: `${alpha(C.accent, 0.071)}` }}
+          title={o.held_portfolios?.length ? `持有於 ${o.held_portfolios.join('、')}` : '已在投組中'}
         >
-          HELD
+          持有中
         </span>
       )}
 
@@ -1264,7 +1535,7 @@ function OpportunityCard({ o, onSelect, hasMimi = false, onMimi, newsCount = 0, 
           <div className="flex items-center gap-2">
             <span
               className="font-mono text-2xl font-bold tracking-wide"
-              style={{ color: C.text, textShadow: `0 0 10px ${dirColor}44` }}
+              style={{ color: C.text, textShadow: `0 0 10px ${alpha(dirColor, 0.267)}` }}
             >
               {o.ticker}
             </span>
@@ -1286,7 +1557,7 @@ function OpportunityCard({ o, onSelect, hasMimi = false, onMimi, newsCount = 0, 
             <span
               key={s}
               className="border px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider"
-              style={{ borderColor: m.color, color: m.color, background: `${m.color}12` }}
+              style={{ borderColor: m.color, color: m.color, background: `${alpha(m.color, 0.071)}` }}
             >
               {m.short}
             </span>
@@ -1294,7 +1565,7 @@ function OpportunityCard({ o, onSelect, hasMimi = false, onMimi, newsCount = 0, 
         })}
         <span
           className="ml-auto border px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider"
-          style={{ borderColor: act.color, color: act.color, background: `${act.color}12` }}
+          style={{ borderColor: act.color, color: act.color, background: `${alpha(act.color, 0.071)}` }}
         >
           {act.label}
         </span>
@@ -1302,20 +1573,20 @@ function OpportunityCard({ o, onSelect, hasMimi = false, onMimi, newsCount = 0, 
 
       {/* score bars: signal (quant) + conviction (AI) */}
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <ScoreBar label="SIGNAL" value={sig} color="#7DA0C4" />
-        <ScoreBar label="CONVICTION" value={conv} color={C.accent} placeholder={conv == null} />
+        <ScoreBar label="訊號分" value={sig} color={C.signal} />
+        <ScoreBar label="信心" value={conv} color={C.accent} placeholder={conv == null} />
       </div>
 
       {/* trade plan */}
       <div className="mt-3 flex items-stretch gap-2 border-y py-2" style={{ borderColor: C.border }}>
         <div className="grid flex-1 grid-cols-3 gap-1 font-mono text-[14px]">
-          <PlanStat label="ENTRY" value={zone ? `${fmt(zone[0])}–${fmt(zone[1])}` : null} />
-          <PlanStat label="TARGET" value={o.target} color={C.long} />
-          <PlanStat label="STOP" value={o.stop} color={C.short} />
+          <PlanStat label="進場" value={zone ? `${fmt(zone[0])}–${fmt(zone[1])}` : null} />
+          <PlanStat label="目標" value={o.target} color={C.long} />
+          <PlanStat label="停損" value={o.stop} color={C.short} />
         </div>
         <div className="flex flex-col items-center justify-center border-l pl-2" style={{ borderColor: C.border, minWidth: 72 }}>
-          <span className="text-[10px] uppercase tracking-widest" style={{ color: C.muted }}>RR</span>
-          <span className="font-mono text-2xl font-bold tabular-nums" style={{ color: rrColor(rr), textShadow: `0 0 10px ${rrColor(rr)}44` }}>
+          <span className="text-[10px] tracking-widest" style={{ color: C.muted }}>風報比</span>
+          <span className="font-mono text-2xl font-bold tabular-nums" style={{ color: rrColor(rr), textShadow: `0 0 10px ${alpha(rrColor(rr), 0.267)}` }}>
             {rr == null ? '—' : `${rr.toFixed(1)}`}
           </span>
           {o.timeframe && (
@@ -1339,7 +1610,7 @@ function OpportunityCard({ o, onSelect, hasMimi = false, onMimi, newsCount = 0, 
               {o.thesis}
             </div>
           )}
-          <ReadLine Icon={Activity} color="#7DA0C4" text={o.technical} />
+          <ReadLine Icon={Activity} color={C.signal} text={o.technical} />
           <ReadLine Icon={Scale} color={C.long} text={o.fundamental} />
           <ReadLine Icon={Zap} color={C.amber} text={o.catalyst} />
           {Array.isArray(o.risks) && o.risks.length > 0 && (
@@ -1378,7 +1649,7 @@ function ReadLine({ Icon, color, text }) {
       style={{ fontFamily: "'Fira Sans', sans-serif", lineHeight: 1.6 }}
     >
       <Icon size={14} style={{ color, flexShrink: 0, marginTop: 3 }} />
-      <span style={{ color: '#94A3B8' }}>{text}</span>
+      <span style={{ color: C.dim }}>{text}</span>
     </div>
   );
 }
@@ -1397,10 +1668,10 @@ function MimiChip({ ticker, onOpen }) {
       onKeyDown={(e) => e.stopPropagation()}
       title="檢視 Mimi 原始筆記"
       className="wr-mimi-chip flex w-fit cursor-pointer items-center gap-1.5 border px-2 py-1 font-mono text-[11px] font-bold uppercase tracking-wider transition-all duration-200"
-      style={{ borderColor: `${C.mimi}66`, color: C.mimi, background: `${C.mimi}10` }}
+      style={{ borderColor: `${alpha(C.mimi, 0.4)}`, color: C.mimi, background: `${alpha(C.mimi, 0.063)}` }}
     >
       <BookOpen size={13} />
-      MIMI 原始筆記
+      Mimi 原始筆記
     </button>
   );
 }
@@ -1420,10 +1691,10 @@ function NewsChip({ ticker, count, onOpen }) {
       onKeyDown={(e) => e.stopPropagation()}
       title={`檢視 ${ticker} 的近期財經 digest（${count} 篇）`}
       className="wr-news-chip flex w-fit cursor-pointer items-center gap-1.5 border px-2 py-1 font-mono text-[11px] font-bold uppercase tracking-wider transition-all duration-200"
-      style={{ borderColor: `${C.news}66`, color: C.news, background: `${C.news}10` }}
+      style={{ borderColor: `${alpha(C.news, 0.4)}`, color: C.news, background: `${alpha(C.news, 0.063)}` }}
     >
       <Newspaper size={13} />
-      財經 DIGEST · {count} 篇
+      財經摘要 · {count} 篇
     </button>
   );
 }
@@ -1471,7 +1742,7 @@ function RadarEmpty({ onRescan, rescanning, error }) {
     <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
       <Crosshair size={30} style={{ color: C.muted }} />
       <div className="font-mono text-sm tracking-widest" style={{ color: C.muted }}>
-        NO SIGNALS
+        目前沒有訊號
       </div>
       <div className="text-[13px]" style={{ color: C.muted, fontFamily: "'Fira Sans', sans-serif" }}>
         {error ? `資料源異常 — ${error}` : '市場掃描待執行 / 資料源限流中'}
@@ -1480,11 +1751,11 @@ function RadarEmpty({ onRescan, rescanning, error }) {
         type="button"
         onClick={onRescan}
         disabled={rescanning}
-        className="mt-1 flex cursor-pointer items-center gap-1.5 border px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-widest transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[#0B1220]"
+        className="mt-1 flex cursor-pointer items-center gap-1.5 border px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-widest transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 hover:bg-[var(--ops-deep)]"
         style={{ borderColor: C.accent, color: C.accent }}
       >
         <RefreshCw size={12} className={rescanning ? 'wr-spin' : ''} />
-        {rescanning ? 'SCANNING' : 'RESCAN'}
+        {rescanning ? '掃描中' : '重新掃描'}
       </button>
     </div>
   );
@@ -1498,14 +1769,15 @@ function PortfolioSwitcher({ portfolios, stats, active, onScope, loading, oppCou
   if (loading || portfolios.length < 1) return null;
   // MARKET RADAR uses a cyan-ish teal accent, kept distinct from portfolio cyan
   // by pairing it with the Crosshair icon and a "signals" sub-line.
-  const RADAR = '#5EEAD4';
+  const RADAR = C.hit;
+  const TRACK = C.track;
   const marketOn = active === MARKET_SCOPE;
   return (
     <div
       className="wr-scope flex items-stretch gap-1 border p-1"
-      style={{ borderColor: C.border, background: '#0B1220' }}
+      style={{ borderColor: C.border, background: C.deep }}
       role="tablist"
-      aria-label="Portfolio scope"
+      aria-label="投組範圍"
     >
       {portfolios.map((p) => {
         const s = stats[p] || { value: 0, dayPct: null };
@@ -1522,8 +1794,8 @@ function PortfolioSwitcher({ portfolios, stats, active, onScope, loading, oppCou
               borderWidth: 1,
               borderStyle: 'solid',
               borderColor: on ? C.accent : 'transparent',
-              background: on ? `${C.accent}12` : 'transparent',
-              boxShadow: on ? `0 0 14px ${C.accent}44` : 'none',
+              background: on ? `${alpha(C.accent, 0.071)}` : 'transparent',
+              boxShadow: on ? `0 0 14px ${alpha(C.accent, 0.267)}` : 'none',
             }}
           >
             <span
@@ -1544,6 +1816,34 @@ function PortfolioSwitcher({ portfolios, stats, active, onScope, loading, oppCou
         );
       })}
 
+      {/* 機會追蹤 — 強弱榜 + 跨日候選，紫色與前兩者區隔 */}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={active === TRACKER_SCOPE}
+        onClick={() => onScope(TRACKER_SCOPE)}
+        className="wr-scope-tab flex cursor-pointer flex-col items-start gap-0.5 px-3 py-1.5 transition-all duration-200"
+        style={{
+          borderWidth: 1,
+          borderStyle: 'solid',
+          borderColor: active === TRACKER_SCOPE ? TRACK : 'transparent',
+          background: active === TRACKER_SCOPE ? `${alpha(TRACK, 0.071)}` : 'transparent',
+          boxShadow: active === TRACKER_SCOPE ? `0 0 14px ${alpha(TRACK, 0.267)}` : 'none',
+        }}
+      >
+        <span
+          className="flex items-center gap-1.5 font-mono text-sm font-bold uppercase tracking-widest"
+          style={{ color: active === TRACKER_SCOPE ? TRACK : C.text }}
+        >
+          <TrendingUp size={13} />
+          機會追蹤
+        </span>
+        <span className="font-mono tabular-nums text-[12px]"
+              style={{ color: active === TRACKER_SCOPE ? C.text : C.muted }}>
+          強弱榜 · 追蹤中
+        </span>
+      </button>
+
       {/* MARKET RADAR — market-opportunity scope, teal accent + crosshair */}
       <button
         type="button"
@@ -1555,8 +1855,8 @@ function PortfolioSwitcher({ portfolios, stats, active, onScope, loading, oppCou
           borderWidth: 1,
           borderStyle: 'solid',
           borderColor: marketOn ? RADAR : 'transparent',
-          background: marketOn ? `${RADAR}12` : 'transparent',
-          boxShadow: marketOn ? `0 0 14px ${RADAR}44` : 'none',
+          background: marketOn ? `${alpha(RADAR, 0.071)}` : 'transparent',
+          boxShadow: marketOn ? `0 0 14px ${alpha(RADAR, 0.267)}` : 'none',
         }}
       >
         <span
@@ -1564,11 +1864,11 @@ function PortfolioSwitcher({ portfolios, stats, active, onScope, loading, oppCou
           style={{ color: marketOn ? RADAR : C.text }}
         >
           <Crosshair size={13} />
-          MARKET RADAR
+          市場雷達
         </span>
         <span className="flex items-baseline gap-1.5 font-mono">
           <span className="tabular-nums text-[12px]" style={{ color: marketOn ? C.text : C.muted }}>
-            {oppCount != null ? `${oppCount} SIGNALS` : 'SCAN'}
+            {oppCount != null ? `${oppCount} 個訊號` : '掃描'}
           </span>
         </span>
       </button>
@@ -1594,7 +1894,7 @@ function TopStatusBar({ date, regime, market, loading, live, lastUpdated, portfo
         style={{ borderColor: C.border }}
       >
         <span className="font-mono text-[12px] uppercase tracking-[0.14em]" style={{ color: C.muted }}>
-          SCOPE
+          範圍
         </span>
         <PortfolioSwitcher
           portfolios={portfolios}
@@ -1617,12 +1917,12 @@ function TopStatusBar({ date, regime, market, loading, live, lastUpdated, portfo
           <div>
             <h1
               className="font-mono text-2xl font-bold tracking-widest"
-              style={{ color: C.text, textShadow: `0 0 14px ${C.accent}55` }}
+              style={{ color: C.text, textShadow: `0 0 14px ${alpha(C.accent, 0.333)}` }}
             >
-              WAR ROOM
+              戰情中心
             </h1>
             <div className="font-mono text-[13px]" style={{ color: C.muted }}>
-              {date ? `SESSION // ${date}` : 'SESSION // —'}
+              {date ? `本場 ／ ${date}` : '本場 ／ —'}
             </div>
           </div>
 
@@ -1630,7 +1930,7 @@ function TopStatusBar({ date, regime, market, loading, live, lastUpdated, portfo
           {!loading && (
             <div
               className="ml-2 flex items-center gap-2 border px-3 py-2"
-              style={{ borderColor: regime.color, color: regime.color, boxShadow: `0 0 16px ${regime.color}22` }}
+              style={{ borderColor: regime.color, color: regime.color, boxShadow: `0 0 16px ${alpha(regime.color, 0.133)}` }}
             >
               <Dot color={regime.color} pulse />
               <RegIcon size={15} />
@@ -1642,11 +1942,11 @@ function TopStatusBar({ date, regime, market, loading, live, lastUpdated, portfo
           <div
             className="ml-auto flex items-center gap-2 border px-2.5 py-1.5 lg:ml-2"
             style={{ borderColor: C.border }}
-            title={live ? 'Auto-refresh active (5 min)' : 'Paused — tab hidden'}
+            title={live ? '自動更新中（每 5 分鐘）' : '已暫停 —— 分頁在背景'}
           >
             <Dot color={liveColor} pulse={live} />
             <span className="font-mono text-[11px] font-bold tracking-widest" style={{ color: liveColor }}>
-              {live ? 'LIVE' : 'PAUSED'}
+              {live ? '即時' : '已暫停'}
             </span>
             <span className="font-mono text-[12px] tabular-nums" style={{ color: C.muted }}>
               {clock}
@@ -1683,16 +1983,16 @@ function TopStatusBar({ date, regime, market, loading, live, lastUpdated, portfo
 // Defensive — never throws if price/stop/trigger are missing.
 function atRiskBadge(d, price) {
   if (normAction(d.action) !== 'hold') return null;
-  if (d.risk_level === 'high') return { label: 'AT RISK', color: C.short };
+  if (d.risk_level === 'high') return { label: '危險維持', color: C.short };
   if (typeof price === 'number' && price > 0) {
     // Near stop: within 5% above the stop (stops sit below price).
     if (typeof d.stop === 'number' && d.stop > 0 && price >= d.stop) {
-      if ((price - d.stop) / price < 0.05) return { label: 'NEAR STOP', color: C.amber };
+      if ((price - d.stop) / price < 0.05) return { label: '貼近停損', color: C.amber };
     }
     // Price already crossed the trigger in its firing direction.
     if (typeof d.trigger_price === 'number' && d.trigger_price > 0 && d.direction) {
-      if (d.direction === 'below' && price <= d.trigger_price) return { label: 'AT RISK', color: C.amber };
-      if (d.direction === 'above' && price >= d.trigger_price) return { label: 'AT RISK', color: C.amber };
+      if (d.direction === 'below' && price <= d.trigger_price) return { label: '已過觸發價', color: C.amber };
+      if (d.direction === 'above' && price >= d.trigger_price) return { label: '已過觸發價', color: C.amber };
     }
   }
   return null;
@@ -1716,10 +2016,10 @@ function DirectiveCard({ d, holding, onSelect, hasMimi = false, onMimi, newsCoun
         }
       }}
       className="group relative cursor-pointer border p-3 transition-colors duration-200"
-      style={{ borderColor: C.border, background: '#0B1220' }}
+      style={{ borderColor: C.border, background: C.deep }}
       onMouseEnter={(e) => {
         e.currentTarget.style.borderColor = C.accent;
-        e.currentTarget.style.boxShadow = `0 0 16px ${C.accent}33`;
+        e.currentTarget.style.boxShadow = `0 0 16px ${alpha(C.accent, 0.2)}`;
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.borderColor = C.border;
@@ -1736,7 +2036,7 @@ function DirectiveCard({ d, holding, onSelect, hasMimi = false, onMimi, newsCoun
         <div className="flex items-baseline gap-2">
           <span
             className="font-mono text-2xl font-bold tracking-wide"
-            style={{ color: C.text, textShadow: `0 0 10px ${a.color}44` }}
+            style={{ color: C.text, textShadow: `0 0 10px ${alpha(a.color, 0.267)}` }}
           >
             {d.ticker}
           </span>
@@ -1776,7 +2076,7 @@ function DirectiveCard({ d, holding, onSelect, hasMimi = false, onMimi, newsCoun
       {d.trigger && (
         <div
           className="mt-2 text-[14px]"
-          style={{ color: '#94A3B8', fontFamily: "'Fira Sans', sans-serif", lineHeight: 1.6 }}
+          style={{ color: C.dim, fontFamily: "'Fira Sans', sans-serif", lineHeight: 1.6 }}
         >
           {d.trigger}
         </div>
@@ -1784,15 +2084,15 @@ function DirectiveCard({ d, holding, onSelect, hasMimi = false, onMimi, newsCoun
 
       {/* numbers */}
       <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-[14px]">
-        <Stat label="TRIGGER" value={d.trigger_price} />
-        <Stat label="STOP" value={d.stop} color={C.short} />
-        <Stat label="TGT WT" value={d.target_weight_pct} suffix="%" />
+        <Stat label="觸發價" value={d.trigger_price} />
+        <Stat label="停損" value={d.stop} color={C.short} />
+        <Stat label="目標權重" value={d.target_weight_pct} suffix="%" />
       </div>
 
       {/* confidence bar */}
       <div className="mt-3">
         <div className="mb-1 flex items-center justify-between font-mono text-[12px]" style={{ color: C.muted }}>
-          <span>CONFIDENCE</span>
+          <span>信心</span>
           <span style={{ color: confColor }}>{conf === null ? '—' : conf.toFixed(2)}</span>
         </div>
         <div className="h-1.5 w-full" style={{ background: C.border }}>
@@ -1807,7 +2107,7 @@ function DirectiveCard({ d, holding, onSelect, hasMimi = false, onMimi, newsCoun
       {d.thesis && (
         <div
           className="wr-clamp-3 mt-3 text-[14px]"
-          style={{ color: '#94A3B8', fontFamily: "'Fira Sans', sans-serif", lineHeight: 1.6 }}
+          style={{ color: C.dim, fontFamily: "'Fira Sans', sans-serif", lineHeight: 1.6 }}
           title={d.thesis}
         >
           {d.thesis}
@@ -1869,7 +2169,7 @@ function Scorecard({ scoring, scope, tickerPortfolio, onSelect }) {
   if (!scoring || !scoped.results.length) {
     return (
       <div className="py-6 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-        NO PRIOR SCORING
+        沒有上一場的計分
       </div>
     );
   }
@@ -1883,14 +2183,14 @@ function Scorecard({ scoring, scope, tickerPortfolio, onSelect }) {
       <div className="mb-3 flex items-end gap-2 border-b pb-3" style={{ borderColor: C.border }}>
         <span
           className="font-mono text-3xl font-bold tabular-nums"
-          style={{ color: rate >= 0.5 ? C.long : C.short, textShadow: `0 0 12px ${(rate >= 0.5 ? C.long : C.short)}44` }}
+          style={{ color: rate >= 0.5 ? C.long : C.short, textShadow: `0 0 12px ${alpha((rate >= 0.5 ? C.long : C.short), 0.267)}` }}
         >
           {rate === null ? '—' : `${Math.round(rate * 100)}%`}
         </span>
         <span className="mb-1 font-mono text-[12px] tracking-wider" style={{ color: C.muted }}>
-          HIT RATE
+          命中率
           <br />
-          {triggeredCount}/{evaluated.length} TRIGGERED
+          {triggeredCount}/{evaluated.length} 已觸發
         </span>
       </div>
       <div className="space-y-1.5">
@@ -1917,7 +2217,7 @@ function Scorecard({ scoring, scope, tickerPortfolio, onSelect }) {
                   {r.action}
                 </span>
                 {unattributed && (
-                  <span className="text-[11px]" style={{ color: C.muted }} title="portfolio unknown">
+                  <span className="text-[11px]" style={{ color: C.muted }} title="投組未標示">
                     —
                   </span>
                 )}
@@ -1946,7 +2246,7 @@ function SectorRotation({ sectors }) {
   if (!data.length) {
     return (
       <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-        SECTOR DATA UNAVAILABLE
+        板塊資料暫時不可用
       </div>
     );
   }
@@ -1968,7 +2268,7 @@ function SectorRotation({ sectors }) {
           stroke={C.border}
         />
         <Tooltip
-          cursor={{ fill: 'rgba(34,211,238,0.06)' }}
+          cursor={{ fill: alpha(C.accent, 0.06) }}
           contentStyle={{
             background: C.panel,
             border: `1px solid ${C.border}`,
@@ -1989,24 +2289,12 @@ function SectorRotation({ sectors }) {
 }
 
 // ── Signal feed ───────────────────────────────────────────────────────────────
-function SignalFeed({ heldTickers = {} }) {
-  const [rows, setRows] = useState(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    axios
-      .get('/api/signals/watchlist')
-      .then((res) => alive && setRows(Array.isArray(res.data) ? res.data : []))
-      .catch(() => alive && setFailed(true));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
+function SignalFeed({ rows, heldTickers = {} }) {
+  const failed = rows === 'failed';
   if (failed) {
     return (
       <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-        SIGNAL FEED OFFLINE
+        訊號流離線
       </div>
     );
   }
@@ -2019,31 +2307,43 @@ function SignalFeed({ heldTickers = {} }) {
       </div>
     );
   }
-  // Flatten to per-signal lines.
+  // 一檔一行：後端 summary 給的型態＋主角訊號（/signals 頁的一句話版）。
+  // 沒有 summary 的舊回應退回逐訊號攤平，feed 不會因為 API 版本而空掉。
   const lines = [];
   for (const r of rows) {
-    for (const s of r.signals || []) {
-      lines.push({ ticker: r.ticker, sev: s.severity, text: `${s.indicator} ${s.type}`.toUpperCase() });
+    if (r.summary?.headline) {
+      lines.push({
+        ticker: r.ticker,
+        sev: r.summary.direction,
+        text: `${r.summary.setup_label} · ${r.summary.headline}`,
+        tier: r.summary.tier,
+      });
+    } else {
+      for (const s of r.signals || []) {
+        lines.push({ ticker: r.ticker, sev: s.severity, text: `${s.indicator} ${s.type}`.toUpperCase(), tier: 9 });
+      }
     }
   }
   if (!lines.length) {
     return (
       <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-        NO ACTIVE SIGNALS
+        目前沒有作用中的訊號
       </div>
     );
   }
   return (
     <div className="max-h-[320px] space-y-0.5 overflow-y-auto pr-1">
       {lines.slice(0, 60).map((l, i) => {
-        const color = l.sev === 'bullish' ? C.long : l.sev === 'bearish' ? C.short : C.muted;
+        const color = l.sev === 'bullish' ? C.long : l.sev === 'bearish' ? C.short : l.sev === 'neutral' ? C.amber : C.muted;
         // Cyan left edge when the signal is on a position in the current scope.
         const held = !!heldTickers[l.ticker];
+        // 事件層（tier 1–2）全亮；狀態／盤整層降一階，掃過去先看到事件。
+        const dimmed = l.tier >= 3;
         return (
           <div
-            key={i}
-            className="flex items-center gap-2 border-l-2 py-1.5 pl-2 font-mono text-[13px] transition-colors duration-200 hover:bg-[#0B1220]"
-            style={{ borderColor: held ? C.accent : color, background: held ? `${C.accent}0A` : 'transparent' }}
+            key={`${l.ticker}-${i}`}
+            className="flex items-center gap-2 border-l-2 py-1.5 pl-2 font-mono text-[13px] transition-colors duration-200 hover:bg-[var(--ops-deep)]"
+            style={{ borderColor: held ? C.accent : color, background: held ? `${alpha(C.accent, 0.039)}` : 'transparent', opacity: dimmed ? 0.7 : 1 }}
           >
             <span style={{ color: C.muted }}>{'>'}</span>
             <span className="w-14 shrink-0 font-semibold" style={{ color: C.text }}>
@@ -2062,16 +2362,16 @@ function SignalFeed({ heldTickers = {} }) {
 // ── Date switcher ─────────────────────────────────────────────────────────────
 function DateSwitcher({ dates, activeDate, dateIdx, onPrev, onNext, onSelect }) {
   return (
-    <Panel label="SESSION HISTORY">
+    <Panel label="歷史場次">
       <div className="flex items-center justify-between gap-3">
         <button
           type="button"
           onClick={onPrev}
           disabled={dateIdx >= dates.length - 1}
-          className="flex cursor-pointer items-center gap-1 border px-3 py-1.5 font-mono text-[13px] transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-30 hover:bg-[#0B1220]"
+          className="flex cursor-pointer items-center gap-1 border px-3 py-1.5 font-mono text-[13px] transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-30 hover:bg-[var(--ops-deep)]"
           style={{ borderColor: C.border, color: C.text }}
         >
-          <ChevronLeft size={14} /> OLDER
+          <ChevronLeft size={14} /> 較早
         </button>
 
         <div className="flex flex-wrap items-center justify-center gap-1.5">
@@ -2084,7 +2384,7 @@ function DateSwitcher({ dates, activeDate, dateIdx, onPrev, onNext, onSelect }) 
               style={{
                 borderColor: d === activeDate ? C.accent : C.border,
                 color: d === activeDate ? C.accent : C.muted,
-                boxShadow: d === activeDate ? `0 0 10px ${C.accent}33` : 'none',
+                boxShadow: d === activeDate ? `0 0 10px ${alpha(C.accent, 0.2)}` : 'none',
               }}
             >
               {d}
@@ -2096,10 +2396,10 @@ function DateSwitcher({ dates, activeDate, dateIdx, onPrev, onNext, onSelect }) 
           type="button"
           onClick={onNext}
           disabled={dateIdx <= 0}
-          className="flex cursor-pointer items-center gap-1 border px-3 py-1.5 font-mono text-[13px] transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-30 hover:bg-[#0B1220]"
+          className="flex cursor-pointer items-center gap-1 border px-3 py-1.5 font-mono text-[13px] transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-30 hover:bg-[var(--ops-deep)]"
           style={{ borderColor: C.border, color: C.text }}
         >
-          NEWER <ChevronRight size={14} />
+          較新 <ChevronRight size={14} />
         </button>
       </div>
     </Panel>
@@ -2130,7 +2430,7 @@ function TriggerDistance({ price, trigger, stop }) {
     <div className="mt-2">
       <div className="mb-1 flex items-center justify-between font-mono text-[11px] tracking-wider" style={{ color: C.muted }}>
         <span style={{ color: C.short }}>STOP {stop != null ? fmt(stop) : '—'}</span>
-        <span>NOW {fmt(price)}</span>
+        <span>現價 {fmt(price)}</span>
         <span style={{ color: C.long }}>TRIG {trigger != null ? fmt(trigger) : '—'}</span>
       </div>
       <div className="relative h-2 w-full" style={{ background: C.border }}>
@@ -2188,12 +2488,45 @@ function TickerTape({ market, holdings, loading }) {
 }
 
 // ── Holdings matrix ───────────────────────────────────────────────────────────
-function HoldingsMatrix({ holdings, sparklines, extended = {}, loading, onSelect }) {
+const MATRIX_SORTS = [
+  { key: 'strength', label: '趨勢強度', hint: '訊號雷達的 trend_strength 由強到弱；沒訊號的排最後、依當日漲跌' },
+  { key: 'move', label: '當日漲跌', hint: '當日漲跌幅絕對值由大到小' },
+  { key: 'weight', label: '權重', hint: '組合權重由大到小' },
+];
+const MATRIX_SORT_KEY = 'stockradar.warroom.matrixSort';
+const readMatrixSort = () => {
+  try {
+    const v = localStorage.getItem(MATRIX_SORT_KEY);
+    return MATRIX_SORTS.some((x) => x.key === v) ? v : 'strength';
+  } catch {
+    return 'strength';
+  }
+};
+
+function HoldingsMatrix({ holdings, sparklines, extended = {}, signals = {}, signalsReady = false, loading, onSelect }) {
+  const [sort, setSort] = useState(readMatrixSort);
+  useEffect(() => {
+    try { localStorage.setItem(MATRIX_SORT_KEY, sort); } catch { /* private mode */ }
+  }, [sort]);
+
+  // 跟 /signals 同一套：trend_strength 由強到弱；沒訊號的持倉排最後、依當日漲跌幅度。
+  const sorted = useMemo(() => {
+    const sig = (h) => signals[String(h.ticker).toUpperCase()];
+    const strength = (h) => sig(h)?.summary?.trend_strength ?? -1;
+    const move = (h) => Math.abs(h.day_change_pct ?? 0);
+    const cmp = sort === 'weight'
+      ? (a, b) => (b.weight_pct ?? 0) - (a.weight_pct ?? 0)
+      : sort === 'move'
+        ? (a, b) => move(b) - move(a) || strength(b) - strength(a)
+        : (a, b) => strength(b) - strength(a) || move(b) - move(a);
+    return [...holdings].sort(cmp);
+  }, [holdings, signals, sort]);
+
   if (loading) {
     return (
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {Array.from({ length: 12 }).map((_, i) => (
-          <div key={i} className="wr-skel h-28 w-full" style={{ background: C.border }} />
+          <div key={i} className="wr-skel h-36 w-full" style={{ background: C.border }} />
         ))}
       </div>
     );
@@ -2201,44 +2534,74 @@ function HoldingsMatrix({ holdings, sparklines, extended = {}, loading, onSelect
   if (!holdings.length) {
     return (
       <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-        NO POSITIONS
+        沒有持倉
       </div>
     );
   }
+  const withSignal = holdings.filter((h) => signals[String(h.ticker).toUpperCase()]).length;
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-      {holdings.map((h, i) => (
-        <HoldingTile
-          key={`${h.portfolio}-${h.ticker}-${h.account ?? i}`}
-          h={h}
-          spark={sparklines[h.ticker]}
-          ext={extended[h.ticker]}
-          onSelect={onSelect}
-        />
-      ))}
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 font-mono text-[11px] uppercase tracking-[0.12em]" style={{ color: C.muted }}>
+          Sort
+        </span>
+        {MATRIX_SORTS.map((o) => (
+          <span key={o.key} title={o.hint}>
+            <Chip active={sort === o.key} onClick={() => setSort(o.key)}>{o.label}</Chip>
+          </span>
+        ))}
+        <span className="ml-auto font-mono text-[11px]" style={{ color: C.muted }}>
+          {signalsReady ? `${withSignal}/${holdings.length} 檔有訊號` : '訊號載入中…'}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        {sorted.map((h, i) => (
+          <HoldingTile
+            key={`${h.portfolio}-${h.ticker}-${h.account ?? i}`}
+            h={h}
+            rank={sort === 'strength' ? i + 1 : null}
+            spark={sparklines[h.ticker]}
+            ext={extended[h.ticker]}
+            sig={signals[String(h.ticker).toUpperCase()]}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
     </div>
   );
 }
 
-function HoldingTile({ h, spark, ext, onSelect }) {
+const sigDirColor = (dir) => (dir === 'bullish' ? C.long : dir === 'bearish' ? C.short : dir === 'neutral' ? C.amber : C.muted);
+
+function HoldingTile({ h, spark, ext, sig, rank, onSelect }) {
   const dc = h.day_change_pct;
+  const sum = sig?.summary;
+  const sigColor = sum ? sigDirColor(sum.direction) : null;
+  // 邊框：有事件級訊號（tier 1–2）看型態方向；否則沿用當日 ±2% 規則。
+  const eventGrade = sum && sum.tier <= 2;
+  const moveEdge = dc != null && dc >= 2 ? C.long : dc != null && dc <= -2 ? C.short : C.border;
+  const edge = eventGrade ? sigColor : moveEdge;
   const glow =
-    dc != null && dc >= 2 ? `0 0 14px ${C.long}55` : dc != null && dc <= -2 ? `0 0 14px ${C.short}55` : 'none';
-  const edge = dc != null && dc >= 2 ? C.long : dc != null && dc <= -2 ? C.short : C.border;
+    dc != null && dc >= 2 ? `0 0 14px ${alpha(C.long, 0.333)}` : dc != null && dc <= -2 ? `0 0 14px ${alpha(C.short, 0.333)}` : 'none';
   const weight = Math.max(0, Math.min(100, h.weight_pct ?? 0));
   return (
     <button
       type="button"
       onClick={() => onSelect(h.ticker)}
       className="group relative flex cursor-pointer flex-col overflow-hidden border p-2 text-left transition-all duration-200"
-      style={{ borderColor: edge, background: '#0B1220', boxShadow: glow }}
+      style={{ borderColor: edge, background: C.deep, boxShadow: glow }}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = C.accent)}
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = edge)}
-      title={`${h.company || h.ticker} · ${h.portfolio}`}
+      title={`${h.company || h.ticker} · ${h.portfolio}${sum ? ` · ${sum.setup_label}：${sum.headline}` : ''}`}
     >
       <div className="flex items-baseline justify-between">
-        <span className="font-mono text-xl font-bold tracking-wide" style={{ color: C.text }}>
-          {h.ticker}
+        <span className="flex items-baseline gap-1.5">
+          {rank != null && (
+            <span className="font-mono text-[11px] tabular-nums" style={{ color: C.muted }}>{rank}</span>
+          )}
+          <span className="font-mono text-xl font-bold tracking-wide" style={{ color: C.text }}>
+            {h.ticker}
+          </span>
         </span>
         <span className="tabular-nums font-mono text-[13px]" style={{ color: C.muted }}>
           {h.current_price != null ? `$${fmt(h.current_price)}` : '—'}
@@ -2257,6 +2620,32 @@ function HoldingTile({ h, spark, ext, onSelect }) {
           <ExtendedQuoteBadge quote={ext} showPrice upColor={C.long} downColor={C.short} />
         </div>
       )}
+      {/* 訊號一句話：型態徽章 + 強度，下一行主角訊號（跟 /signals 同一套 summary） */}
+      <div className="mt-1.5 min-h-[34px]">
+        {sum ? (
+          <>
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-flex items-center rounded px-1.5 py-px font-mono text-[11px] font-bold whitespace-nowrap"
+                style={{ color: sigColor, background: `${alpha(sigColor, 0.102)}`, border: `1px solid ${alpha(sigColor, 0.333)}` }}
+              >
+                {sum.setup_label}
+              </span>
+              <span className="font-mono text-[11px] font-semibold tabular-nums" style={{ color: sigColor }} title="趨勢強度">
+                {sum.trend_strength?.toFixed(1)}
+              </span>
+              <span className="font-mono text-[10px] tabular-nums" style={{ color: C.muted }} title="多方 / 空方訊號數">
+                ▲{sum.bull_count} ▼{sum.bear_count}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-[12px]" style={{ color: C.dim }} title={sum.headline}>
+              {sum.headline}
+            </div>
+          </>
+        ) : (
+          <div className="font-mono text-[11px]" style={{ color: C.muted }}>無技術訊號</div>
+        )}
+      </div>
       <div className="mt-1">
         <Sparkline data={spark} h={26} />
       </div>
@@ -2287,7 +2676,7 @@ function PnlTreemap({ holdings, loading }) {
   if (!data.length) {
     return (
       <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-        NO POSITIONS
+        沒有持倉
       </div>
     );
   }
@@ -2301,7 +2690,7 @@ function PnlTreemap({ holdings, loading }) {
         content={<TreemapCell />}
       >
         <Tooltip
-          cursor={{ fill: 'rgba(34,211,238,0.06)' }}
+          cursor={{ fill: alpha(C.accent, 0.06) }}
           contentStyle={{
             background: C.panel,
             border: `1px solid ${C.border}`,
@@ -2323,6 +2712,8 @@ function TreemapCell(props) {
   const { x, y, width, height, name, pct } = props;
   if (width <= 0 || height <= 0) return null;
   const fill = heatColor(pct);
+  // 深色格（漲跌 ≥ ~1.5%）一律白字；淺色格跟主題字色 —— 亮色主題下中性格是淺灰底。
+  const ink = pct != null && Math.abs(pct) >= 1.5 ? '#FFFFFF' : C.text;
   const showLabel = width > 50 && height > 28;
   const showPct = width > 50 && height > 46;
   return (
@@ -2332,7 +2723,8 @@ function TreemapCell(props) {
         <text
           x={x + 6}
           y={y + 17}
-          fill={C.text}
+          fill={ink}
+          stroke="none"
           fontSize={13}
           fontFamily="Fira Code"
           fontWeight="bold"
@@ -2341,7 +2733,7 @@ function TreemapCell(props) {
         </text>
       )}
       {showPct && (
-        <text x={x + 6} y={y + 33} fill={C.text} fontSize={12} fontFamily="Fira Code" opacity={0.85}>
+        <text x={x + 6} y={y + 33} fill={ink} stroke="none" fontSize={12} fontFamily="Fira Code" opacity={0.85}>
           {signPct(pct)}
         </text>
       )}
@@ -2411,7 +2803,7 @@ function MimiSourceModal({ ticker, onClose }) {
         aria-modal="true"
         aria-label={`${ticker} Mimi 原始筆記`}
         className="relative my-auto w-full max-w-3xl border"
-        style={{ background: C.panel, borderColor: C.mimi, boxShadow: `0 0 40px ${C.mimi}33` }}
+        style={{ background: C.panel, borderColor: C.mimi, boxShadow: `0 0 40px ${alpha(C.mimi, 0.2)}` }}
       >
         <Corner pos="tl" />
         <Corner pos="tr" />
@@ -2429,9 +2821,9 @@ function MimiSourceModal({ ticker, onClose }) {
           </span>
           <span
             className="border px-2 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider"
-            style={{ borderColor: `${C.mimi}66`, color: C.mimi, background: `${C.mimi}10` }}
+            style={{ borderColor: `${alpha(C.mimi, 0.4)}`, color: C.mimi, background: `${alpha(C.mimi, 0.063)}` }}
           >
-            MIMI 原始筆記
+            Mimi 原始筆記
           </span>
           {data?.source_path && (
             <span className="hidden font-mono text-[12px] sm:inline" style={{ color: C.muted }}>
@@ -2445,7 +2837,7 @@ function MimiSourceModal({ ticker, onClose }) {
               type="button"
               onClick={onClose}
               aria-label="關閉"
-              className="flex cursor-pointer items-center justify-center border p-1.5 transition-colors duration-200 hover:bg-[#0B1220]"
+              className="flex cursor-pointer items-center justify-center border p-1.5 transition-colors duration-200 hover:bg-[var(--ops-deep)]"
               style={{ borderColor: C.border, color: C.muted }}
             >
               <X size={16} />
@@ -2457,7 +2849,7 @@ function MimiSourceModal({ ticker, onClose }) {
         <div className="max-h-[68vh] overflow-y-auto px-5 py-4">
           {failed || (data && !data.found) ? (
             <div className="py-10 text-center font-mono text-[13px]" style={{ color: C.muted }}>
-              {failed ? 'MIMI 來源服務離線' : `此標的（${ticker}）沒有 Mimi 筆記`}
+              {failed ? 'Mimi 來源服務離線' : `此標的（${ticker}）沒有 Mimi 筆記`}
             </div>
           ) : !data ? (
             <div className="space-y-2">
@@ -2486,7 +2878,7 @@ function MimiSourceModal({ ticker, onClose }) {
                         href={n.obsidian_uri}
                         title={n.path || n.title}
                         className="wr-mimi-note group flex cursor-pointer items-center gap-2.5 border px-3 py-2.5 transition-all duration-200"
-                        style={{ borderColor: `${C.mimi}55`, background: `${C.mimi}0D` }}
+                        style={{ borderColor: `${alpha(C.mimi, 0.333)}`, background: `${alpha(C.mimi, 0.051)}` }}
                       >
                         <FileText size={15} className="shrink-0" style={{ color: C.mimi }} />
                         <span
@@ -2510,7 +2902,7 @@ function MimiSourceModal({ ticker, onClose }) {
                 ) : (
                   <div
                     className="border px-3 py-2.5 text-[13px]"
-                    style={{ borderColor: C.border, background: '#0B1220', color: C.muted, fontFamily: "'Fira Sans', sans-serif" }}
+                    style={{ borderColor: C.border, background: C.deep, color: C.muted, fontFamily: "'Fira Sans', sans-serif" }}
                   >
                     {unavailable
                       ? '來源檔案讀取受限，無法解析個別筆記連結。'
@@ -2523,7 +2915,7 @@ function MimiSourceModal({ ticker, onClose }) {
               {fields && Object.keys(fields).length > 0 && (
                 <div
                   className="mb-4 grid grid-cols-1 gap-3 border p-3 sm:grid-cols-2"
-                  style={{ borderColor: C.border, background: '#0B1220' }}
+                  style={{ borderColor: C.border, background: C.deep }}
                 >
                   <MimiField label="進場區" value={fields.entry_zone} color={C.accent} />
                   <MimiField label="停損" value={fields.stop_loss} color={C.short} />
@@ -2539,12 +2931,12 @@ function MimiSourceModal({ ticker, onClose }) {
                   style={{
                     borderColor: C.amber,
                     color: C.amber,
-                    background: `${C.amber}0F`,
+                    background: `${alpha(C.amber, 0.059)}`,
                     fontFamily: "'Fira Sans', sans-serif",
                     lineHeight: 1.6,
                   }}
                 >
-                  {unavailable}。以上為最近一次同步的解析欄位；點「在 OBSIDIAN 開啟」可看完整原文。
+                  {unavailable}。以上為最近一次同步的解析欄位；點「在 Obsidian 開啟」可看完整原文。
                 </div>
               )}
 
@@ -2553,14 +2945,15 @@ function MimiSourceModal({ ticker, onClose }) {
                 <div
                   className="wr-md text-[14px]"
                   style={{
-                    color: '#CBD5E1',
+                    color: C.sub,
                     fontFamily: "'Fira Sans', sans-serif",
                     lineHeight: 1.7,
-                    // Markdown.jsx is theme-var driven; the app is light-themed,
-                    // so remap the vars to the war room's dark palette here.
+                    // Markdown.jsx is theme-var driven; remap the vars to the war room's ops palette here.
                     '--text-primary': C.text,
-                    '--text-secondary': '#CBD5E1',
-                    '--text-muted': '#94A3B8',
+                    '--text-secondary': C.sub,
+                    '--text-muted': C.dim,
+                    '--text-body': C.sub,
+                    '--bg-tertiary': 'rgba(148,163,184,0.12)',
                     '--accent-cyan': C.mimi,
                     '--accent-danger': C.short,
                   }}
@@ -2628,7 +3021,7 @@ function NewsDigestModal({ ticker, articles, onClose }) {
         aria-modal="true"
         aria-label={`${ticker} 財經 digest`}
         className="relative my-auto w-full max-w-3xl border"
-        style={{ background: C.panel, borderColor: C.news, boxShadow: `0 0 40px ${C.news}33` }}
+        style={{ background: C.panel, borderColor: C.news, boxShadow: `0 0 40px ${alpha(C.news, 0.2)}` }}
       >
         <Corner pos="tl" />
         <Corner pos="tr" />
@@ -2646,9 +3039,9 @@ function NewsDigestModal({ ticker, articles, onClose }) {
           </span>
           <span
             className="border px-2 py-0.5 font-mono text-[11px] font-bold uppercase tracking-wider"
-            style={{ borderColor: `${C.news}66`, color: C.news, background: `${C.news}10` }}
+            style={{ borderColor: `${alpha(C.news, 0.4)}`, color: C.news, background: `${alpha(C.news, 0.063)}` }}
           >
-            財經 DIGEST · {articles.length} 篇
+            財經摘要 · {articles.length} 篇
           </span>
           <span className="hidden font-mono text-[12px] sm:inline" style={{ color: C.muted }}>
             近 21 天提及此標的的每日投資筆記
@@ -2660,7 +3053,7 @@ function NewsDigestModal({ ticker, articles, onClose }) {
               type="button"
               onClick={onClose}
               aria-label="關閉"
-              className="flex cursor-pointer items-center justify-center border p-1.5 transition-colors duration-200 hover:bg-[#0B1220]"
+              className="flex cursor-pointer items-center justify-center border p-1.5 transition-colors duration-200 hover:bg-[var(--ops-deep)]"
               style={{ borderColor: C.border, color: C.muted }}
             >
               <X size={16} />
@@ -2680,7 +3073,7 @@ function NewsDigestModal({ ticker, articles, onClose }) {
                 <article
                   key={`${a.date}-${a.url || a.title}`}
                   className="border p-4"
-                  style={{ borderColor: C.border, background: '#0B1220' }}
+                  style={{ borderColor: C.border, background: C.deep }}
                 >
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <span
@@ -2692,7 +3085,7 @@ function NewsDigestModal({ ticker, articles, onClose }) {
                     {a.sector && (
                       <span
                         className="border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider"
-                        style={{ borderColor: `${C.amber}55`, color: C.amber, background: `${C.amber}0F` }}
+                        style={{ borderColor: `${alpha(C.amber, 0.333)}`, color: C.amber, background: `${alpha(C.amber, 0.059)}` }}
                       >
                         {a.sector}
                       </span>
@@ -2710,13 +3103,15 @@ function NewsDigestModal({ ticker, articles, onClose }) {
                     <div
                       className="wr-md text-[14px]"
                       style={{
-                        color: '#CBD5E1',
+                        color: C.sub,
                         fontFamily: "'Fira Sans', sans-serif",
                         lineHeight: 1.6,
-                        // Markdown.jsx is theme-var driven; remap to the war room's dark palette.
+                        // Markdown.jsx is theme-var driven; remap to the war room's ops palette.
                         '--text-primary': C.text,
-                        '--text-secondary': '#CBD5E1',
-                        '--text-muted': '#94A3B8',
+                        '--text-secondary': C.sub,
+                        '--text-muted': C.dim,
+                        '--text-body': C.sub,
+                        '--bg-tertiary': 'rgba(148,163,184,0.12)',
                         '--accent-cyan': C.news,
                         '--accent-danger': C.short,
                       }}
@@ -2731,7 +3126,7 @@ function NewsDigestModal({ ticker, articles, onClose }) {
                       target="_blank"
                       rel="noopener noreferrer"
                       className="wr-news-link mt-3 inline-flex cursor-pointer items-center gap-1.5 border px-2 py-1 font-mono text-[11px] font-bold uppercase tracking-wider transition-all duration-200"
-                      style={{ borderColor: `${C.news}55`, color: C.news, background: `${C.news}0D` }}
+                      style={{ borderColor: `${alpha(C.news, 0.333)}`, color: C.news, background: `${alpha(C.news, 0.051)}` }}
                     >
                       <ExternalLink size={12} />
                       開啟原文
@@ -2769,7 +3164,7 @@ function EmptyState() {
     <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
       <Target size={28} style={{ color: C.muted }} />
       <div className="font-mono text-sm tracking-widest" style={{ color: C.muted }}>
-        NO DIRECTIVES
+        今天沒有指令
       </div>
       <div className="text-[13px]" style={{ color: C.muted, fontFamily: "'Fira Sans', sans-serif" }}>
         戰情分析尚未執行
@@ -2780,6 +3175,21 @@ function EmptyState() {
 
 function HeaderIcon({ Icon }) {
   return <Icon size={13} style={{ color: C.muted }} />;
+}
+
+// 看板方塊是摘要，全表在別頁 —— 標題列給一個明確的門，而不是讓兩個入口平行存在。
+function PanelLink({ href, label, icon }) {
+  return (
+    <Link
+      href={href}
+      className="inline-flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-wider transition-colors duration-150 hover:opacity-80"
+      style={{ color: C.muted }}
+    >
+      {icon}
+      {label}
+      <ArrowUpRight size={11} />
+    </Link>
+  );
 }
 
 function SkelBlock({ className = '' }) {
@@ -2813,22 +3223,22 @@ const wrStyles = `
 .wr-chip { letter-spacing: 0.1em; }
 /* Long AI theses: 3 lines max on the card, full text in the tooltip/detail. */
 .wr-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.wr-mimi-chip:hover { background: rgba(167,139,250,0.18) !important; border-color: #A78BFA !important; box-shadow: 0 0 12px rgba(167,139,250,0.35); }
+.wr-mimi-chip:hover { background: color-mix(in srgb, var(--ops-mimi) 18%, transparent) !important; border-color: var(--ops-mimi) !important; box-shadow: 0 0 12px color-mix(in srgb, var(--ops-mimi) 35%, transparent); }
 /* Individual original-note rows in the Mimi modal — the primary source link. */
-.wr-mimi-note:hover { background: rgba(167,139,250,0.16) !important; border-color: #A78BFA !important; box-shadow: 0 0 12px rgba(167,139,250,0.28); transform: translateX(2px); }
+.wr-mimi-note:hover { background: color-mix(in srgb, var(--ops-mimi) 16%, transparent) !important; border-color: var(--ops-mimi) !important; box-shadow: 0 0 12px color-mix(in srgb, var(--ops-mimi) 28%, transparent); transform: translateX(2px); }
 /* Finance-digest source chip + the "open original" link inside its modal. */
-.wr-news-chip:hover { background: rgba(34,211,238,0.18) !important; border-color: #22D3EE !important; box-shadow: 0 0 12px rgba(34,211,238,0.35); }
-.wr-news-link:hover { background: rgba(34,211,238,0.18) !important; border-color: #22D3EE !important; box-shadow: 0 0 12px rgba(34,211,238,0.28); }
-.wr-modal-backdrop { background: rgba(2,6,23,0.82); backdrop-filter: blur(3px); }
+.wr-news-chip:hover { background: color-mix(in srgb, var(--ops-accent) 18%, transparent) !important; border-color: var(--ops-accent) !important; box-shadow: 0 0 12px color-mix(in srgb, var(--ops-accent) 35%, transparent); }
+.wr-news-link:hover { background: color-mix(in srgb, var(--ops-accent) 18%, transparent) !important; border-color: var(--ops-accent) !important; box-shadow: 0 0 12px color-mix(in srgb, var(--ops-accent) 28%, transparent); }
+.wr-modal-backdrop { background: var(--ops-backdrop); backdrop-filter: blur(3px); }
 /* Raw Mimi markdown inside the modal — tables are the note's core format. */
 .wr-md table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; display: block; overflow-x: auto; }
-.wr-md th, .wr-md td { border: 1px solid #1E293B; padding: 6px 10px; text-align: left; }
-.wr-md th { background: #0B1220; color: #F8FAFC; font-family: 'Fira Code', monospace; font-size: 12px; letter-spacing: 0.04em; }
-.wr-md td { color: #CBD5E1; }
-.wr-md hr { border: 0; border-top: 1px solid #1E293B; margin: 16px 0; }
-.wr-md strong { color: #F8FAFC; }
-.wr-filter-input::placeholder { color: #475569; letter-spacing: 0.12em; }
-.wr-filter-box:focus-within { border-color: #22D3EE !important; box-shadow: 0 0 10px rgba(34,211,238,0.25); }
+.wr-md th, .wr-md td { border: 1px solid var(--ops-border); padding: 6px 10px; text-align: left; }
+.wr-md th { background: var(--ops-deep); color: var(--ops-text); font-family: 'Fira Code', monospace; font-size: 12px; letter-spacing: 0.04em; }
+.wr-md td { color: var(--ops-sub); }
+.wr-md hr { border: 0; border-top: 1px solid var(--ops-border); margin: 16px 0; }
+.wr-md strong { color: var(--ops-text); }
+.wr-filter-input::placeholder { color: var(--ops-placeholder); letter-spacing: 0.12em; }
+.wr-filter-box:focus-within { border-color: var(--ops-accent) !important; box-shadow: 0 0 10px color-mix(in srgb, var(--ops-accent) 25%, transparent); }
 .wr-scope { flex-wrap: wrap; }
 /* Keep the whole segmented control visible on narrow phones by shrinking type. */
 @media (max-width: 480px) {

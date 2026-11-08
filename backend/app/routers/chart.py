@@ -11,6 +11,7 @@ import numpy as np
 import requests
 
 from ..indicators import compute_indicator_frame, compute_analytics
+from ..trendlines import regression_channel_frame, compute_trend_structure
 
 router = APIRouter()
 
@@ -474,6 +475,16 @@ def get_chart(
     except Exception:
         extra = pd.DataFrame(index=df.index)
 
+    # Linear-regression channel rides along as per-bar series so the frontend can
+    # draw it with the same overlay machinery as Bollinger/Keltner.
+    reg_stats = None
+    try:
+        reg_frame, reg_stats = regression_channel_frame(
+            df, lookback=max(ppy, 60), periods_per_year=ppy)
+        extra = extra.join(reg_frame, how="left") if not extra.empty else reg_frame
+    except Exception:
+        pass
+
     bars = _compute_indicators(df, extra)
     sr   = _find_sr_levels(df)
 
@@ -498,9 +509,208 @@ def get_chart(
     except Exception as exc:  # analytics are additive — never break the chart
         analytics = {"error": str(exc)}
 
+    # Trend structure (diagonal trendlines / channel / patterns) is the one part
+    # of the chart that is drawn rather than plotted per bar.
+    try:
+        analytics["trend"] = compute_trend_structure(df, periods_per_year=ppy,
+                                                     reg_stats=reg_stats)
+        analytics["trend"]["regression"] = reg_stats
+    except Exception as exc:
+        analytics["trend"] = {"error": str(exc)}
+
     result = {
         "ticker": ticker.upper(), "period": period, "interval": yf_interval,
         "bars": bars, "sr": sr, "analytics": analytics,
     }
     _cache_set(cache_key, result)
     return result
+
+
+# ── 圖上事件：財報日＋持倉成本 ─────────────────────────────────────────────────
+# 跟 /chart 分開：K 線快取 10 分鐘，成本價是使用者剛改完就要看到的；財報日則一天
+# 才變一次，各自快取比較合理。
+
+_SEC_UA = "arthur-stock-radar research yankesswang@gmail.com"
+_EVENTS_CACHE: dict = {}
+_EVENTS_TTL = 6 * 3600
+
+
+def _ticker_cik(ticker: str) -> int | None:
+    import sqlite3
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    for db, sql in (
+        (root / "data" / "earnings_registry.db", "SELECT cik FROM companies WHERE ticker=? AND cik IS NOT NULL"),
+        (root / "backend" / "stock_valuation.db", "SELECT cik FROM stock_cik WHERE ticker=? AND cik IS NOT NULL"),
+    ):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                row = con.execute(sql, (ticker,)).fetchone()
+            finally:
+                con.close()
+            if row and row[0]:
+                return int(row[0])
+        except Exception:
+            continue
+    return None
+
+
+def _edgar_earnings_dates(cik: int) -> list[str]:
+    """8-K Item 2.02 的申報日 = 財報實際公布日（美股發行人）。
+
+    外國發行人（ARM/TSM…）交 6-K，沒有 item 代碼，要逐份讀附件才分得出哪份是
+    財報（見 scripts/earnings/earnings_calendar.py），畫圖不值得打那麼多請求 ——
+    它們靠 registry 跟 Yahoo 補。"""
+    try:
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json",
+                         headers={"User-Agent": _SEC_UA}, timeout=15)
+        r.raise_for_status()
+        rec = r.json()["filings"]["recent"]
+    except Exception:
+        return []
+    items = rec.get("items") or [""] * len(rec["form"])
+    return [rec["filingDate"][i] for i in range(len(rec["form"]))
+            if rec["form"][i] == "8-K" and "2.02" in (items[i] or "")]
+
+
+def _registry_earnings_dates(ticker: str) -> list[str]:
+    import sqlite3
+    from pathlib import Path
+    db = Path(__file__).resolve().parents[3] / "data" / "earnings_registry.db"
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            return [r[0] for r in con.execute(
+                "SELECT report_date FROM earnings_events WHERE ticker=? AND report_date IS NOT NULL", (ticker,))]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def _yahoo_earnings(ticker: str) -> tuple[list[str], list]:
+    """Yahoo 的財報日表（HTML 爬取、常被限流，拿不到就算了）。索引是 tz-aware，轉 ET 取日期。
+
+    回傳 (已公布日期, 未公布的 ET datetime)。"""
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("America/New_York")
+    try:
+        df = yf.Ticker(ticker).get_earnings_dates(limit=40)
+    except Exception:
+        return [], []
+    if df is None or df.empty:
+        return [], []
+    past, future = [], []
+    for idx, row in df.iterrows():
+        try:
+            ts = idx.to_pydatetime()
+            ts = ts.astimezone(et) if ts.tzinfo else ts.replace(tzinfo=et)
+            reported = row.get("Reported EPS")
+            if reported is None or (isinstance(reported, float) and math.isnan(reported)):
+                future.append(ts)
+            else:
+                past.append(ts.date().isoformat())
+        except Exception:
+            continue
+    return past, future
+
+
+def _earnings_events(ticker: str) -> dict:
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from .earnings import _fetch_calendar_events
+
+    key = f"earn_{ticker}"
+    hit = _EVENTS_CACHE.get(key)
+    if hit and time.time() - hit["ts"] < _EVENTS_TTL:
+        return hit["data"]
+
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    sources: dict[str, str] = {}
+    cik = None if ticker.endswith((".TW", ".TWO")) else _ticker_cik(ticker)
+    # 後寫的蓋前面：EDGAR／registry 最可信，放最後
+    yahoo_past, yahoo_future = _yahoo_earnings(ticker)
+    for d in yahoo_past:
+        sources[d] = "yahoo"
+    if cik:
+        for d in _edgar_earnings_dates(cik):
+            sources[d] = "edgar"
+    for d in _registry_earnings_dates(ticker):
+        sources[d] = "edgar"
+
+    # 一季只會有一次財報。30 天內的多個日期是同一次：兩個來源差一兩天（盤後時區、
+    # 隔天才申報），或公司先發初步數字的 8-K 2.02 再正式公布 → 可信來源優先，
+    # 同樣可信就留後面那個（正式公布）。
+    past: list[dict] = []
+    for d in sorted(sources):
+        if d > today.isoformat():
+            continue
+        if past and (datetime.fromisoformat(d) - datetime.fromisoformat(past[-1]["date"])).days <= 30:
+            if sources[d] == "edgar" or past[-1]["source"] != "edgar":
+                past[-1] = {"date": d, "source": sources[d]}
+            continue
+        past.append({"date": d, "source": sources[d]})
+
+    # 下一次：Yahoo calendarEvents 優先（有確認旗標），但它在公布後好幾週還會回傳
+    # 已經過去的那次 → 離最近一次已公布不到 20 天的都當成舊的，改用財報日表的未來列
+    last_past = datetime.fromisoformat(past[-1]["date"]).date() if past else None
+
+    def _fresh(s) -> bool:
+        return s.date() > today and (not last_past or (s.date() - last_past) > timedelta(days=20))
+
+    upcoming = None
+    try:
+        cal = _fetch_calendar_events(ticker)
+    except Exception:
+        cal = {}
+    cands = [(s, not cal.get("is_estimate"), bool(cal.get("tz_correct")))
+             for s in (cal.get("stamps") or []) if _fresh(s)]
+    if not cands:
+        cands = [(s, False, True) for s in yahoo_future if _fresh(s)]
+    tz_us = not ticker.endswith((".TW", ".TWO"))   # 盤前／盤後是以美股 ET 時段判斷
+    if cands:
+        s, confirmed, tz_ok = min(cands, key=lambda c: c[0])
+        upcoming = {"date": s.date().isoformat(), "confirmed": confirmed,
+                    "time_of_day": ("盤前" if s.hour < 12 else "盤後") if tz_ok and tz_us and s.hour else None}
+
+    data = {"past": past, "upcoming": upcoming}
+    # 一個來源都沒拿到（多半是被限流）就別快取 6 小時
+    if past or upcoming:
+        _EVENTS_CACHE[key] = {"data": data, "ts": time.time()}
+    return data
+
+
+def _cost_lines(ticker: str) -> list[dict]:
+    """portfolio.csv 裡這檔的持倉成本：同一組合跨帳戶加權平均，每個組合一條線。
+
+    用 CSV 的原幣成本（台股就是台幣），跟 K 線同幣別；組合頁上的台股成本被換成
+    美元是為了加總，不能拿來畫在台幣 K 線上。"""
+    from .portfolio import _read_csv
+    try:
+        df = _read_csv()
+    except Exception:
+        return []
+    df.columns = df.columns.str.lower().str.strip()
+    df["ticker"] = df["ticker"].astype(str).str.upper().str.strip()
+    df = df[df["ticker"] == ticker]
+    out = []
+    for pname, g in df.groupby(df["portfolio"].astype(str).str.strip(), sort=False):
+        shares = pd.to_numeric(g["shares"], errors="coerce").fillna(0)
+        cost = pd.to_numeric(g["avg_cost"], errors="coerce").fillna(0)
+        total = float(shares.sum())
+        if total <= 0:
+            continue
+        out.append({
+            "portfolio": pname,
+            "accounts": list(dict.fromkeys(g["account"].astype(str).str.strip())),
+            "shares": round(total, 6),
+            "avg_cost": round(float((shares * cost).sum()) / total, 4),
+        })
+    return out
+
+
+@router.get("/{ticker}/chart-events")
+def get_chart_events(ticker: str):
+    t = ticker.upper().strip()
+    return {"ticker": t, "earnings": _earnings_events(t), "positions": _cost_lines(t)}

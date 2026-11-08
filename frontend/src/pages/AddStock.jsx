@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'wouter';
 import { PlusCircle, Loader2, CheckCircle2, XCircle, ChevronRight } from 'lucide-react';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 
 export default function AddStock() {
     const [ticker, setTicker] = useState('');

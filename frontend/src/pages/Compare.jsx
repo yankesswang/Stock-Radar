@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useSearch, useLocation } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import {
   ChevronUp, ChevronDown, ChevronsUpDown,
   Loader2, BarChart3, Table2,
@@ -216,7 +216,7 @@ function tierColor(index, total) {
 
 function ChartTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
-  const { ticker, company, displayValue, fmt } = payload[0].payload;
+  const { ticker, company, displayValue } = payload[0].payload;
   return (
     <div className="glass rounded-lg px-3 py-2 text-xs shadow-xl border border-[var(--glass-border)]">
       <p className="font-semibold text-[var(--text-primary)]">{ticker}</p>

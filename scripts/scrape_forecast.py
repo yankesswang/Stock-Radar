@@ -6,10 +6,12 @@ Usage:
     python3 scripts/scrape_forecast.py --all                   # all stocks from STOCK_LIST
     python3 scripts/scrape_forecast.py --all --workers 3       # parallel (3 threads)
     python3 scripts/scrape_forecast.py --all --skip-existing   # skip already-scraped tickers
+    python3 scripts/scrape_forecast.py --all --stale-days 7    # only missing or older than 7 days
 """
 import argparse
 import json
 import random
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,7 +36,12 @@ HEADERS = {
 }
 
 OUTPUT_DIR = DATA_DIR / "forecast" / "detail"
-DATE_STR = datetime.now().strftime('%Y-%m-%d')
+
+
+def _today() -> str:
+    # 取呼叫當下的日期 —— backend 會長跑跨日，模組層常數會停在 import 那天，
+    # 檔名就會謊報新鮮度（DCF、分析師上修下修都靠檔名日期排序）
+    return datetime.now().strftime('%Y-%m-%d')
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +265,14 @@ def scrape_forecast(ticker, current_year=2025, fallback=True, allow_unanchored=F
     if not tables:
         return None
 
+    # ADR／外國公司的 EPS 與營收是財報幣別（TSM 台幣、PDD 人民幣），不是美元。
+    # 頁面內嵌 curr:{main:"USD",price:"USD",...,financial:"TWD"}，存下來給估值換算用。
+    m = re.search(r'curr:\{[^}]*financial:"([A-Z]{3})"', response.text)
+
     forecast_data = {
         'ticker': ticker.upper(),
-        'date': DATE_STR,
+        'date': _today(),
+        'financial_currency': m.group(1) if m else None,
         'price_target': None,
         'analyst_ratings': None,
         'analyst_recommendations': None,
@@ -374,7 +386,7 @@ def _populate_legacy_annual(forecast_data, current_year):
 def save_ticker_json(ticker, forecast_data):
     """Save per-ticker comprehensive forecast JSON. Returns output path."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / f"{ticker.upper()}_forecast_{DATE_STR}.json"
+    path = OUTPUT_DIR / f"{ticker.upper()}_forecast_{_today()}.json"
     with open(path, 'w') as f:
         json.dump(forecast_data, f, indent=2)
     return path
@@ -383,7 +395,7 @@ def save_ticker_json(ticker, forecast_data):
 def save_to_db(ticker, forecast_data):
     """Save the legacy annual portion to the database for valuation computation."""
     try:
-        # Call-time date (not the import-frozen DATE_STR) so a backend running
+        # Call-time date (not an import-frozen constant) so a backend running
         # across midnight saves under today's date, matching compute_valuations.
         snapshot_date = date.today()
         save_forecast(ticker, forecast_data, snapshot_date)
@@ -393,7 +405,16 @@ def save_to_db(ticker, forecast_data):
 
 def has_existing(ticker):
     """Check if a forecast JSON already exists for this ticker today."""
-    return (OUTPUT_DIR / f"{ticker.upper()}_forecast_{DATE_STR}.json").exists()
+    return (OUTPUT_DIR / f"{ticker.upper()}_forecast_{_today()}.json").exists()
+
+
+def latest_age_days(ticker):
+    """Age in days of the newest forecast JSON for ticker, or None if there is none."""
+    files = sorted(OUTPUT_DIR.glob(f"{ticker.upper()}_forecast_*.json"), reverse=True)
+    if not files:
+        return None
+    d = date.fromisoformat(files[0].stem.rsplit('_', 1)[-1])
+    return (date.today() - d).days
 
 
 # ---------------------------------------------------------------------------
@@ -462,16 +483,24 @@ def _ok_line(summary):
 
 
 def scrape_all(workers=1, skip_existing=False, delay_range=(5, 15), fallback=True,
-               allow_unanchored=False):
+               allow_unanchored=False, stale_days=None):
     """Scrape forecast for every stock in STOCK_LIST."""
     all_tickers = get_all_tickers()
+    if stale_days is not None:
+        def _due(t):
+            age = latest_age_days(t)
+            return age is None or age > stale_days
+        all_tickers = [t for t in all_tickers if _due(t)]
+        # 完全沒檔的排前面：中斷時先補到的是「整頁空白」的那些
+        all_tickers.sort(key=lambda t: (latest_age_days(t) is not None, t))
+        print(f"--stale-days {stale_days}: {len(all_tickers)} tickers due")
     total = len(all_tickers)
 
     if skip_existing:
         all_tickers = [t for t in all_tickers if not has_existing(t)]
         skipped = total - len(all_tickers)
         if skipped:
-            print(f"Skipping {skipped} tickers with existing data for {DATE_STR}")
+            print(f"Skipping {skipped} tickers with existing data for {_today()}")
         total_to_scrape = len(all_tickers)
     else:
         total_to_scrape = total
@@ -535,12 +564,12 @@ def _save_combined_json(tickers):
     """Read individual ticker JSONs and combine into the legacy bulk format."""
     combined = {}
     for ticker in tickers:
-        path = OUTPUT_DIR / f"{ticker.upper()}_forecast_{DATE_STR}.json"
+        path = OUTPUT_DIR / f"{ticker.upper()}_forecast_{_today()}.json"
         if path.exists():
             with open(path) as f:
                 combined[ticker] = json.load(f)
 
-    output_path = DATA_DIR / "forecast" / f"stock_list_forecasts_{DATE_STR}.json"
+    output_path = DATA_DIR / "forecast" / f"stock_list_forecasts_{_today()}.json"
     with open(output_path, 'w') as f:
         json.dump(combined, f, indent=2)
     print(f"Saved combined forecast file: {output_path} ({len(combined)} stocks)")
@@ -556,6 +585,8 @@ def main():
     parser.add_argument('--all', action='store_true', help='Scrape all stocks from STOCK_LIST')
     parser.add_argument('--workers', type=int, default=1, help='Number of parallel workers (default: 1)')
     parser.add_argument('--skip-existing', action='store_true', help='Skip tickers already scraped today')
+    parser.add_argument('--stale-days', type=int, default=None,
+                        help='With --all: only tickers with no JSON or a JSON older than N days')
     parser.add_argument('--delay-min', type=float, default=5, help='Min delay between requests in seconds (default: 5)')
     parser.add_argument('--delay-max', type=float, default=15, help='Max delay between requests in seconds (default: 15)')
     parser.add_argument('--no-fallback', action='store_true',
@@ -580,6 +611,7 @@ def main():
             delay_range=delay_range,
             fallback=fallback,
             allow_unanchored=args.allow_unanchored,
+            stale_days=args.stale_days,
         )
     else:
         ticker = args.ticker.upper()

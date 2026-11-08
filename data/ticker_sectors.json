@@ -1,0 +1,182 @@
+{
+  "0050.TW": {
+    "name": "YUANTA SECURITIES INV TRUST CO ",
+    "sector": null
+  },
+  "0056.TW": {
+    "name": "YUANTA SECURITIES INV TRUST CO ",
+    "sector": null
+  },
+  "00878.TW": {
+    "name": "CATHAY SECS INV TRUST CO LTD TA",
+    "sector": null
+  },
+  "2892.TW": {
+    "name": "FIRST FINANCIAL HOLDING CO LTD",
+    "sector": "Financial Services"
+  },
+  "AAPL": {
+    "name": "Apple Inc.",
+    "sector": "Technology"
+  },
+  "ADI": {
+    "name": "Analog Devices, Inc.",
+    "sector": "Technology"
+  },
+  "AMAT": {
+    "name": "Applied Materials, Inc.",
+    "sector": "Technology"
+  },
+  "AMD": {
+    "name": "Advanced Micro Devices, Inc.",
+    "sector": "Technology"
+  },
+  "AMZN": {
+    "name": "Amazon.com, Inc.",
+    "sector": "Consumer Cyclical"
+  },
+  "AMZU": {
+    "name": "Direxion Daily AMZN Bull 2X ETF",
+    "sector": null
+  },
+  "ARM": {
+    "name": "Arm Holdings plc",
+    "sector": "Technology"
+  },
+  "ASX": {
+    "name": "ASE Technology Holding Co., Ltd",
+    "sector": "Technology"
+  },
+  "CAMT": {
+    "name": "Camtek Ltd.",
+    "sector": "Technology"
+  },
+  "CRWD": {
+    "name": "CrowdStrike Holdings, Inc.",
+    "sector": "Technology"
+  },
+  "DHI": {
+    "name": "D.R. Horton, Inc.",
+    "sector": "Consumer Cyclical"
+  },
+  "FSLY": {
+    "name": "Fastly, Inc.",
+    "sector": "Technology"
+  },
+  "GOOG": {
+    "name": "Alphabet Inc.",
+    "sector": "Communication Services"
+  },
+  "IBM": {
+    "name": "International Business Machines",
+    "sector": "Technology"
+  },
+  "INTC": {
+    "name": "Intel Corporation",
+    "sector": "Technology"
+  },
+  "JBL": {
+    "name": "Jabil Inc.",
+    "sector": "Technology"
+  },
+  "LLY": {
+    "name": "Eli Lilly and Company",
+    "sector": "Healthcare"
+  },
+  "LRCX": {
+    "name": "Lam Research Corporation",
+    "sector": "Technology"
+  },
+  "META": {
+    "name": "Meta Platforms, Inc.",
+    "sector": "Communication Services"
+  },
+  "MKSI": {
+    "name": "MKS Inc.",
+    "sector": "Technology"
+  },
+  "MSFT": {
+    "name": "Microsoft Corporation",
+    "sector": "Technology"
+  },
+  "MU": {
+    "name": "Micron Technology, Inc.",
+    "sector": "Technology"
+  },
+  "NOW": {
+    "name": "ServiceNow, Inc.",
+    "sector": "Technology"
+  },
+  "NVDA": {
+    "name": "NVIDIA Corporation",
+    "sector": "Technology"
+  },
+  "OUST": {
+    "name": "Ouster, Inc.",
+    "sector": "Technology"
+  },
+  "PLTR": {
+    "name": "Palantir Technologies Inc.",
+    "sector": "Technology"
+  },
+  "QCOM": {
+    "name": "QUALCOMM Incorporated",
+    "sector": "Technology"
+  },
+  "ROG": {
+    "name": "Rogers Corporation",
+    "sector": "Technology"
+  },
+  "SANM": {
+    "name": "Sanmina Corporation",
+    "sector": "Technology"
+  },
+  "SMH": {
+    "name": "VanEck Semiconductor ETF",
+    "sector": null
+  },
+  "SOFI": {
+    "name": "SoFi Technologies, Inc.",
+    "sector": "Financial Services"
+  },
+  "STNG": {
+    "name": "Scorpio Tankers Inc.",
+    "sector": "Energy"
+  },
+  "TSLA": {
+    "name": "Tesla, Inc.",
+    "sector": "Consumer Cyclical"
+  },
+  "TSM": {
+    "name": "Taiwan Semiconductor Manufactur",
+    "sector": "Technology"
+  },
+  "TWLO": {
+    "name": "Twilio Inc.",
+    "sector": "Technology"
+  },
+  "TXN": {
+    "name": "Texas Instruments Incorporated",
+    "sector": "Technology"
+  },
+  "VIAV": {
+    "name": "Viavi Solutions Inc.",
+    "sector": "Technology"
+  },
+  "VRT": {
+    "name": "Vertiv Holdings, LLC",
+    "sector": "Industrials"
+  },
+  "VT": {
+    "name": "Vanguard Total World Stock Inde",
+    "sector": null
+  },
+  "WDAY": {
+    "name": "Workday, Inc.",
+    "sector": "Technology"
+  },
+  "ZS": {
+    "name": "Zscaler, Inc.",
+    "sector": "Technology"
+  }
+}

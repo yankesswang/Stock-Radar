@@ -130,11 +130,12 @@ def _run_scrape(job_id: str, ticker: str, group: str) -> None:
 
         # ── Step 4: PE Median (via fullratio.com) ───────────────────────────
         step(f"Scraping PE median for {ticker} from fullratio.com…")
-        from scripts.scrape_fullratio_pe import scrape_ticker as fr_scrape  # noqa: PLC0415
+        from scripts.scrape_fullratio_pe import scrape_ticker as fr_scrape, write_json as fr_write  # noqa: PLC0415
         from src.db_service import save_pe_median  # noqa: PLC0415
 
         fr_result = fr_scrape(ticker)
         if fr_result:
+            fr_write(fr_result)
             summary = fr_result.get("summary", {})
             # Prefer the site's own "Median"; fall back to our IQR-filtered median
             pe_median = summary.get("Median") or fr_result.get("pe_median")

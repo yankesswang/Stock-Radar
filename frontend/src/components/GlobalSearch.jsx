@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation } from 'wouter';
-import axios from 'axios';
+import axios from '../lib/apiClient';
 import { Search, X, TrendingUp, Building2, Loader2 } from 'lucide-react';
 
 // Simple debounce hook
@@ -93,7 +93,7 @@ export default function GlobalSearch() {
       <div className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all duration-200 ${
         open
           ? 'border-[var(--accent-cyan)] bg-[var(--bg-secondary)] shadow-lg shadow-[rgba(0,82,255,0.12)]'
-          : 'border-[var(--glass-border)] bg-[rgba(255,255,255,0.6)] hover:border-[rgba(91,97,110,0.35)]'
+          : 'border-[var(--glass-border)] bg-[var(--field-bg)] hover:border-[rgba(91,97,110,0.35)]'
       }`}>
         {loading
           ? <Loader2 size={14} className="text-[var(--text-muted)] shrink-0 animate-spin" />
